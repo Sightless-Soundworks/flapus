@@ -92,6 +92,56 @@ static void fl_e_renormalise_vector(float *X, int N, float gain) {
    for (i = 0; i < N; i++) X[i] = (float)(g*X[i]);
 }
 
+#ifdef FLAPUS_PORTABLE_MATH
+/* rcpps and rsqrtps are approximations whose exact bits are up to the CPU, and the PVQ
+   search below uses them, as opusenc does: on an AMD EPYC 7763 the default build wrote
+   other packets than on an Intel Core i7-13700K. With FLAPUS_PORTABLE_MATH they come
+   from Intel's values in enc_rcp_tables.c instead, so the result is Intel's on every
+   CPU. These two functions are the ones tools/gen_rcp.c checks against the hardware
+   for all 2^32 inputs; keep them identical. */
+static unsigned fl_p_rcp_bits(unsigned x) {
+   unsigned s = x & 0x80000000u, e = (x >> 23) & 0xff, t;
+   int re;
+   if (e == 0) return s | 0x7f800000u;                         /* 0, subnormal: inf */
+   if (e == 0xff) return (x & 0x7fffff) ? x | 0x400000u : s;   /* NaN quiet, inf: 0 */
+   t = fl_rcp_tab[(x >> 12) & 0x7ff];
+   re = (int)(t >> 12)+126+127-(int)e;
+   if (re <= 0) return s;                                      /* subnormal result: 0 */
+   return s | (unsigned)re << 23 | (t & 0xfff) << 11;
+}
+static unsigned fl_p_rsqrt_bits(unsigned x) {
+   unsigned e = (x >> 23) & 0xff, t;
+   int k, re;
+   if (e == 0) return (x & 0x80000000u) | 0x7f800000u;         /* +-0, subnormal: +-inf */
+   if (e == 0xff) {
+      if (x & 0x7fffff) return x | 0x400000u;                  /* NaN quiet */
+      return (x & 0x80000000u) ? 0xffc00000u : 0;              /* -inf: NaN, +inf: 0 */
+   }
+   if (x & 0x80000000u) return 0xffc00000u;                    /* negative: NaN */
+   k = ((int)e-127) >> 1;                                      /* x = 4^k * [1,4) */
+   t = fl_rsqrt_tab[((e-127) & 1) << 10 | ((x >> 13) & 0x3ff)];
+   re = (int)(t >> 12)+126-k;
+   return (unsigned)re << 23 | (t & 0xfff) << 11;
+}
+static __m128 fl_p_lanes(__m128 v, unsigned (*f)(unsigned)) {
+   float a[4];
+   int i;
+   _mm_storeu_ps(a, v);
+   for (i = 0; i < 4; i++) {
+      unsigned u;
+      memcpy(&u, &a[i], 4);
+      u = f(u);
+      memcpy(&a[i], &u, 4);
+   }
+   return _mm_loadu_ps(a);
+}
+#define FL_RCP_PS(v) fl_p_lanes(v, fl_p_rcp_bits)
+#define FL_RSQRT_PS(v) fl_p_lanes(v, fl_p_rsqrt_bits)
+#else
+#define FL_RCP_PS(v) _mm_rcp_ps(v)
+#define FL_RSQRT_PS(v) _mm_rsqrt_ps(v)
+#endif
+
 /* op_pvq_search_sse2: SIMD search; xy/yy accumulate on the x87 stack. */
 static float fl_e_pvq_search(float *_X, int *iy, int K, int N) {
    int i, j, pulsesLeft;
@@ -125,7 +175,7 @@ static float fl_e_pvq_search(float *_X, int *iy, int K, int N) {
          while (++j < N);
          sums = _mm_set_ps1(1.f);
       }
-      rcp4 = _mm_mul_ps(_mm_set_ps1((float)(XF(.8)+K)), _mm_rcp_ps(sums));
+      rcp4 = _mm_mul_ps(_mm_set_ps1((float)(XF(.8)+K)), FL_RCP_PS(sums));
       for (j = 0; j < N; j += 4) {
          __m128 x4 = _mm_loadu_ps(&X[j]), rx4 = _mm_mul_ps(x4, rcp4), y4;
          __m128i iy4 = _mm_cvttps_epi32(rx4);
@@ -173,7 +223,7 @@ static float fl_e_pvq_search(float *_X, int *iy, int K, int N) {
          __m128 x4 = _mm_loadu_ps(&X[j]), y4 = _mm_loadu_ps(&y[j]), r4;
          x4 = _mm_add_ps(x4, xy4);
          y4 = _mm_add_ps(y4, yy4);
-         y4 = _mm_rsqrt_ps(y4);
+         y4 = FL_RSQRT_PS(y4);
          r4 = _mm_mul_ps(x4, y4);
          pos = _mm_max_epi16(pos, _mm_and_si128(count, _mm_castps_si128(_mm_cmpgt_ps(r4, max))));
          max = _mm_max_ps(max, r4);
