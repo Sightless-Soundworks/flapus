@@ -47,7 +47,8 @@ jobs:
 
       - name: Runner CPU
         shell: pwsh
-        run: Write-Host "CPU: $((Get-CimInstance Win32_Processor).Name)"
+        run: |
+          Write-Host "CPU: $((Get-CimInstance Win32_Processor).Name)"
 
       - name: Get w64devkit ${{ matrix.arch }}
         shell: pwsh
@@ -87,7 +88,7 @@ jobs:
           $arch = "${{ matrix.archflags }}".Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
           foreach ($t in "bitreader", "portable_math", "rcp_tables") {
             & gcc -O2 @arch -I. -o "t_$t.exe" "test/$t.c"
-            if ($LASTEXITCODE -ne 0) { throw "$t: build failed" }
+            if ($LASTEXITCODE -ne 0) { throw "${t}: build failed" }
             & ".\t_$t.exe"
             if ($LASTEXITCODE -ne 0) { throw "$t failed" }
           }
