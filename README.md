@@ -1,7 +1,7 @@
 # flapus
 
 flapus is an Opus and FLAC encoder and decoder written in C. It works as a
-single-header library (`flapus.h`) and as a command-line tool (`flapus.exe`), and it
+single-header library (`flapus.h`) and as a command-line tool (`flapus`), and it
 needs nothing besides the C library.
 
 | Format | Encoder | Decoder |
@@ -20,7 +20,6 @@ For Opus, only metadata differs from the reference tools: the vendor string and 
 ```
 flapus.h           the single-file library (generated from src/ by tools/amalgamate.py)
 flapus_cli.c       command line tool
-flapus.exe         prebuilt 64-bit Windows CLI
 src/               library sources (see NOTES.md for the file map)
 tools/             amalgamate.py, comparison scripts, generators for tables and SILK code
 test/              regression scripts and test signals

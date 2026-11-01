@@ -6,3 +6,6 @@ test/flac_cases/
 test/*.opus
 test/grid.log
 *.o
+
+# build output
+flapus.exe
