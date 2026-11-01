@@ -134,10 +134,11 @@ FLDEF int fl_opus_ms_decode_float(fl_opus_ms_decoder *dec, const unsigned char *
    of older 32-bit toolchains) some files encode differently from opusenc, so the
    implementation stops with an error instead. Build with -msse2 -mfpmath=sse, or
    define FLAPUS_NO_ENCODER.
-   The default encoder uses the x87 transcendental instructions as opusenc does, and
-   their last bit differs between CPU makers, so its output can differ between Intel
-   and AMD. Define FLAPUS_PORTABLE_MATH for output that is the same on every x86 CPU
-   (software replacements, at most 2.4 ulp of the 64-bit mantissa; see README). */
+   Like opusenc, the default encoder uses rcpps/rsqrtps and the x87 transcendental
+   instructions, whose results differ between CPU makers, so its output differs between
+   Intel and AMD. Define FLAPUS_PORTABLE_MATH for output that is the same on every x86
+   CPU: Intel's rcpps/rsqrtps from tables, and software replacements for the x87
+   instructions (at most 2.4 ulp of the 64-bit mantissa); see README. */
 #if !defined(FLAPUS_NO_ENCODER) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
 #define FLAPUS_HAVE_ENCODER 1
 #endif
@@ -10861,8 +10862,8 @@ static void fl_x87_leave(unsigned short old) { __asm__ volatile("fldcw %0" : : "
    The x87 transcendental instructions fsin, fcos, fyl2x, fyl2xp1, f2xm1 (and
    fpatan inside MinGW's acosl) are not exactly specified: their last bit is
    up to the CPU. Measured over 20000 fixed inputs, an Intel Core i7-13700K
-   and an AMD EPYC 7763 disagreed for all five, and the encoder then wrote
-   different packets on the two.
+   and an AMD EPYC 7763 disagreed for all five. (On a 3179-file speech corpus
+   that changed no packet; rcpps/rsqrtps did, see enc_bands.c.)
    With FLAPUS_PORTABLE_MATH they are replaced by the functions below, which
    only use the operations IEEE 754 defines exactly (+, -, *, /) on long
    double, plus exact exponent manipulation. The output is then the same on

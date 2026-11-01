@@ -134,10 +134,11 @@ FLDEF int fl_opus_ms_decode_float(fl_opus_ms_decoder *dec, const unsigned char *
    of older 32-bit toolchains) some files encode differently from opusenc, so the
    implementation stops with an error instead. Build with -msse2 -mfpmath=sse, or
    define FLAPUS_NO_ENCODER.
-   The default encoder uses the x87 transcendental instructions as opusenc does, and
-   their last bit differs between CPU makers, so its output can differ between Intel
-   and AMD. Define FLAPUS_PORTABLE_MATH for output that is the same on every x86 CPU
-   (software replacements, at most 2.4 ulp of the 64-bit mantissa; see README). */
+   Like opusenc, the default encoder uses rcpps/rsqrtps and the x87 transcendental
+   instructions, whose results differ between CPU makers, so its output differs between
+   Intel and AMD. Define FLAPUS_PORTABLE_MATH for output that is the same on every x86
+   CPU: Intel's rcpps/rsqrtps from tables, and software replacements for the x87
+   instructions (at most 2.4 ulp of the 64-bit mantissa); see README. */
 #if !defined(FLAPUS_NO_ENCODER) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
 #define FLAPUS_HAVE_ENCODER 1
 #endif

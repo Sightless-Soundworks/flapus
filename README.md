@@ -112,20 +112,34 @@ byte-identical to opusenc's from the first audio page on. Only the tags page dif
 because the vendor string and `ENCODER` comment name flapus. Same input, same bytes,
 on the same kind of CPU.
 
-**Not across CPU vendors.** Like the reference opusenc (through MinGW's libm), the
-encoder uses the x87 transcendental instructions `fsin`, `fcos`, `fyl2x`, `fyl2xp1`
-and `f2xm1`. Only the basic operations and `fsqrt` are exact in IEEE terms; the last
-bit of the others is up to the CPU. A probe over 20000 fixed inputs gave different
-results for all five on an AMD EPYC 7763 and an Intel Core i7-13700K, and flapus then
-produced different audio packets on the two. opusenc's x87 build is not reproducible
-across vendors either. The bit-exactness above was verified on Intel (3179 of 3179
-files of a speech corpus).
+**Not across CPU vendors.** Like the reference opusenc, the default encoder uses two
+kinds of instructions whose results are up to the CPU:
+
+- `rcpps` and `rsqrtps` in the CELT PVQ search (as opusenc's `op_pvq_search_sse2`).
+  They are approximations with 12 significant bits, and AMD's bits differ from
+  Intel's. These are what changed the output: the default build wrote different audio
+  packets on an AMD EPYC 7763 than on an Intel Core i7-13700K for 2982 of the 3179
+  files of a speech corpus.
+- The x87 transcendental instructions `fsin`, `fcos`, `fyl2x`, `fyl2xp1` and `f2xm1`
+  (through MinGW's libm in opusenc). Only the basic operations and `fsqrt` are exact
+  in IEEE terms. A probe over 20000 fixed inputs gave different results for all five
+  on the two CPUs, but on that corpus it did not change a single packet.
+
+opusenc's x87 build is not reproducible across vendors either. The bit-exactness above
+was verified on Intel (3179 of 3179 files).
 
 **`FLAPUS_PORTABLE_MATH`** makes the encoder the same on every x86 CPU. Define it before
-the implementation, and those instructions (plus `fpatan` inside MinGW's `acosl`) are
-replaced by functions that only use operations IEEE 754 defines exactly: +, -, *, / and
-`fsqrt` on long double, and exact exponent manipulation. Measured against 50-digit
-reference values, 4000 inputs per function:
+the implementation, and:
+
+- `rcpps`/`rsqrtps` come from Intel's values in two tables of 2048 entries
+  (`src/enc_rcp_tables.c`). On the Intel CPU, `rcpps` depends only on the top 11
+  mantissa bits of its input and `rsqrtps` on the top 10 plus the exponent parity.
+  `tools/gen_rcp.c` builds the tables there and checks the emulation against the
+  hardware for all 2^32 inputs of both instructions.
+- The x87 transcendentals (plus `fpatan` inside MinGW's `acosl`) are replaced by
+  functions that only use operations IEEE 754 defines exactly: +, -, *, / and `fsqrt`
+  on long double, and exact exponent manipulation. Measured against 50-digit
+  reference values, 4000 inputs per function:
 
 | Function | Portable, max error | x87 on Intel, max error |
 |----------|--------------------:|------------------------:|
@@ -137,11 +151,13 @@ reference values, 4000 inputs per function:
 | acos     | 1.93 ulp | 152 ulp |
 
 (ulp of the 64-bit mantissa.) The results are rounded to double or float before the
-encoder uses them, so the difference rarely shows: on the 3179-file corpus the portable
-build wrote byte-identical files to the default build on Intel, and so to opusenc. The
-default build on the AMD runner differed in 2982 of them. Other material can take a
-different decision in a rare frame, so the portable build is not guaranteed to be
-bit-identical to opusenc; it is guaranteed to give the same bytes on every CPU.
+encoder uses them, so the difference rarely shows.
+
+On the 3179-file corpus the portable build wrote byte-identical files to the default
+build on Intel, and so to opusenc on Intel, and it wrote the same files on the AMD
+runner as on the Intel machine. The PVQ part is exact by construction; the x87 part is
+measured, so other material can in a rare frame take another decision than opusenc.
+What is guaranteed is the same bytes on every CPU.
 
 Only the Opus encoder is covered. The Opus decoder and the FLAC encoder still call
 libm's `sin`, `cos` and `log`, so their output can still depend on the CPU.
@@ -308,6 +324,10 @@ in `PATH`).
 - `run_ref.sh` / `run_dec.sh` re-encode and decode the original reference files
   (`mand*.opus`, `mand*.wav`), which must be in the folder above the project.
 - `test/api`: a two-file program using only the public API.
+- `test/rcp_tables.c`: the `rcpps`/`rsqrtps` tables of `FLAPUS_PORTABLE_MATH`, on any
+  CPU: both ends of every table block within Intel's bound (relative error at most
+  1.5*2^-12), plus hardware values and special cases. The full check against the
+  hardware, all 2^32 inputs, is in `tools/gen_rcp.c` and needs an Intel CPU.
 - `test/portable_math.c`: the `FLAPUS_PORTABLE_MATH` functions against exact values
   (60-digit decimal arithmetic) at 20 points, limit 3 ulp. Passes at -O0, -O2 and -Oz;
   cutting one series short makes it fail, as it should.

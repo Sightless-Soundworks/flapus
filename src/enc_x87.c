@@ -24,8 +24,8 @@ static void fl_x87_leave(unsigned short old) { __asm__ volatile("fldcw %0" : : "
    The x87 transcendental instructions fsin, fcos, fyl2x, fyl2xp1, f2xm1 (and
    fpatan inside MinGW's acosl) are not exactly specified: their last bit is
    up to the CPU. Measured over 20000 fixed inputs, an Intel Core i7-13700K
-   and an AMD EPYC 7763 disagreed for all five, and the encoder then wrote
-   different packets on the two.
+   and an AMD EPYC 7763 disagreed for all five. (On a 3179-file speech corpus
+   that changed no packet; rcpps/rsqrtps did, see enc_bands.c.)
    With FLAPUS_PORTABLE_MATH they are replaced by the functions below, which
    only use the operations IEEE 754 defines exactly (+, -, *, /) on long
    double, plus exact exponent manipulation. The output is then the same on
