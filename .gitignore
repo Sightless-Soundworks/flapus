@@ -1,0 +1,8 @@
+# generated or local test material
+test/*.wav
+test/ext/
+test/out/
+test/flac_cases/
+test/*.opus
+test/grid.log
+*.o
