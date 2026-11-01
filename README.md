@@ -121,6 +121,31 @@ produced different audio packets on the two. opusenc's x87 build is not reproduc
 across vendors either. The bit-exactness above was verified on Intel (3179 of 3179
 files of a speech corpus).
 
+**`FLAPUS_PORTABLE_MATH`** makes the encoder the same on every x86 CPU. Define it before
+the implementation, and those instructions (plus `fpatan` inside MinGW's `acosl`) are
+replaced by functions that only use operations IEEE 754 defines exactly: +, -, *, / and
+`fsqrt` on long double, and exact exponent manipulation. Measured against 50-digit
+reference values, 4000 inputs per function:
+
+| Function | Portable, max error | x87 on Intel, max error |
+|----------|--------------------:|------------------------:|
+| ln       | 0.66 ulp | 0.76 ulp |
+| ln(1+x)  | 1.63 ulp | 0.81 ulp |
+| 2^x-1    | 2.36 ulp | 0.68 ulp |
+| sin (arguments up to ±400) | 1.60 ulp | 18794 ulp |
+| cos      | 1.76 ulp | 153 ulp |
+| acos     | 1.93 ulp | 152 ulp |
+
+(ulp of the 64-bit mantissa.) The results are rounded to double or float before the
+encoder uses them, so the difference rarely shows: on the 3179-file corpus the portable
+build wrote byte-identical files to the default build on Intel, and so to opusenc. The
+default build on the AMD runner differed in 2982 of them. Other material can take a
+different decision in a rare frame, so the portable build is not guaranteed to be
+bit-identical to opusenc; it is guaranteed to give the same bytes on every CPU.
+
+Only the Opus encoder is covered. The Opus decoder and the FLAC encoder still call
+libm's `sin`, `cos` and `log`, so their output can still depend on the CPU.
+
 ### FLAC compression
 
 The table compares file sizes with `flac -8 --no-padding --no-seektable` (flac 1.5.0) on
@@ -283,6 +308,9 @@ in `PATH`).
 - `run_ref.sh` / `run_dec.sh` re-encode and decode the original reference files
   (`mand*.opus`, `mand*.wav`), which must be in the folder above the project.
 - `test/api`: a two-file program using only the public API.
+- `test/portable_math.c`: the `FLAPUS_PORTABLE_MATH` functions against exact values
+  (60-digit decimal arithmetic) at 20 points, limit 3 ulp. Passes at -O0, -O2 and -Oz;
+  cutting one series short makes it fail, as it should.
 - `test/bitreader.c`: unary codes that end exactly on the last bit of a full 64-bit
   cache. Such a code used to shift the cache by 64 (undefined in C; on x86 the bit
   stayed put), which flipped a bit 64 positions later. A real FLAC file with a Rice

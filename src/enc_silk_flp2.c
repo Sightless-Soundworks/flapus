@@ -3,8 +3,12 @@
 /* MinGW log2l/exp2l/pow (x87). */
 static xf fl_m_log2l(xf x) {
    xf r, xm1 = x-1.0L;
+#ifdef FLAPUS_PORTABLE_MATH
+   r = fabsl(xm1) > XF(0.29) ? fl_p_log2(x) : fl_p_ln1p(xm1)*FL_P_LOG2E;
+#else
    if (fabsl(xm1) > XF(0.29)) __asm__("fld1\n\tfxch\n\tfyl2x" : "=t"(r) : "0"(x) : "st(1)");
    else __asm__("fld1\n\tfxch\n\tfyl2xp1" : "=t"(r) : "0"(xm1) : "st(1)");
+#endif
    return r;
 }
 static xf fl_m_exp2l(xf x) {
@@ -16,7 +20,11 @@ static xf fl_m_exp2l(xf x) {
    __asm__ volatile("frndint" : "=t"(i) : "0"(x));
    __asm__ volatile("fldcw %0" : : "m"(cw0));
    x -= i;
+#ifdef FLAPUS_PORTABLE_MATH
+   x = fl_p_f2xm1(x);
+#else
    __asm__("f2xm1" : "+t"(x));
+#endif
    x += 1;
    __asm__("fscale" : "=t"(r) : "0"(x), "u"(i));
    return r;
