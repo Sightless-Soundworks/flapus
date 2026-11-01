@@ -109,8 +109,17 @@ These have the same meaning and defaults as in `opusenc`: `--bitrate N` (kbit/s)
 
 `--padding 0 --serial 1` with the same options as opusenc gives a file that is
 byte-identical to opusenc's from the first audio page on. Only the tags page differs,
-because the vendor string and `ENCODER` comment name flapus. That makes the output
-reproducible: same input, same bytes, on any CPU.
+because the vendor string and `ENCODER` comment name flapus. Same input, same bytes,
+on the same kind of CPU.
+
+**Not across CPU vendors.** Like the reference opusenc (through MinGW's libm), the
+encoder uses the x87 transcendental instructions `fsin`, `fcos`, `fyl2x`, `fyl2xp1`
+and `f2xm1`. Only the basic operations and `fsqrt` are exact in IEEE terms; the last
+bit of the others is up to the CPU. A probe over 20000 fixed inputs gave different
+results for all five on an AMD EPYC 7763 and an Intel Core i7-13700K, and flapus then
+produced different audio packets on the two. opusenc's x87 build is not reproducible
+across vendors either. The bit-exactness above was verified on Intel (3179 of 3179
+files of a speech corpus).
 
 ### FLAC compression
 
