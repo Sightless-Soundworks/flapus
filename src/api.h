@@ -65,6 +65,8 @@ typedef struct {
    int no_phase_inv;   /* 1 = disable intensity stereo phase inversion */
    int downmix;        /* 0 = auto (opusenc rule), 1 = mono, 2 = stereo */
    const char *comment_options; /* value of the ENCODER_OPTIONS tag (NULL = none) */
+   int padding;        /* free bytes reserved after the Opus tags: 512 (default, as opusenc), 0 = none */
+   long long serialno; /* Ogg serial number of Opus output, 0..4294967295; -1 (default) = from rand() */
    /* Progress during fl_convert_file (NULL = none). done: 0..1 (-1 if the length is unknown),
       ratio: output size / input PCM size so far (-1 for WAV output). Called with done = 1
       when the conversion has finished. */
@@ -77,7 +79,10 @@ FLDEF void fl_options_init(fl_options *opt);
 
 /* Converts between any of the formats. The input format is detected from the content.
    Opus output is bit-exact with opusenc for the same samples, Opus input is decoded
-   like opusdec (16-bit, original rate), FLAC output is lossless. opt may be NULL. */
+   like opusdec (16-bit, original rate), FLAC output is lossless. opt may be NULL.
+   Paths: on Windows a path that is valid UTF-8 is opened with _wfopen, so file names
+   outside the ANSI code page work. Any other path goes to fopen unchanged. The same
+   applies to every function below that takes a path. */
 FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_options *opt);
 
 /* Decoded audio in memory: interleaved samples in WAV/FLAC channel order, right-justified
@@ -123,7 +128,12 @@ FLDEF int fl_opus_ms_decode_float(fl_opus_ms_decoder *dec, const unsigned char *
 /* ---- Opus encoder ----
    The bit-exact encoder needs GCC or Clang on x86/x86-64 (80-bit long double and
    x87 inline assembly). Elsewhere, or with FLAPUS_NO_ENCODER, it is left out (FLAC and
-   all decoders are portable C99). */
+   all decoders are portable C99).
+   On 32-bit x86, float and double arithmetic must use SSE2 (FLT_EVAL_METHOD 0, the
+   default of w64devkit 2.11 and later). With x87 arithmetic (-mfpmath=387, the default
+   of older 32-bit toolchains) some files encode differently from opusenc, so the
+   implementation stops with an error instead. Build with -msse2 -mfpmath=sse, or
+   define FLAPUS_NO_ENCODER. */
 #if !defined(FLAPUS_NO_ENCODER) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
 #define FLAPUS_HAVE_ENCODER 1
 #endif
@@ -156,6 +166,9 @@ FLDEF int fl_opus_encode_float(fl_opus_encoder *enc, const float *pcm, unsigned 
 #ifdef FLAPUS_IMPLEMENTATION
 #ifndef FLAPUS_IMPLEMENTATION_DONE
 #define FLAPUS_IMPLEMENTATION_DONE
+#if defined(FLAPUS_HAVE_ENCODER) && defined(__FLT_EVAL_METHOD__) && __FLT_EVAL_METHOD__ != 0
+#error "flapus: the Opus encoder is only bit-exact with SSE2 float arithmetic. Compile with -msse2 -mfpmath=sse, or define FLAPUS_NO_ENCODER."
+#endif
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC optimize ("fp-contract=off")
 #elif defined(__clang__)

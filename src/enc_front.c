@@ -627,8 +627,8 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
    fl_msenc_setup(e->st, opt, IMAX(8, IMIN(24, f->container_bits)));
    e->frame_size_request = fl_msenc_get_duration(e->st);
    e->frame_size = fl_frame_samples(e->frame_size_request);
-   e->ogg.out = fopen(o->path, "wb");
-   e->ogg.serialno = rand();
+   e->ogg.out = fl_fopen(o->path, "wb");
+   e->ogg.serialno = opt->serialno >= 0 ? (fl_i32)(fl_u32)opt->serialno : rand();
    e->ogg.muxing_delay = 48000;
    if (!e->ogg.out || !e->buffer || !e->packet || !e->st) {
       ret = e->ogg.out ? FL_ERR_ALLOC : FL_ERR_IO;
@@ -675,7 +675,9 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
       for (i = 0; i < f->ntags; i++)
          if (!fl_opus_skip_tag(f->tags[i])) fl_put_comment(&tags, &tlen, f->tags[i]);
       if (r128[0]) fl_put_comment(&tags, &tlen, r128);
-      padded = (int)((tlen+512+255)/255*255-1);
+      /* opusenc --padding: reserve at least that many bytes and fill up the last
+         Ogg segment; with 0 the tags are written without any padding */
+      padded = opt->padding > 0 ? (int)((tlen+(size_t)opt->padding+255)/255*255-1) : (int)tlen;
       tags = (unsigned char*)realloc(tags, padded);
       memset(tags+tlen, 0, padded-tlen);
       fl_oggp_commit(&e->ogg, tags, padded, 0, 0);

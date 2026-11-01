@@ -39,6 +39,8 @@ static void usage(void) {
       "      --downmix-mono   downmix to mono\n"
       "      --downmix-stereo downmix to stereo (if more than 2 channels)\n"
       "      --no-phase-inv   disable phase inversion for intensity stereo\n"
+      "      --padding N      free bytes after the tags (default 512, 0 = none)\n"
+      "      --serial N       Ogg serial number (default: random)\n"
 #endif
       );
 }
@@ -180,6 +182,26 @@ int main(int argc, char **argv) {
       } else if (strcmp(a, "--downmix-mono") == 0 || strcmp(a, "--downmix-stereo") == 0) {
          opt.downmix = a[10] == 'm' ? 1 : 2;
          note(opts, sizeof(opts), a, NULL);
+      } else if (strcmp(a, "--padding") == 0 && v) {
+         char *end;
+         long n = strtol(v, &end, 10);
+         if (*end || n < 0 || n > 65536) {
+            usage();
+            return 1;
+         }
+         opt.padding = (int)n;
+         note(opts, sizeof(opts), a, v);
+         i++;
+      } else if (strcmp(a, "--serial") == 0 && v) {
+         char *end;
+         long long n = strtoll(v, &end, 10);
+         if (*end || n < 0 || n > 4294967295LL) {
+            usage();
+            return 1;
+         }
+         opt.serialno = n;
+         note(opts, sizeof(opts), a, v);
+         i++;
       } else {
          usage();
          return 1;

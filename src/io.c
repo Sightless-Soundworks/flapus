@@ -2,7 +2,7 @@
 
 /* Reads a whole file into memory. */
 static unsigned char *fl_read_file(const char *path, long *size) {
-   FILE *f = fopen(path, "rb");
+   FILE *f = fl_fopen(path, "rb");
    unsigned char *buf;
    long n;
    if (!f) return NULL;
@@ -274,7 +274,7 @@ static int fl_run_wav(const char *path, fl_sink *sink) {
    int have_fmt = 0, ret, bytes = 0, C = 0, shift = 0, unsigned8 = 0;
    fl_i64 left = -1;
    fl_format f;
-   FILE *in = fopen(path, "rb");
+   FILE *in = fl_fopen(path, "rb");
    fl_format_init(&f);
    if (!in) return FL_ERR_IO;
    ret = FL_ERR_BAD_FILE;
@@ -476,7 +476,7 @@ static fl_sink *fl_wav_sink_create(const char *path, int *err) {
       *err = FL_ERR_ALLOC;
       return NULL;
    }
-   if (!(w->f = fopen(path, "wb"))) {
+   if (!(w->f = fl_fopen(path, "wb"))) {
       free(w);
       *err = FL_ERR_IO;
       return NULL;

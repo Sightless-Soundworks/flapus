@@ -9,13 +9,15 @@ FLDEF void fl_options_init(fl_options *opt) {
    opt->frame_ms_x10 = 200;
    opt->vbr = 1;
    opt->quality = -1;
+   opt->padding = 512;
+   opt->serialno = -1;
 }
 
 /* Detects the input format from the first bytes of the file. */
 static int fl_detect_format(const char *path) {
    unsigned char b[4096];
    size_t n, i;
-   FILE *f = fopen(path, "rb");
+   FILE *f = fl_fopen(path, "rb");
    if (!f) return FL_ERR_IO;
    n = fread(b, 1, sizeof(b), f);
    fclose(f);
@@ -143,13 +145,13 @@ FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_op
    if (out_fmt < 0) return out_fmt;
    if (!(sink = fl_create_sink(out_fmt, out_path, &opt, &err))) return err;
    if (!(sink = fl_progress_wrap(sink, &opt, &err))) {
-      remove(out_path);
+      fl_remove(out_path);
       return err;
    }
    ret = fl_run_source(in_fmt, in_path, &opt, sink);
    sink->destroy(sink);
    /* a damaged FLAC input still gives complete output; anything else is removed */
-   if (ret != FL_OK && ret != FL_ERR_CHECKSUM) remove(out_path);
+   if (ret != FL_OK && ret != FL_ERR_CHECKSUM) fl_remove(out_path);
    return ret;
 }
 
@@ -199,7 +201,7 @@ FLDEF int fl_write_audio(const char *path, const fl_audio *a, const fl_options *
    }
    if (ret == FL_OK) ret = sink->finish(sink);
    sink->destroy(sink);
-   if (ret != FL_OK) remove(path);
+   if (ret != FL_OK) fl_remove(path);
    return ret;
 }
 

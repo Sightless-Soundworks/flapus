@@ -37,6 +37,11 @@ gcc -O2 -ffp-contract=off -o flapus.exe flapus_cli.c
 
 - `-ffp-contract=off` is required: it disables fused multiply-add. Never use
   `-ffast-math`. The header also sets this with a pragma.
+- On 32-bit x86, float arithmetic must use SSE2, which is the default of w64devkit 2.11
+  and later. With x87 arithmetic (`-mfpmath=387`, the default of older 32-bit
+  toolchains) 38 of 170 test files encoded differently from opusenc, so the header now
+  stops with an error. Add `-msse2 -mfpmath=sse`, or define `FLAPUS_NO_ENCODER` if you
+  only need the decoders.
 - On Linux or macOS, add `-pthread -lm`.
 - After changing anything in `src/`, regenerate the header first:
 
@@ -99,7 +104,13 @@ Decoding shows only the percentage and ends with `done`.
 These have the same meaning and defaults as in `opusenc`: `--bitrate N` (kbit/s),
 `--quality N`, `--vbr`, `--cvbr`, `--hard-cbr`, `--music`, `--speech`, `--comp N`,
 `--framesize N` (2.5 to 120 ms), `--expect-loss N`, `--downmix-mono`,
-`--downmix-stereo`, `--no-phase-inv`.
+`--downmix-stereo`, `--no-phase-inv`, `--padding N` (free bytes after the tags, default
+512, 0 = none) and `--serial N` (Ogg serial number, default random).
+
+`--padding 0 --serial 1` with the same options as opusenc gives a file that is
+byte-identical to opusenc's from the first audio page on. Only the tags page differs,
+because the vendor string and `ENCODER` comment name flapus. That makes the output
+reproducible: same input, same bytes, on any CPU.
 
 ### FLAC compression
 
@@ -177,6 +188,10 @@ int got = fl_opus_ms_decode_float(dec, packet, len, out, 5760); /* len 0 = packe
 All functions return a negative `FL_ERR_*` code on error. See the comments in `src/api.h`
 (the top of `flapus.h`) for the full API.
 
+Paths are UTF-8 on Windows: a path that is valid UTF-8 is opened with `_wfopen`, so
+file names outside the ANSI code page work. Any other path, such as an ANSI `argv`
+string, goes to `fopen` unchanged.
+
 ### Platforms
 
 - **FLAC and all decoders**: portable C99. Threads use the Win32 API on Windows and
@@ -225,7 +240,7 @@ All functions return a negative `FL_ERR_*` code on error. See the comments in `s
 - AIFF and raw input.
 - Ogg FLAC output.
 - Ambisonics Opus encoding and Opus mapping family 3 decoding.
-- opusenc metadata options (title, pictures, padding).
+- opusenc metadata options (title, pictures).
 
 ## Verification
 

@@ -65,6 +65,8 @@ typedef struct {
    int no_phase_inv;   /* 1 = disable intensity stereo phase inversion */
    int downmix;        /* 0 = auto (opusenc rule), 1 = mono, 2 = stereo */
    const char *comment_options; /* value of the ENCODER_OPTIONS tag (NULL = none) */
+   int padding;        /* free bytes reserved after the Opus tags: 512 (default, as opusenc), 0 = none */
+   long long serialno; /* Ogg serial number of Opus output, 0..4294967295; -1 (default) = from rand() */
    /* Progress during fl_convert_file (NULL = none). done: 0..1 (-1 if the length is unknown),
       ratio: output size / input PCM size so far (-1 for WAV output). Called with done = 1
       when the conversion has finished. */
@@ -77,7 +79,10 @@ FLDEF void fl_options_init(fl_options *opt);
 
 /* Converts between any of the formats. The input format is detected from the content.
    Opus output is bit-exact with opusenc for the same samples, Opus input is decoded
-   like opusdec (16-bit, original rate), FLAC output is lossless. opt may be NULL. */
+   like opusdec (16-bit, original rate), FLAC output is lossless. opt may be NULL.
+   Paths: on Windows a path that is valid UTF-8 is opened with _wfopen, so file names
+   outside the ANSI code page work. Any other path goes to fopen unchanged. The same
+   applies to every function below that takes a path. */
 FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_options *opt);
 
 /* Decoded audio in memory: interleaved samples in WAV/FLAC channel order, right-justified
@@ -123,7 +128,12 @@ FLDEF int fl_opus_ms_decode_float(fl_opus_ms_decoder *dec, const unsigned char *
 /* ---- Opus encoder ----
    The bit-exact encoder needs GCC or Clang on x86/x86-64 (80-bit long double and
    x87 inline assembly). Elsewhere, or with FLAPUS_NO_ENCODER, it is left out (FLAC and
-   all decoders are portable C99). */
+   all decoders are portable C99).
+   On 32-bit x86, float and double arithmetic must use SSE2 (FLT_EVAL_METHOD 0, the
+   default of w64devkit 2.11 and later). With x87 arithmetic (-mfpmath=387, the default
+   of older 32-bit toolchains) some files encode differently from opusenc, so the
+   implementation stops with an error instead. Build with -msse2 -mfpmath=sse, or
+   define FLAPUS_NO_ENCODER. */
 #if !defined(FLAPUS_NO_ENCODER) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
 #define FLAPUS_HAVE_ENCODER 1
 #endif
@@ -156,6 +166,9 @@ FLDEF int fl_opus_encode_float(fl_opus_encoder *enc, const float *pcm, unsigned 
 #ifdef FLAPUS_IMPLEMENTATION
 #ifndef FLAPUS_IMPLEMENTATION_DONE
 #define FLAPUS_IMPLEMENTATION_DONE
+#if defined(FLAPUS_HAVE_ENCODER) && defined(__FLT_EVAL_METHOD__) && __FLT_EVAL_METHOD__ != 0
+#error "flapus: the Opus encoder is only bit-exact with SSE2 float arithmetic. Compile with -msse2 -mfpmath=sse, or define FLAPUS_NO_ENCODER."
+#endif
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC optimize ("fp-contract=off")
 #elif defined(__clang__)
@@ -171,6 +184,15 @@ FLDEF int fl_opus_encode_float(fl_opus_encoder *enc, const float *pcm, unsigned 
 #include <stdio.h>
 #include <math.h>
 #include <limits.h>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 typedef signed char fl_i8;
 typedef unsigned char fl_u8;
@@ -189,6 +211,49 @@ typedef struct { float r, i; } fl_cpx;
 #define FL_FRAC_MUL16(a,b) ((16384+((fl_i32)(fl_i16)(a)*(fl_i16)(b)))>>15)
 #define FL_CLEAR(p,n) memset((p), 0, (n)*sizeof(*(p)))
 #define FL_COPY(d,s,n) memmove((d), (s), (n)*sizeof(*(d)))
+
+/* UTF-8 paths on Windows. A path that is valid UTF-8 is opened with the wide API, so
+   names outside the ANSI code page work. Anything else (a path in the ANSI code page,
+   as argv gives it) goes to fopen/remove unchanged, as before. */
+#ifdef _WIN32
+/* The path as UTF-16 (free it), or NULL if it is not valid UTF-8. */
+static wchar_t *fl_widen(const char *path) {
+   int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+   wchar_t *w;
+   if (n <= 0 || !(w = (wchar_t*)malloc(sizeof(wchar_t)*(size_t)n))) return NULL;
+   MultiByteToWideChar(CP_UTF8, 0, path, -1, w, n);
+   return w;
+}
+#endif
+
+static FILE *fl_fopen(const char *path, const char *mode) {
+#ifdef _WIN32
+   wchar_t *w = fl_widen(path);
+   if (w) {
+      wchar_t wmode[8];
+      FILE *f;
+      int i;
+      for (i = 0; mode[i] && i < 7; i++) wmode[i] = (wchar_t)(unsigned char)mode[i];
+      wmode[i] = 0;
+      f = _wfopen(w, wmode);
+      free(w);
+      return f;
+   }
+#endif
+   return fopen(path, mode);
+}
+
+static int fl_remove(const char *path) {
+#ifdef _WIN32
+   wchar_t *w = fl_widen(path);
+   if (w) {
+      int r = _wremove(w);
+      free(w);
+      return r;
+   }
+#endif
+   return remove(path);
+}
 
 /* Number of bits needed to represent x (0 for x==0). */
 static int fl_ilog(fl_u32 x) {
@@ -7333,7 +7398,7 @@ FLDEF int fl_opus_ms_decode_float(fl_opus_ms_decoder *st, const unsigned char *d
 
 /* Reads a whole file into memory. */
 static unsigned char *fl_read_file(const char *path, long *size) {
-   FILE *f = fopen(path, "rb");
+   FILE *f = fl_fopen(path, "rb");
    unsigned char *buf;
    long n;
    if (!f) return NULL;
@@ -7605,7 +7670,7 @@ static int fl_run_wav(const char *path, fl_sink *sink) {
    int have_fmt = 0, ret, bytes = 0, C = 0, shift = 0, unsigned8 = 0;
    fl_i64 left = -1;
    fl_format f;
-   FILE *in = fopen(path, "rb");
+   FILE *in = fl_fopen(path, "rb");
    fl_format_init(&f);
    if (!in) return FL_ERR_IO;
    ret = FL_ERR_BAD_FILE;
@@ -7807,7 +7872,7 @@ static fl_sink *fl_wav_sink_create(const char *path, int *err) {
       *err = FL_ERR_ALLOC;
       return NULL;
    }
-   if (!(w->f = fopen(path, "wb"))) {
+   if (!(w->f = fl_fopen(path, "wb"))) {
       free(w);
       *err = FL_ERR_IO;
       return NULL;
@@ -8990,7 +9055,7 @@ static int fl_run_flac(const char *path, fl_sink *sink) {
    fl_format_init(&f);
    fl_flac_crc_init();
    fl_md5_init(&md5);
-   if (!(in.f = fopen(path, "rb"))) return FL_ERR_IO;
+   if (!(in.f = fl_fopen(path, "rb"))) return FL_ERR_IO;
    if (fl_inbuf_need(&in, 1<<16) < 0) {
       ret = FL_ERR_ALLOC;
       goto done;
@@ -10750,7 +10815,7 @@ static fl_sink *fl_flac_sink_create(const char *path, const fl_options *opt, int
    s->base.write = fl_flacenc_write;
    s->base.finish = fl_flacenc_finish;
    s->base.destroy = fl_flacenc_destroy;
-   if (!(s->f = fopen(path, "wb"))) {
+   if (!(s->f = fl_fopen(path, "wb"))) {
       free(s);
       *err = FL_ERR_IO;
       return NULL;
@@ -15189,8 +15254,8 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
    fl_msenc_setup(e->st, opt, IMAX(8, IMIN(24, f->container_bits)));
    e->frame_size_request = fl_msenc_get_duration(e->st);
    e->frame_size = fl_frame_samples(e->frame_size_request);
-   e->ogg.out = fopen(o->path, "wb");
-   e->ogg.serialno = rand();
+   e->ogg.out = fl_fopen(o->path, "wb");
+   e->ogg.serialno = opt->serialno >= 0 ? (fl_i32)(fl_u32)opt->serialno : rand();
    e->ogg.muxing_delay = 48000;
    if (!e->ogg.out || !e->buffer || !e->packet || !e->st) {
       ret = e->ogg.out ? FL_ERR_ALLOC : FL_ERR_IO;
@@ -15237,7 +15302,9 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
       for (i = 0; i < f->ntags; i++)
          if (!fl_opus_skip_tag(f->tags[i])) fl_put_comment(&tags, &tlen, f->tags[i]);
       if (r128[0]) fl_put_comment(&tags, &tlen, r128);
-      padded = (int)((tlen+512+255)/255*255-1);
+      /* opusenc --padding: reserve at least that many bytes and fill up the last
+         Ogg segment; with 0 the tags are written without any padding */
+      padded = opt->padding > 0 ? (int)((tlen+(size_t)opt->padding+255)/255*255-1) : (int)tlen;
       tags = (unsigned char*)realloc(tags, padded);
       memset(tags+tlen, 0, padded-tlen);
       fl_oggp_commit(&e->ogg, tags, padded, 0, 0);
@@ -22395,13 +22462,15 @@ FLDEF void fl_options_init(fl_options *opt) {
    opt->frame_ms_x10 = 200;
    opt->vbr = 1;
    opt->quality = -1;
+   opt->padding = 512;
+   opt->serialno = -1;
 }
 
 /* Detects the input format from the first bytes of the file. */
 static int fl_detect_format(const char *path) {
    unsigned char b[4096];
    size_t n, i;
-   FILE *f = fopen(path, "rb");
+   FILE *f = fl_fopen(path, "rb");
    if (!f) return FL_ERR_IO;
    n = fread(b, 1, sizeof(b), f);
    fclose(f);
@@ -22529,13 +22598,13 @@ FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_op
    if (out_fmt < 0) return out_fmt;
    if (!(sink = fl_create_sink(out_fmt, out_path, &opt, &err))) return err;
    if (!(sink = fl_progress_wrap(sink, &opt, &err))) {
-      remove(out_path);
+      fl_remove(out_path);
       return err;
    }
    ret = fl_run_source(in_fmt, in_path, &opt, sink);
    sink->destroy(sink);
    /* a damaged FLAC input still gives complete output; anything else is removed */
-   if (ret != FL_OK && ret != FL_ERR_CHECKSUM) remove(out_path);
+   if (ret != FL_OK && ret != FL_ERR_CHECKSUM) fl_remove(out_path);
    return ret;
 }
 
@@ -22585,7 +22654,7 @@ FLDEF int fl_write_audio(const char *path, const fl_audio *a, const fl_options *
    }
    if (ret == FL_OK) ret = sink->finish(sink);
    sink->destroy(sink);
-   if (ret != FL_OK) remove(path);
+   if (ret != FL_OK) fl_remove(path);
    return ret;
 }
 

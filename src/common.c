@@ -4,6 +4,15 @@
 #include <stdio.h>
 #include <math.h>
 #include <limits.h>
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 typedef signed char fl_i8;
 typedef unsigned char fl_u8;
@@ -22,6 +31,49 @@ typedef struct { float r, i; } fl_cpx;
 #define FL_FRAC_MUL16(a,b) ((16384+((fl_i32)(fl_i16)(a)*(fl_i16)(b)))>>15)
 #define FL_CLEAR(p,n) memset((p), 0, (n)*sizeof(*(p)))
 #define FL_COPY(d,s,n) memmove((d), (s), (n)*sizeof(*(d)))
+
+/* UTF-8 paths on Windows. A path that is valid UTF-8 is opened with the wide API, so
+   names outside the ANSI code page work. Anything else (a path in the ANSI code page,
+   as argv gives it) goes to fopen/remove unchanged, as before. */
+#ifdef _WIN32
+/* The path as UTF-16 (free it), or NULL if it is not valid UTF-8. */
+static wchar_t *fl_widen(const char *path) {
+   int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+   wchar_t *w;
+   if (n <= 0 || !(w = (wchar_t*)malloc(sizeof(wchar_t)*(size_t)n))) return NULL;
+   MultiByteToWideChar(CP_UTF8, 0, path, -1, w, n);
+   return w;
+}
+#endif
+
+static FILE *fl_fopen(const char *path, const char *mode) {
+#ifdef _WIN32
+   wchar_t *w = fl_widen(path);
+   if (w) {
+      wchar_t wmode[8];
+      FILE *f;
+      int i;
+      for (i = 0; mode[i] && i < 7; i++) wmode[i] = (wchar_t)(unsigned char)mode[i];
+      wmode[i] = 0;
+      f = _wfopen(w, wmode);
+      free(w);
+      return f;
+   }
+#endif
+   return fopen(path, mode);
+}
+
+static int fl_remove(const char *path) {
+#ifdef _WIN32
+   wchar_t *w = fl_widen(path);
+   if (w) {
+      int r = _wremove(w);
+      free(w);
+      return r;
+   }
+#endif
+   return remove(path);
+}
 
 /* Number of bits needed to represent x (0 for x==0). */
 static int fl_ilog(fl_u32 x) {

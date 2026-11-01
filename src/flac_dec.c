@@ -468,7 +468,7 @@ static int fl_run_flac(const char *path, fl_sink *sink) {
    fl_format_init(&f);
    fl_flac_crc_init();
    fl_md5_init(&md5);
-   if (!(in.f = fopen(path, "rb"))) return FL_ERR_IO;
+   if (!(in.f = fl_fopen(path, "rb"))) return FL_ERR_IO;
    if (fl_inbuf_need(&in, 1<<16) < 0) {
       ret = FL_ERR_ALLOC;
       goto done;

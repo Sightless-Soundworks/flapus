@@ -1679,7 +1679,7 @@ static fl_sink *fl_flac_sink_create(const char *path, const fl_options *opt, int
    s->base.write = fl_flacenc_write;
    s->base.finish = fl_flacenc_finish;
    s->base.destroy = fl_flacenc_destroy;
-   if (!(s->f = fopen(path, "wb"))) {
+   if (!(s->f = fl_fopen(path, "wb"))) {
       free(s);
       *err = FL_ERR_IO;
       return NULL;
