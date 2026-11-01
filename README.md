@@ -274,4 +274,10 @@ in `PATH`).
 - `run_ref.sh` / `run_dec.sh` re-encode and decode the original reference files
   (`mand*.opus`, `mand*.wav`), which must be in the folder above the project.
 - `test/api`: a two-file program using only the public API.
+- `test/bitreader.c`: unary codes that end exactly on the last bit of a full 64-bit
+  cache. Such a code used to shift the cache by 64 (undefined in C; on x86 the bit
+  stayed put), which flipped a bit 64 positions later. A real FLAC file with a Rice
+  parameter of 3 and quotients up to 76 decoded wrongly because of it, and its MD5
+  check failed. libFLAC decodes the same file correctly. On a 3179-file speech
+  corpus that one file was the only one affected.
 - The 32-bit build gives the same Opus packets and the same FLAC files.

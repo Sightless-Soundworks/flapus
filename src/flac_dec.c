@@ -118,7 +118,12 @@ static fl_i64 fl_br_unary(fl_br *b) {
       if (b->cache) {
          int z = fl_clz64(b->cache);
          if (z < b->n) {
-            b->cache <<= z+1;
+            /* Two shifts, not "<<= z+1": when the one bit is the last of a full
+               64-bit cache, z+1 is 64, which is undefined in C. x86 masks the
+               count to 0 and leaves the bit in place; the next fill then ORs data
+               over it and flips a bit 64 positions on. Seen in a real file with
+               a Rice parameter of 3 and quotients up to 76. */
+            b->cache = (b->cache<<z)<<1;
             b->n -= z+1;
             return q+z;
          }
