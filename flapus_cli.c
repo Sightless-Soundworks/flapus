@@ -15,6 +15,7 @@ static void usage(void) {
       "General:\n"
       "      --format F       output format: wav, flac or opus (overrides the extension)\n"
       "  -s, --silent         no progress display\n"
+      "  -V, --version        show the version and how this build was made\n"
       "      --delete-input-file  delete the input file after a successful conversion\n"
       "FLAC output:\n"
       "      --level N        0 (fastest) .. 8 (smallest, default)\n"
@@ -43,6 +44,20 @@ static void usage(void) {
       "      --serial N       Ogg serial number (default: random)\n"
 #endif
       );
+}
+
+/* --version: the version, how the Opus encoder was built, and the target. */
+static void version(void) {
+   printf("flapus %s\n", FLAPUS_VERSION);
+#if defined(FLAPUS_HAVE_ENCODER) && defined(FLAPUS_PORTABLE_MATH)
+   printf("Opus encoder: portable math (the same output on every x86 CPU)\n");
+#elif defined(FLAPUS_HAVE_ENCODER)
+   printf("Opus encoder: CPU instructions as opusenc (output can differ between Intel and AMD)\n");
+#else
+   printf("Opus encoder: not included\n");
+#endif
+   printf("%s, GCC %d.%d.%d\n", sizeof(void*) == 8 ? "x86-64" : "x86 (32-bit)",
+          __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
 }
 
 static const char *error_text(int err) {
@@ -104,6 +119,10 @@ int main(int argc, char **argv) {
    static char opts[256];
    progress_state ps;
    int i, ret, last = argc-2, silent = 0, delete_input = 0;
+   if (argc == 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)) {
+      version();
+      return 0;
+   }
    if (argc < 3) {
       usage();
       return 1;

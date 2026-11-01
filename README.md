@@ -49,6 +49,33 @@ gcc -O2 -ffp-contract=off -o flapus.exe flapus_cli.c
 python tools/amalgamate.py
 ```
 
+## Official builds
+
+[`.github/workflows/build.yml`](.github/workflows/build.yml) builds `flapus-x86.exe`
+(32-bit) and `flapus-x64.exe` (64-bit) for Windows on every push. Each is a single
+file that needs no DLLs beyond Windows' own.
+
+- **Toolchain:** w64devkit 2.11.0, pinned by sha256.
+- **Encoder:** built with `FLAPUS_PORTABLE_MATH`, so the Opus output is the same on
+  every x86 CPU.
+- **Checks:** the workflow verifies that `flapus.h` matches `src/` and runs the four
+  tests. It encodes deterministic test signals (`tools/testsignal.py`) with both
+  builds and fails if the Opus files differ.
+- **Release:** a tag `v*` publishes both exes as a release, with `SHA256SUMS`.
+
+The builds are reproducible: the same commit and devkit give the same exe, byte for
+byte, on any machine. To check a release, build it in the devkit shell and compare
+with `SHA256SUMS`:
+
+```bash
+gcc -O2 -ffp-contract=off -msse2 -mfpmath=sse -DFLAPUS_PORTABLE_MATH \
+    -fno-ident -s -Wl,--no-insert-timestamp -o flapus-x86.exe flapus_cli.c
+```
+
+For x64, leave out `-msse2 -mfpmath=sse`. `flapus --version` shows the version,
+how the encoder was built and the target. The version is also `FLAPUS_VERSION` in
+`flapus.h`.
+
 ## Command line
 
 ```bash
@@ -82,6 +109,8 @@ Decoding shows only the percentage and ends with `done`.
 
 - `--format wav|flac|opus` sets the output format instead of the extension.
 - `-s` or `--silent` turns the progress display off.
+- `-V` or `--version` shows the version, how the Opus encoder was built (portable
+  math or not) and the target.
 - `--delete-input-file` deletes the input file after a successful conversion. It is
   off by default, and nothing is deleted when an error occurs.
 
