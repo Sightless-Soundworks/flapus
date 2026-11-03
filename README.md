@@ -86,7 +86,7 @@ flapus detects the input format from the file content. The output format follows
 file extension (`.wav`, `.flac`, `.opus`) unless `--format wav|flac|opus` is given.
 
 ```bash
-flapus music.wav music.flac                   # FLAC, smallest subset file (level 8)
+flapus music.wav music.flac                   # FLAC subset file (level 5)
 flapus --lax music.wav music.flac             # even smaller, outside the FLAC subset
 flapus music.flac music.opus                  # FLAC -> Opus, identical to opusenc music.flac
 flapus --bitrate 96 music.wav music.opus      # Opus at 96 kbit/s
@@ -116,7 +116,7 @@ Decoding shows only the percentage and ends with `done`.
 
 **FLAC output options**
 
-- `--level N` sets the effort: 0 (fastest) to 8 (smallest, the default).
+- `--level N` sets the effort: 0 (fastest) to 8 (smallest). The default is 5.
 - `--lax` allows streams outside the FLAC subset: LPC order up to 32 and blocks up to
   16384 samples. The files are valid FLAC and decode with libFLAC and FFmpeg, but some
   hardware players only support the subset.
@@ -196,14 +196,14 @@ libm's `sin`, `cos` and `log`, so their output can still depend on the CPU.
 The table compares file sizes with `flac -8 --no-padding --no-seektable` (flac 1.5.0) on
 30-second excerpts of music and speech:
 
-| Material | level 4 | level 8 (default) | `--lax` |
-|----------|--------:|------------------:|--------:|
-| music, 24-bit | -1.31 % | -1.48 % | -3.13 % |
-| music, 16-bit | -0.79 % | -0.87 % | -3.60 % |
-| music, 16-bit | -0.54 % | -0.59 % | -2.15 % |
-| drums, 24-bit | -1.27 % | -1.33 % | -3.01 % |
-| vocals, 16-bit | -1.40 % | -1.51 % | -3.41 % |
-| speech, 16-bit | -1.63 % | -1.91 % | -7.10 % |
+| Material | level 4 | level 5 (default) | level 8 | level 8 `--lax` |
+|----------|--------:|------------------:|--------:|----------------:|
+| music, 24-bit | -1.31 % | -1.42 % | -1.48 % | -3.13 % |
+| music, 16-bit | -0.79 % | -0.83 % | -0.87 % | -3.60 % |
+| music, 16-bit | -0.54 % | -0.57 % | -0.59 % | -2.15 % |
+| drums, 24-bit | -1.27 % | -1.29 % | -1.33 % | -3.01 % |
+| vocals, 16-bit | -1.40 % | -1.45 % | -1.51 % | -3.41 % |
+| speech, 16-bit | -1.63 % | -1.85 % | -1.91 % | -7.10 % |
 
 The table below shows encoding speed for 16-bit stereo, as multiples of real time:
 
@@ -211,11 +211,11 @@ The table below shows encoding speed for 16-bit stereo, as multiples of real tim
 |-------|-------------------:|---------------------------:|
 | 3 | 13x | |
 | 4 | 4.6x | 40x |
-| 5 | 1.6x | |
-| 8 (default) | 0.43x | 5x |
+| 5 (default) | 1.6x | |
+| 8 | 0.43x | 5x |
 
-From level 5 to 8 the files shrink by only about 0.05 %. `--level 5` is therefore a good
-choice when time matters.
+From level 5 to 8 the files shrink by only about 0.05 %, at about a quarter of the speed.
+Use `--level 8` when the last bytes matter more than time.
 
 flapus also omits padding and seek tables, and writes a `VORBIS_COMMENT` block only
 when there are tags. That makes the files smaller than `flac` defaults by about 8 KB
@@ -237,7 +237,7 @@ File conversion, the same as the CLI:
 
 ```c
 fl_options opt;
-fl_options_init(&opt);              /* defaults: opusdec/opusenc settings, FLAC level 8 */
+fl_options_init(&opt);              /* defaults: opusdec/opusenc settings, FLAC level 5 */
 opt.bitrate = 64000;                /* used for Opus output */
 int err = fl_convert_file("in.flac", "out.opus", &opt);
 ```

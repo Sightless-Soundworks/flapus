@@ -55,7 +55,7 @@ typedef struct {
    int rate;           /* output rate, 0 = original input rate */
    int dither;         /* 1 = shaped dither (default), 0 = plain rounding */
    /* FLAC output */
-   int flac_level;     /* 0 (fastest) .. 8 (smallest, default) */
+   int flac_level;     /* 0 (fastest) .. 8 (smallest); default 5 */
    int flac_lax;       /* 1 = allow streams outside the FLAC subset (LPC order 32 etc.) */
    int threads;        /* FLAC encoder threads: 1 (default), 0 = one per CPU; the output does not depend on it */
    /* Opus output (opusenc options) */
@@ -79,7 +79,7 @@ typedef struct {
    void *progress_user;
 } fl_options;
 
-/* Fills options with the defaults (opusdec/opusenc defaults, FLAC level 8, one thread). */
+/* Fills options with the defaults (opusdec/opusenc defaults, FLAC level 5, one thread). */
 FLDEF void fl_options_init(fl_options *opt);
 
 /* Converts between any of the formats. The input format is detected from the content.
@@ -23071,7 +23071,7 @@ static int fl_silk_hp_smth1(fl_silk_enc *st) { return st->s.state_Fxx[0].sCmn.va
 FLDEF void fl_options_init(fl_options *opt) {
    memset(opt, 0, sizeof(*opt));
    opt->dither = 1;
-   opt->flac_level = 8;
+   opt->flac_level = 5;
    opt->threads = 1;
    opt->complexity = 10;
    opt->frame_ms_x10 = 200;

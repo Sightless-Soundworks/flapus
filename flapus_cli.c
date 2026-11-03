@@ -18,7 +18,7 @@ static void usage(void) {
       "  -V, --version        show the version and how this build was made\n"
       "      --delete-input-file  delete the input file after a successful conversion\n"
       "FLAC output:\n"
-      "      --level N        0 (fastest) .. 8 (smallest, default)\n"
+      "      --level N        0 (fastest) .. 8 (smallest), default 5\n"
       "      --lax            allow streams outside the FLAC subset (even smaller, but\n"
       "                       not every hardware player supports them)\n"
       "      --threads N      encoder threads (default 1, 0 = one per CPU)\n"

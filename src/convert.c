@@ -3,7 +3,7 @@
 FLDEF void fl_options_init(fl_options *opt) {
    memset(opt, 0, sizeof(*opt));
    opt->dither = 1;
-   opt->flac_level = 8;
+   opt->flac_level = 5;
    opt->threads = 1;
    opt->complexity = 10;
    opt->frame_ms_x10 = 200;
