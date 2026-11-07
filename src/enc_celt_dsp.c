@@ -1,6 +1,6 @@
 /* ---- CELT encoder DSP with x87 rounding behaviour ---- */
 
-/* kiss FFT butterflies: intermediates stay extended except where the reference spills. */
+/* kiss FFT butterflies: intermediates stay extended except where they are spilled. */
 static void fl_e_bfly2(fl_cpx *Fout, int N) {
    const xf tw = 0.7071067812f;
    int i;

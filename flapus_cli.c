@@ -23,12 +23,12 @@ static void usage(void) {
       "      --lax            allow streams outside the FLAC subset (even smaller, but\n"
       "                       not every hardware player supports them)\n"
       "      --threads N      encoder threads (default 1, 0 = one per CPU)\n"
-      "Opus input (decoded like opusdec):\n"
+      "Opus input:\n"
       "      --rate N         output sample rate (default: original input rate)\n"
       "      --no-dither      plain rounding instead of shaped dither\n"
 #ifdef FLAPUS_HAVE_ENCODER
-      "Opus output (bit-exact with opusenc, libopus 1.6.1):\n"
-      "      --bitrate N      target bitrate in kbit/s (default: opusenc automatic rate)\n"
+      "Opus output:\n"
+      "      --bitrate N      target bitrate in kbit/s (default: automatic)\n"
       "      --quality N      0-10 relative to the automatic bitrate (default 6)\n"
       "      --vbr            variable bitrate (default)\n"
       "      --cvbr           constrained variable bitrate\n"
@@ -53,7 +53,7 @@ static void version(void) {
 #if defined(FLAPUS_HAVE_ENCODER) && defined(FLAPUS_PORTABLE_MATH)
    printf("Opus encoder: portable math (the same output on every x86 CPU)\n");
 #elif defined(FLAPUS_HAVE_ENCODER)
-   printf("Opus encoder: CPU instructions as opusenc (output can differ between Intel and AMD)\n");
+   printf("Opus encoder: native CPU instructions (output can differ between Intel and AMD)\n");
 #else
    printf("Opus encoder: not included\n");
 #endif

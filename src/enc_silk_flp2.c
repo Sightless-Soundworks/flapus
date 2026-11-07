@@ -56,7 +56,7 @@ static xf fl_m_pow(double x, double y) {
    return (double)fl_m_exp2l(XF(y)*fl_m_log2l(fabsl(XF(x))));
 }
 static float silk_log2(double x) { return (float)(XF(3.32192809488736)*fl_m_log10(x)); }
-/* 1/(1+exp(negx)) as the reference computes silk_sigmoid(-negx). */
+/* 1/(1+exp(negx)), computed as silk_sigmoid(-negx). */
 static float silk_sigmoid_neg(xf negx) { return (float)(1.0L/(1.0L+fl_m_exp((double)negx))); }
 
 static void silk_LPC_analysis_filter_FLP(float r_LPC[], const float PredCoef[], const float s[], const int length,

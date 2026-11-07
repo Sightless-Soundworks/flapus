@@ -1,4 +1,4 @@
-/* ---- SILK encoder: float analysis (silk/float, x87 rounding as in the reference) ---- */
+/* ---- SILK encoder: float analysis (silk/float, x87 extended precision) ---- */
 #define SILK_MAX_ORDER_LPC 24
 
 /* silk_inner_product_FLP_avx2: double FMA lanes, scalar tail on the x87 stack. */

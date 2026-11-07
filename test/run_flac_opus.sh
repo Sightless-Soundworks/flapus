@@ -1,6 +1,6 @@
 #!/bin/sh
-# FLAC -> Opus: opusenc reading a FLAC file and flapus converting the same file must give
-# identical audio packets and OpusHead (including the ReplayGain -> output gain rule).
+# FLAC -> Opus: compares opusenc reading a FLAC file with flapus converting the same file
+# (audio packets and OpusHead, including the ReplayGain -> output gain rule).
 # Usage: run_flac_opus.sh   (OPUSENC / FLAC / METAFLAC override the reference tools)
 OPUSENC=${OPUSENC:-opusenc}
 FLAC=${FLAC:-flac}

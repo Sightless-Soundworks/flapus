@@ -2,20 +2,25 @@
    flapus.h - single-file Opus and FLAC encoder/decoder (Ogg Opus, FLAC, Ogg FLAC, WAV),
    no dependencies besides the C library.
 
+   Copyright (c) 2026 Sightless Soundworks. Three-clause BSD license; the full text and
+   the licenses of the projects below are in LICENSE.
+
    Usage as a library: in exactly one C file write
       #define FLAPUS_IMPLEMENTATION
       #include "flapus.h"
    Other files include the header without the define.
 
-   Opus: bit-exact with libopus 1.6.1 (decoder: x86-64 SSE/AVX2 code paths of opusdec,
-   encoder: 32-bit x87 build of opusenc). Compile with floating point contraction
-   disabled (-ffp-contract=off); never use -ffast-math.
+   Opus: encoder and decoder based on libopus 1.6.1, made for the best possible encoding
+   and decoding. Compile with floating point contraction disabled (-ffp-contract=off);
+   never use -ffast-math.
    FLAC: own encoder (smallest files, see README) and a complete RFC 9639 decoder.
 
-   The Opus DSP algorithms are derived from the Opus reference implementation
+   The Opus part is derived from the Opus reference implementation
    (RFC 6716, libopus, BSD license, Copyright Xiph.Org, Skype, Octasic,
    Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding,
-   Erik de Castro Lopo) and the Speex resampler (BSD, Jean-Marc Valin).
+   Erik de Castro Lopo, Mozilla, Amazon), opus-tools, opusfile and libopusenc (BSD,
+   Xiph.Org Foundation and contributors) and the Speex resampler (BSD, Jean-Marc Valin,
+   Thorvald Natvig).
 */
 #ifndef FLAPUS_H
 #define FLAPUS_H
@@ -51,15 +56,15 @@ extern "C" {
 
 typedef struct {
    int format;         /* output format, FL_FORMAT_* */
-   /* Opus input (decoded like opusdec) */
+   /* Opus input */
    int rate;           /* output rate, 0 = original input rate */
    int dither;         /* 1 = shaped dither (default), 0 = plain rounding */
    /* FLAC output */
    int flac_level;     /* 0 (fastest) .. 8 (smallest); default 5 */
    int flac_lax;       /* 1 = allow streams outside the FLAC subset (LPC order 32 etc.) */
    int threads;        /* FLAC encoder threads: 1 (default), 0 = one per CPU; the output does not depend on it */
-   /* Opus output (opusenc options) */
-   int bitrate;        /* bits per second (0 = opusenc default: 64 kbps per stream + 32 kbps per coupled pair) */
+   /* Opus output */
+   int bitrate;        /* bits per second (0 = automatic: 64 kbps per stream + 32 kbps per coupled pair) */
    int complexity;     /* 0..10, default 10 */
    int frame_ms_x10;   /* frame size in 0.1 ms units: 25, 50, 100, 200 (default), 400, 600, 800, 1000, 1200 */
    int vbr;            /* 1 = VBR (default), 0 = hard CBR */
@@ -68,9 +73,9 @@ typedef struct {
    int signal;         /* 0 = auto, 1 = music, 2 = speech */
    int expect_loss;    /* expected packet loss in percent, 0..100 */
    int no_phase_inv;   /* 1 = disable intensity stereo phase inversion */
-   int downmix;        /* 0 = auto (opusenc rule), 1 = mono, 2 = stereo */
+   int downmix;        /* 0 = auto (surround is downmixed below 16 kbps per channel), 1 = mono, 2 = stereo */
    const char *comment_options; /* value of the ENCODER_OPTIONS tag (NULL = none) */
-   int padding;        /* free bytes reserved after the Opus tags: 512 (default, as opusenc), 0 = none */
+   int padding;        /* free bytes reserved after the Opus tags: 512 (default), 0 = none */
    long long serialno; /* Ogg serial number of Opus output, 0..4294967295; -1 (default) = from rand() */
    /* Progress during fl_convert_file (NULL = none). done: 0..1 (-1 if the length is unknown),
       ratio: output size / input PCM size so far (-1 for WAV output). Called with done = 1
@@ -79,12 +84,12 @@ typedef struct {
    void *progress_user;
 } fl_options;
 
-/* Fills options with the defaults (opusdec/opusenc defaults, FLAC level 5, one thread). */
+/* Fills options with the defaults (automatic Opus settings, FLAC level 5, one thread). */
 FLDEF void fl_options_init(fl_options *opt);
 
 /* Converts between any of the formats. The input format is detected from the content.
-   Opus output is bit-exact with opusenc for the same samples, Opus input is decoded
-   like opusdec (16-bit, original rate), FLAC output is lossless. opt may be NULL.
+   Opus input is decoded to 16-bit at the original rate, FLAC output is lossless.
+   opt may be NULL.
    Paths: on Windows a path that is valid UTF-8 is opened with _wfopen, so file names
    outside the ANSI code page work. Any other path goes to fopen unchanged. The path "-"
    is stdin for input and stdout for output (set opt->format). stdout cannot seek back,
@@ -134,15 +139,15 @@ FLDEF void fl_opus_ms_decoder_set_gain(fl_opus_ms_decoder *dec, int gain_q8);
 FLDEF int fl_opus_ms_decode_float(fl_opus_ms_decoder *dec, const unsigned char *packet, int len, float *pcm, int max_frame_size);
 
 /* ---- Opus encoder ----
-   The bit-exact encoder needs GCC or Clang on x86/x86-64 (80-bit long double and
+   The Opus encoder needs GCC or Clang on x86/x86-64 (80-bit long double and
    x87 inline assembly). Elsewhere, or with FLAPUS_NO_ENCODER, it is left out (FLAC and
    all decoders are portable C99).
    On 32-bit x86, float and double arithmetic must use SSE2 (FLT_EVAL_METHOD 0, the
    default of w64devkit 2.11 and later). With x87 arithmetic (-mfpmath=387, the default
-   of older 32-bit toolchains) some files encode differently from opusenc, so the
-   implementation stops with an error instead. Build with -msse2 -mfpmath=sse, or
+   of older 32-bit toolchains) the encoder rounds differently than designed and some
+   files encode differently, so the implementation stops with an error instead. Build with -msse2 -mfpmath=sse, or
    define FLAPUS_NO_ENCODER.
-   Like opusenc, the default encoder uses rcpps/rsqrtps and the x87 transcendental
+   The default encoder uses rcpps/rsqrtps and the x87 transcendental
    instructions, whose results differ between CPU makers, so its output differs between
    Intel and AMD. Define FLAPUS_PORTABLE_MATH for output that is the same on every x86
    CPU: Intel's rcpps/rsqrtps from tables, and software replacements for the x87
@@ -154,8 +159,7 @@ FLDEF int fl_opus_ms_decode_float(fl_opus_ms_decoder *dec, const unsigned char *
 #ifdef FLAPUS_HAVE_ENCODER
 
 /* Packet encoder: 48 kHz interleaved float input, one Opus (multistream) packet per call.
-   Matches libopus opus_multistream_encode_float() of the same 32-bit x87 build.
-   Channel layout as opusenc: family 0 (1-2 ch), 1 (3-8 ch, Vorbis order), 255 (9-255 ch).
+   Channel layout: family 0 (1-2 ch), 1 (3-8 ch, Vorbis order), 255 (9-255 ch).
    opt may be NULL; opt->downmix is ignored here. */
 typedef struct fl_opus_encoder fl_opus_encoder;
 FLDEF fl_opus_encoder *fl_opus_encoder_create(int channels, const fl_options *opt, int *error);
@@ -180,7 +184,7 @@ FLDEF int fl_opus_encode_float(fl_opus_encoder *enc, const float *pcm, unsigned 
 #ifndef FLAPUS_IMPLEMENTATION_DONE
 #define FLAPUS_IMPLEMENTATION_DONE
 #if defined(FLAPUS_HAVE_ENCODER) && defined(__FLT_EVAL_METHOD__) && __FLT_EVAL_METHOD__ != 0
-#error "flapus: the Opus encoder is only bit-exact with SSE2 float arithmetic. Compile with -msse2 -mfpmath=sse, or define FLAPUS_NO_ENCODER."
+#error "flapus: the Opus encoder needs SSE2 float arithmetic. Compile with -msse2 -mfpmath=sse, or define FLAPUS_NO_ENCODER."
 #endif
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC optimize ("fp-contract=off")

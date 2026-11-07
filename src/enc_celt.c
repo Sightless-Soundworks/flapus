@@ -1,4 +1,4 @@
-/* ---- CELT encoder (float, x87 rounding as in the reference build) ---- */
+/* ---- CELT encoder (float, x87 extended precision) ---- */
 static xf fl_e_inner_prod(const float *x, const float *y, int N);
 
 /* FLOAT_APPROX log2: result stays in an x87 register (unrounded). */

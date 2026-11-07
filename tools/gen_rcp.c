@@ -1,9 +1,8 @@
 /* Generates src/enc_rcp_tables.c: Intel's rcpps and rsqrtps as lookup tables.
 
    rcpps and rsqrtps are approximations (relative error up to 1.5*2^-12) whose exact
-   bits are up to the CPU: AMD gives other values than Intel. The reference opusenc
-   uses them in the CELT PVQ search, so its output depends on the CPU maker, and so did
-   flapus'. On an Intel Core i7-13700K the result depends only on the top 11 mantissa
+   bits are up to the CPU: AMD gives other values than Intel. The CELT PVQ search uses
+   them, so without the tables the output depends on the CPU maker. On an Intel Core i7-13700K the result depends only on the top 11 mantissa
    bits of the input for rcpps, and on the top 10 plus the exponent parity for
    rsqrtps, and it has 12 significant bits. Two tables of 2048 entries therefore
    reproduce the instructions, and FLAPUS_PORTABLE_MATH uses them instead of the

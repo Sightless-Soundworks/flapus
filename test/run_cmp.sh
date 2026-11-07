@@ -1,5 +1,5 @@
 #!/bin/sh
-# Encodes with the reference opusenc and with flapus, then compares the audio.
+# Encodes with opusenc and with flapus, then compares the audio.
 # Usage: run_cmp.sh <wav> <opusenc options...>   (OPUSENC overrides the reference path)
 REF=${OPUSENC:-opusenc}
 w=$1; shift

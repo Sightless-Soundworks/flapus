@@ -1,13 +1,13 @@
 /* ---- x87 extended-precision helpers for the encoder ----
-   The reference encoder is a 32-bit x87 build: float/double values stay in
-   80-bit registers until they are stored. We model register values with
-   long double (xf) and round explicitly where the reference stores to memory.
-   The math functions below reproduce the MinGW (i686) libm code exactly. */
+   The encoder computes with x87 extended precision: float/double values stay in
+   80-bit registers until they are stored. Register values are long double (xf)
+   and are rounded explicitly where they are stored to memory.
+   The math functions below follow the MinGW (i686) libm code. */
 typedef long double xf;
 #define XF(v) ((xf)(v))
 
 #if !(defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__)))
-#error "The bit-exact encoder needs GCC/Clang on x86 or x86-64 (80-bit long double and x87 inline asm)."
+#error "The Opus encoder needs GCC/Clang on x86 or x86-64 (80-bit long double and x87 inline asm)."
 #endif
 
 /* Sets the x87 control word to 64-bit precision, round to nearest (MinGW default). */
@@ -29,8 +29,8 @@ static void fl_x87_leave(unsigned short old) { __asm__ volatile("fldcw %0" : : "
    With FLAPUS_PORTABLE_MATH they are replaced by the functions below, which
    only use the operations IEEE 754 defines exactly (+, -, *, /) on long
    double, plus exact exponent manipulation. The output is then the same on
-   every x86 CPU. It is no longer bit-identical to opusenc: where opusenc's
-   x87 result and ours round differently, a frame can take another decision.
+   every x86 CPU. Where the x87 result and ours round differently, a frame can
+   take another decision than in the default build.
    Everything else (fsqrt, frndint, fscale, the stores) stays as it is. */
 
 /* x = m * 2^e with m in [0.5, 1), exactly, through the 80-bit layout. x > 0. */
@@ -304,6 +304,6 @@ static double fl_m_acos(double d) {
 }
 #endif
 
-/* SSE float->int conversions used by the reference (_mm_cvt_ss2si / cvttss2si). */
+/* SSE float->int conversions (_mm_cvt_ss2si / cvttss2si). */
 static int fl_cvt_ss2si(float f) { return (int)lrintf(f); }
 static int fl_cvtt_ss2si(float f) { return (int)f; }
