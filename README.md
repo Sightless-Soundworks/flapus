@@ -55,12 +55,16 @@ python tools/amalgamate.py
 (32-bit) and `flapus-x64.exe` (64-bit) for Windows on every push. Each is a single
 file that needs no DLLs beyond Windows' own.
 
-- **Toolchain:** w64devkit 2.11.0, pinned by sha256.
+- **Toolchain:** w64devkit 2.11.0 (MinGW-w64 with the system `msvcrt.dll`), pinned
+  by sha256.
+- **Compatibility:** the exes import only `KERNEL32.dll` and `msvcrt.dll`, so they
+  also run on older Windows versions. The x86 build needs a CPU with SSE2.
 - **Encoder:** built with `FLAPUS_PORTABLE_MATH`, so the Opus output is the same on
   every x86 CPU.
-- **Checks:** the workflow verifies that `flapus.h` matches `src/` and runs the four
-  tests. It encodes deterministic test signals (`tools/testsignal.py`) with both
-  builds and fails if the Opus files differ.
+- **Checks:** the workflow verifies that `flapus.h` matches `src/`, checks the imports
+  and the subsystem version of both exes, and runs the four tests. It encodes
+  deterministic test signals (`tools/testsignal.py`) with both builds and fails if the
+  Opus files differ.
 - **Release:** a tag `v*` publishes both exes as a release, with `SHA256SUMS`.
 
 The builds are reproducible: the same commit and devkit give the same exe, byte for

@@ -17,6 +17,9 @@ name: build
 #
 # The encoder is built with FLAPUS_PORTABLE_MATH, so the output is the same on
 # every x86 CPU; see README.
+#
+# w64devkit is MinGW-w64 with the system msvcrt.dll, so the exes also run on older
+# Windows versions; a check below keeps it that way.
 
 on:
   push:
@@ -79,7 +82,34 @@ jobs:
           & gcc @flags -o flapus-${{ matrix.arch }}.exe flapus_cli.c
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
           & .\flapus-${{ matrix.arch }}.exe --version
-          & objdump -p flapus-${{ matrix.arch }}.exe | Select-String "DLL Name"
+
+      # Older Windows versions start the exe only if it imports nothing beyond
+      # KERNEL32.dll and msvcrt.dll, only KERNEL32 functions they have, and its
+      # subsystem version is at most 5.x. A new KERNEL32 import must be checked
+      # against the Windows versions it exists in before it is added to the list.
+      - name: Windows compatibility
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\w64devkit\bin;$env:PATH"
+          $allowed = @("CloseHandle", "CreateThread", "DeleteCriticalSection", "EnterCriticalSection",
+            "GetCPInfo", "GetLastError", "GetModuleHandleA", "GetProcAddress", "GetSystemInfo",
+            "InitializeCriticalSection", "LeaveCriticalSection", "MultiByteToWideChar",
+            "SetUnhandledExceptionFilter", "Sleep", "TlsGetValue", "VirtualProtect", "VirtualQuery",
+            "WaitForSingleObject", "WideCharToMultiByte")
+          $pe = & objdump -p flapus-${{ matrix.arch }}.exe
+          $dll = $null; $dlls = @(); $k32 = @()
+          foreach ($line in $pe) {
+            if ($line -match "DLL Name: (\S+)") { $dll = $Matches[1]; $dlls += $dll }
+            elseif ($line -match "^\s*$") { $dll = $null }
+            elseif ($dll -eq "KERNEL32.dll" -and $line -match "^\s+[0-9a-f]+\s+\d+\s+(\w+)") { $k32 += $Matches[1] }
+          }
+          $sub = [int]($pe | Select-String "MajorSubsystemVersion\s+(\d+)").Matches[0].Groups[1].Value
+          Write-Host "DLLs: $($dlls -join ', '); subsystem version $sub.x; $($k32.Count) KERNEL32 functions"
+          $bad = @($dlls | Where-Object { $_ -notin "KERNEL32.dll", "msvcrt.dll" })
+          if ($bad) { throw "imports other DLLs: $($bad -join ', ')" }
+          $bad = @($k32 | Where-Object { $_ -notin $allowed })
+          if ($bad) { throw "new KERNEL32 imports: $($bad -join ', ')" }
+          if ($sub -gt 5) { throw "subsystem version $sub.x is too new for older Windows versions" }
 
       - name: Tests
         shell: pwsh
