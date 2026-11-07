@@ -12,6 +12,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <io.h>
+#include <fcntl.h>
 #endif
 
 typedef signed char fl_i8;
@@ -46,9 +48,22 @@ static wchar_t *fl_widen(const char *path) {
 }
 #endif
 
+/* The path "-" is stdin for input and stdout for output. */
+static int fl_is_std(const char *path) { return path[0] == '-' && path[1] == 0; }
+
 static FILE *fl_fopen(const char *path, const char *mode) {
 #ifdef _WIN32
-   wchar_t *w = fl_widen(path);
+   wchar_t *w;
+#endif
+   if (fl_is_std(path)) {
+      FILE *f = mode[0] == 'r' ? stdin : stdout;
+#ifdef _WIN32
+      _setmode(_fileno(f), _O_BINARY);
+#endif
+      return f;
+   }
+#ifdef _WIN32
+   w = fl_widen(path);
    if (w) {
       wchar_t wmode[8];
       FILE *f;
@@ -63,9 +78,19 @@ static FILE *fl_fopen(const char *path, const char *mode) {
    return fopen(path, mode);
 }
 
+/* fclose, but stdin and stdout stay open (stdout is only flushed). */
+static int fl_fclose(FILE *f) {
+   if (f == stdin) return 0;
+   return f == stdout ? fflush(f) : fclose(f);
+}
+
 static int fl_remove(const char *path) {
 #ifdef _WIN32
-   wchar_t *w = fl_widen(path);
+   wchar_t *w;
+#endif
+   if (fl_is_std(path)) return 0;  /* nothing to remove */
+#ifdef _WIN32
+   w = fl_widen(path);
    if (w) {
       int r = _wremove(w);
       free(w);

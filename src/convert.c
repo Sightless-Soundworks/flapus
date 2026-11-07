@@ -13,14 +13,13 @@ FLDEF void fl_options_init(fl_options *opt) {
    opt->serialno = -1;
 }
 
-/* Detects the input format from the first bytes of the file. */
-static int fl_detect_format(const char *path) {
-   unsigned char b[4096];
+/* Detects the input format from the first bytes of the file (they stay in the buffer). */
+static int fl_detect_format(fl_inbuf *in) {
+   const unsigned char *b;
    size_t n, i;
-   FILE *f = fl_fopen(path, "rb");
-   if (!f) return FL_ERR_IO;
-   n = fread(b, 1, sizeof(b), f);
-   fclose(f);
+   if (fl_inbuf_need(in, 4096) < 0) return FL_ERR_ALLOC;
+   b = in->buf+in->pos;
+   n = FL_MIN(in->len-in->pos, 4096);
    if (n >= 12 && memcmp(b, "RIFF", 4) == 0 && memcmp(b+8, "WAVE", 4) == 0) return FL_FORMAT_WAV;
    if (n >= 4 && (memcmp(b, "fLaC", 4) == 0 || memcmp(b, "ID3", 3) == 0)) return FL_FORMAT_FLAC;
    if (n >= 4 && memcmp(b, "OggS", 4) == 0) {
@@ -126,52 +125,64 @@ static fl_sink *fl_progress_wrap(fl_sink *inner, const fl_options *opt, int *err
    return &p->base;
 }
 
-static int fl_run_source(int format, const char *path, const fl_options *opt, fl_sink *sink) {
-   if (format == FL_FORMAT_WAV) return fl_run_wav(path, sink);
-   if (format == FL_FORMAT_FLAC) return fl_run_flac(path, sink);
-   return fl_run_opus(path, opt->rate, opt->dither, sink);
+static int fl_run_source(int format, fl_inbuf *in, const fl_options *opt, fl_sink *sink) {
+   if (format == FL_FORMAT_WAV) return fl_run_wav(in, sink);
+   if (format == FL_FORMAT_FLAC) return fl_run_flac(in, sink);
+   return fl_run_opus(in, opt->rate, opt->dither, sink);
 }
 
 FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_options *opt_in) {
    fl_options opt;
    fl_sink *sink;
+   fl_inbuf in;
    int in_fmt, out_fmt, ret, err;
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
-   if (strcmp(in_path, out_path) == 0) return FL_ERR_BAD_ARG;
-   in_fmt = fl_detect_format(in_path);
-   if (in_fmt < 0) return in_fmt;
-   out_fmt = opt.format ? opt.format : fl_format_from_name(out_path);
-   if (out_fmt < 0) return out_fmt;
-   if (!(sink = fl_create_sink(out_fmt, out_path, &opt, &err))) return err;
+   if (strcmp(in_path, out_path) == 0 && !fl_is_std(in_path)) return FL_ERR_BAD_ARG;
+   if ((ret = fl_inbuf_open(&in, in_path)) != FL_OK) return ret;
+   in_fmt = ret = fl_detect_format(&in);
+   if (ret < 0) goto done;
+   out_fmt = ret = opt.format ? opt.format : fl_format_from_name(out_path);
+   if (ret < 0) goto done;
+   if (!(sink = fl_create_sink(out_fmt, out_path, &opt, &err))) {
+      ret = err;
+      goto done;
+   }
    if (!(sink = fl_progress_wrap(sink, &opt, &err))) {
       fl_remove(out_path);
-      return err;
+      ret = err;
+      goto done;
    }
-   ret = fl_run_source(in_fmt, in_path, &opt, sink);
+   ret = fl_run_source(in_fmt, &in, &opt, sink);
    sink->destroy(sink);
    /* a damaged FLAC input still gives complete output; anything else is removed */
    if (ret != FL_OK && ret != FL_ERR_CHECKSUM) fl_remove(out_path);
+done:
+   fl_inbuf_close(&in);
    return ret;
 }
 
 FLDEF int fl_read_audio(const char *path, const fl_options *opt_in, fl_audio *audio) {
    fl_options opt;
    fl_mem_sink m;
+   fl_inbuf in;
    int fmt, ret;
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
    memset(audio, 0, sizeof(*audio));
-   fmt = fl_detect_format(path);
-   if (fmt < 0) return fmt;
-   memset(&m, 0, sizeof(m));
-   m.base.start = fl_mem_start;
-   m.base.write = fl_mem_write;
-   m.base.finish = fl_mem_finish;
-   m.base.destroy = fl_mem_destroy;
-   m.a = audio;
-   ret = fl_run_source(fmt, path, &opt, &m.base);
-   if (ret != FL_OK && ret != FL_ERR_CHECKSUM) fl_audio_free(audio);
+   if ((ret = fl_inbuf_open(&in, path)) != FL_OK) return ret;
+   fmt = ret = fl_detect_format(&in);
+   if (fmt >= 0) {
+      memset(&m, 0, sizeof(m));
+      m.base.start = fl_mem_start;
+      m.base.write = fl_mem_write;
+      m.base.finish = fl_mem_finish;
+      m.base.destroy = fl_mem_destroy;
+      m.a = audio;
+      ret = fl_run_source(fmt, &in, &opt, &m.base);
+      if (ret != FL_OK && ret != FL_ERR_CHECKSUM) fl_audio_free(audio);
+   }
+   fl_inbuf_close(&in);
    return ret;
 }
 

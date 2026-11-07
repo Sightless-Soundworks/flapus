@@ -470,12 +470,12 @@ static void fl_downmix_stereo(float *pcm, int n, int C) {
 
 /* Decodes an Ogg Opus file (all chained links) to 16-bit PCM like opusdec and passes it
    to sink. rate=0 keeps the original rate. */
-static int fl_run_opus(const char *in_path, int rate, int dither, fl_sink *sink) {
+static int fl_run_opus(fl_inbuf *in, int rate, int dither, fl_sink *sink) {
    static const int wav_permute[8][8] = {
       {0}, {0, 1}, {0, 2, 1}, {0, 1, 2, 3}, {0, 2, 1, 3, 4}, {0, 2, 1, 4, 5, 3},
       {0, 2, 1, 5, 6, 4, 3}, {0, 2, 1, 6, 7, 4, 5, 3}};
    long size;
-   unsigned char *file = fl_read_file(in_path, &size);
+   unsigned char *file = fl_inbuf_take(in, &size);
    fl_ogg_stream *links = NULL;
    int nlinks = 0, li, i, ret = FL_ERR_BAD_FILE, force_stereo = 0, C, maxC = 2, permute = 0;
    fl_opus_head *heads = NULL;
@@ -485,7 +485,7 @@ static int fl_run_opus(const char *in_path, int rate, int dither, fl_sink *sink)
    unsigned char channel_map[8];
    fl_format fmt;
    fl_format_init(&fmt);
-   if (!file) return FL_ERR_IO;
+   if (!file) return FL_ERR_ALLOC;
    if (fl_ogg_parse(file, size, "OpusHead", &links, &nlinks) < 0) {
       free(file);
       for (li = 0; li < nlinks; li++) fl_ogg_free(&links[li]);

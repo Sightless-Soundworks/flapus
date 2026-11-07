@@ -430,65 +430,27 @@ done:
    return ret;
 }
 
-/* Buffered file input that keeps at least the requested number of bytes in memory. */
-typedef struct {
-   FILE *f;
-   unsigned char *buf;
-   size_t cap, pos, len;
-   int eof;
-} fl_inbuf;
-
-/* Makes n bytes available at buf+pos (fewer only at end of file). */
-static int fl_inbuf_need(fl_inbuf *b, size_t n) {
-   if (b->len-b->pos >= n || b->eof) return 0;
-   if (b->pos > 0) {
-      memmove(b->buf, b->buf+b->pos, b->len-b->pos);
-      b->len -= b->pos;
-      b->pos = 0;
-   }
-   if (n > b->cap) {
-      size_t cap = n > 2*b->cap ? n : 2*b->cap;
-      unsigned char *nb = (unsigned char*)realloc(b->buf, cap);
-      if (!nb) return -1;
-      b->buf = nb;
-      b->cap = cap;
-   }
-   while (b->len < b->cap && !b->eof) {
-      size_t r = fread(b->buf+b->len, 1, b->cap-b->len, b->f);
-      b->len += r;
-      if (r == 0) b->eof = 1;
-   }
-   return 0;
-}
-
 /* Decodes a FLAC or Ogg FLAC file and passes the samples to sink. */
-static int fl_run_flac(const char *path, fl_sink *sink) {
-   fl_inbuf in;
+static int fl_run_flac(fl_inbuf *b, fl_sink *sink) {
+   fl_inbuf in = *b;  /* handed back at the end */
    fl_flac_dec d;
    fl_format f;
    fl_md5 md5;
    int ret = FL_ERR_BAD_FILE, last = 0;
-   memset(&in, 0, sizeof(in));
    memset(&d, 0, sizeof(d));
    fl_format_init(&f);
    fl_flac_crc_init();
    fl_md5_init(&md5);
-   if (!(in.f = fl_fopen(path, "rb"))) return FL_ERR_IO;
    if (fl_inbuf_need(&in, 1<<16) < 0) {
       ret = FL_ERR_ALLOC;
       goto done;
    }
-   if (in.len >= 4 && memcmp(in.buf, "OggS", 4) == 0) {
+   if (in.len-in.pos >= 4 && memcmp(in.buf+in.pos, "OggS", 4) == 0) {
       long size;
-      unsigned char *file;
-      fclose(in.f);
-      in.f = NULL;
-      free(in.buf);
-      in.buf = NULL;
-      if (!(file = fl_read_file(path, &size))) return FL_ERR_IO;
-      ret = fl_run_ogg_flac(file, size, sink);
+      unsigned char *file = fl_inbuf_take(&in, &size);
+      ret = file ? fl_run_ogg_flac(file, size, sink) : FL_ERR_ALLOC;
       free(file);
-      return ret;
+      goto done;
    }
    /* skip ID3v2 tags */
    while (in.len-in.pos >= 10 && memcmp(in.buf+in.pos, "ID3", 3) == 0) {
@@ -544,8 +506,7 @@ static int fl_run_flac(const char *path, fl_sink *sink) {
    ret = sink->finish(sink);
    if (ret == FL_OK) ret = fl_md5_check(&md5, &d.si);
 done:
-   if (in.f) fclose(in.f);
-   free(in.buf);
+   *b = in;  /* the caller closes the input */
    fl_flac_dec_free(&d);
    fl_format_free(&f);
    return ret;

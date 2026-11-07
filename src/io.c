@@ -1,22 +1,83 @@
 /* ---- Audio pipeline: stream format, sinks, tags, WAV input/output, MD5, base64 ---- */
 
-/* Reads a whole file into memory. */
-static unsigned char *fl_read_file(const char *path, long *size) {
-   FILE *f = fl_fopen(path, "rb");
+/* Buffered input that keeps at least the requested number of bytes in memory. The input
+   is opened once, so stdin works as well: format detection looks at the buffer. */
+typedef struct {
+   FILE *f;
    unsigned char *buf;
-   long n;
-   if (!f) return NULL;
-   fseek(f, 0, SEEK_END);
-   n = ftell(f);
-   fseek(f, 0, SEEK_SET);
-   buf = (unsigned char*)malloc(n > 0 ? n : 1);
-   if (buf && fread(buf, 1, n, f) != (size_t)n) {
-      free(buf);
-      buf = NULL;
+   size_t cap, pos, len;
+   int eof;
+} fl_inbuf;
+
+static int fl_inbuf_open(fl_inbuf *b, const char *path) {
+   memset(b, 0, sizeof(*b));
+   return (b->f = fl_fopen(path, "rb")) ? FL_OK : FL_ERR_IO;
+}
+
+static void fl_inbuf_close(fl_inbuf *b) {
+   if (b->f) fl_fclose(b->f);
+   free(b->buf);
+   memset(b, 0, sizeof(*b));
+}
+
+/* Makes n bytes available at buf+pos (fewer only at end of file). */
+static int fl_inbuf_need(fl_inbuf *b, size_t n) {
+   if (b->len-b->pos >= n || b->eof) return 0;
+   if (b->pos > 0) {
+      memmove(b->buf, b->buf+b->pos, b->len-b->pos);
+      b->len -= b->pos;
+      b->pos = 0;
    }
-   fclose(f);
-   *size = n;
-   return buf;
+   if (n > b->cap) {
+      size_t cap = n > 2*b->cap ? n : 2*b->cap;
+      unsigned char *nb = (unsigned char*)realloc(b->buf, cap);
+      if (!nb) return -1;
+      b->buf = nb;
+      b->cap = cap;
+   }
+   while (b->len < b->cap && !b->eof) {
+      size_t r = fread(b->buf+b->len, 1, b->cap-b->len, b->f);
+      b->len += r;
+      if (r == 0) b->eof = 1;
+   }
+   return 0;
+}
+
+/* Reads up to n bytes into dst, returns the number read. */
+static size_t fl_inbuf_read(fl_inbuf *b, void *dst, size_t n) {
+   size_t k = FL_MIN(n, b->len-b->pos);
+   if (k) memcpy(dst, b->buf+b->pos, k);
+   b->pos += k;
+   if (k < n && !b->eof) {
+      size_t r = fread((unsigned char*)dst+k, 1, n-k, b->f);
+      if (r < n-k) b->eof = 1;
+      k += r;
+   }
+   return k;
+}
+
+/* Skips n bytes: seeks in files, reads through stdin (pipes cannot seek). */
+static void fl_inbuf_skip(fl_inbuf *b, fl_u64 n) {
+   unsigned char tmp[4096];
+   size_t k = (size_t)FL_MIN(n, b->len-b->pos);
+   b->pos += k;
+   n -= k;
+   if (!n || b->eof || (b->f != stdin && n <= LONG_MAX && fseek(b->f, (long)n, SEEK_CUR) == 0)) return;
+   while (n > 0 && !b->eof) n -= fl_inbuf_read(b, tmp, (size_t)FL_MIN(n, sizeof(tmp)));
+}
+
+/* Reads the rest of the input into one block that the caller frees (like a whole file). */
+static unsigned char *fl_inbuf_take(fl_inbuf *b, long *size) {
+   unsigned char *p;
+   while (!b->eof)
+      if (fl_inbuf_need(b, b->cap ? 2*b->cap : 65536) < 0) return NULL;
+   if (!b->buf && !(b->buf = (unsigned char*)malloc(1))) return NULL;
+   memmove(b->buf, b->buf+b->pos, b->len-b->pos);
+   *size = (long)(b->len-b->pos);
+   p = b->buf;
+   b->buf = NULL;
+   b->cap = b->pos = b->len = 0;
+   return p;
 }
 
 static void fl_put_le32(unsigned char *p, fl_u32 v) { p[0] = v; p[1] = v>>8; p[2] = v>>16; p[3] = v>>24; }
@@ -186,6 +247,10 @@ static void fl_format_init(fl_format *f) {
    f->opus_family = -1;
 }
 
+/* Length for a header that cannot be patched at the end (stdout): the source length if
+   it is exact, else -1 (Opus lengths are only approximate). */
+static fl_i64 fl_exact_frames(const fl_format *f) { return f->opus_family >= 0 ? -1 : f->frames; }
+
 static void fl_format_free(fl_format *f) {
    int i;
    for (i = 0; i < f->ntags; i++) free(f->tags[i]);
@@ -268,28 +333,26 @@ static fl_u32 fl_default_mask(int channels) {
 }
 
 /* ---- WAV input ---- */
-static int fl_run_wav(const char *path, fl_sink *sink) {
+static int fl_run_wav(fl_inbuf *in, fl_sink *sink) {
    unsigned char hdr[12], ck[8], fmt[40], *buf = NULL;
    fl_i32 *pcm = NULL;
    int have_fmt = 0, ret, bytes = 0, C = 0, shift = 0, unsigned8 = 0;
    fl_i64 left = -1;
    fl_format f;
-   FILE *in = fl_fopen(path, "rb");
    fl_format_init(&f);
-   if (!in) return FL_ERR_IO;
    ret = FL_ERR_BAD_FILE;
-   if (fread(hdr, 1, 12, in) != 12 || memcmp(hdr, "RIFF", 4) != 0 || memcmp(hdr+8, "WAVE", 4) != 0) goto done;
+   if (fl_inbuf_read(in, hdr, 12) != 12 || memcmp(hdr, "RIFF", 4) != 0 || memcmp(hdr+8, "WAVE", 4) != 0) goto done;
    for (;;) {
       fl_u32 len;
-      if (fread(ck, 1, 8, in) != 8) goto done;
+      if (fl_inbuf_read(in, ck, 8) != 8) goto done;
       len = fl_get_le32(ck+4);
       if (memcmp(ck, "fmt ", 4) == 0) {
          int format, n = len < 40 ? (int)len : 40;
          if (len < 16) goto done;
          memset(fmt, 0, sizeof(fmt));
-         if (fread(fmt, 1, n, in) != (size_t)n) goto done;
-         if (len > 40) fseek(in, len-40, SEEK_CUR);
-         if (len&1) fseek(in, 1, SEEK_CUR);
+         if (fl_inbuf_read(in, fmt, n) != (size_t)n) goto done;
+         if (len > 40) fl_inbuf_skip(in, len-40);
+         if (len&1) fl_inbuf_skip(in, 1);
          format = fl_get_le16(fmt);
          C = fl_get_le16(fmt+2);
          f.rate = (int)fl_get_le32(fmt+4);
@@ -315,7 +378,7 @@ static int fl_run_wav(const char *path, fl_sink *sink) {
          if (len != 0xFFFFFFFFu && len != 0) left = len/((fl_u32)bytes*C);
          break;
       } else {
-         fseek(in, len+(len&1), SEEK_CUR);
+         fl_inbuf_skip(in, len+(len&1));
       }
    }
    if (C < 1 || C > 255 || f.rate <= 0) {
@@ -335,7 +398,7 @@ static int fl_run_wav(const char *path, fl_sink *sink) {
    for (;;) {
       int want = 4096, n, i;
       if (left >= 0 && want > left) want = (int)left;
-      n = want > 0 ? (int)fread(buf, (size_t)bytes*C, want, in) : 0;
+      n = want > 0 ? (int)(fl_inbuf_read(in, buf, (size_t)want*bytes*C)/((size_t)bytes*C)) : 0;
       for (i = 0; i < n*C; i++) {
          const unsigned char *p = buf+(size_t)i*bytes;
          fl_i32 v;
@@ -362,7 +425,6 @@ done:
    fl_format_free(&f);
    free(buf);
    free(pcm);
-   fclose(in);
    return ret;
 }
 
@@ -406,6 +468,14 @@ static int fl_wav_header(fl_wav_sink *w, fl_u64 data_bytes) {
    return fwrite(h, 1, n, w->f) == (size_t)n ? FL_OK : FL_ERR_IO;
 }
 
+/* Data size for the first header: 0 for files (rewritten in finish), but stdout cannot
+   seek back, so it gets the exact length, or the maximum if that is unknown. */
+static fl_u64 fl_wav_start_size(fl_wav_sink *w, const fl_format *f) {
+   fl_i64 frames = fl_exact_frames(f);
+   if (w->f != stdout) return 0;
+   return frames >= 0 ? (fl_u64)frames*w->C*(w->container/8) : ~(fl_u64)0;
+}
+
 static int fl_wav_start(fl_sink *s, const fl_format *f) {
    fl_wav_sink *w = (fl_wav_sink*)s;
    static const fl_u32 opus_masks[8] = {4, 3, 7, 0x33, 0x37, 0x3F, 0x70F, 0x63F};
@@ -415,7 +485,7 @@ static int fl_wav_start(fl_sink *s, const fl_format *f) {
    if (f->is_float) {
       w->container = 32;
       w->is_float = 1;
-      return fl_wav_header(w, 0);
+      return fl_wav_header(w, fl_wav_start_size(w, f));
    }
    w->container = (f->bits+7)/8*8;
    if (f->opus_family >= 0) {
@@ -425,7 +495,7 @@ static int fl_wav_start(fl_sink *s, const fl_format *f) {
       w->ext = w->C > 2 || w->bits > 16 || w->bits != w->container;
       w->mask = f->channel_mask ? f->channel_mask : fl_default_mask(w->C);
    }
-   return fl_wav_header(w, 0);
+   return fl_wav_header(w, fl_wav_start_size(w, f));
 }
 
 static int fl_wav_write(fl_sink *s, const fl_i32 *pcm, int n) {
@@ -456,16 +526,18 @@ static int fl_wav_finish(fl_sink *s) {
    fl_u64 data = (fl_u64)w->written*w->C*(w->container/8);
    int ret = FL_OK;
    if (data&1) ret = fputc(0, w->f) == EOF ? FL_ERR_IO : FL_OK;
-   fseek(w->f, 0, SEEK_SET);
-   if (ret == FL_OK) ret = fl_wav_header(w, data);
-   if (fclose(w->f) != 0 && ret == FL_OK) ret = FL_ERR_IO;
+   if (w->f != stdout) {  /* stdout keeps the header from start() */
+      fseek(w->f, 0, SEEK_SET);
+      if (ret == FL_OK) ret = fl_wav_header(w, data);
+   }
+   if (fl_fclose(w->f) != 0 && ret == FL_OK) ret = FL_ERR_IO;
    w->f = NULL;
    return ret;
 }
 
 static void fl_wav_destroy(fl_sink *s) {
    fl_wav_sink *w = (fl_wav_sink*)s;
-   if (w->f) fclose(w->f);
+   if (w->f) fl_fclose(w->f);
    free(w->buf);
    free(w);
 }

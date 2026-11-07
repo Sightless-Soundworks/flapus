@@ -86,8 +86,11 @@ FLDEF void fl_options_init(fl_options *opt);
    Opus output is bit-exact with opusenc for the same samples, Opus input is decoded
    like opusdec (16-bit, original rate), FLAC output is lossless. opt may be NULL.
    Paths: on Windows a path that is valid UTF-8 is opened with _wfopen, so file names
-   outside the ANSI code page work. Any other path goes to fopen unchanged. The same
-   applies to every function below that takes a path. */
+   outside the ANSI code page work. Any other path goes to fopen unchanged. The path "-"
+   is stdin for input and stdout for output (set opt->format). stdout cannot seek back,
+   so a WAV header gets the length from the source (the maximum if unknown) and the FLAC
+   STREAMINFO has no MD5 and frame sizes. The same applies to every function below that
+   takes a path. */
 FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_options *opt);
 
 /* Decoded audio in memory: interleaved samples in WAV/FLAC channel order, right-justified

@@ -12,6 +12,7 @@ static void usage(void) {
       "Usage: flapus [options] input output\n"
       "  The input format (WAV, FLAC, Ogg FLAC, Ogg Opus) is detected from the file.\n"
       "  The output format follows the extension: .wav, .flac or .opus.\n"
+      "  Use - for stdin or stdout (stdout needs --format).\n"
       "General:\n"
       "      --format F       output format: wav, flac or opus (overrides the extension)\n"
       "  -s, --silent         no progress display\n"
@@ -118,7 +119,7 @@ int main(int argc, char **argv) {
    fl_options opt;
    static char opts[256];
    progress_state ps;
-   int i, ret, last = argc-2, silent = 0, delete_input = 0;
+   int i, ret, last = argc-2, silent = 0, delete_input = 0, to_stdout;
    if (argc == 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)) {
       version();
       return 0;
@@ -226,9 +227,18 @@ int main(int argc, char **argv) {
          return 1;
       }
    }
+   to_stdout = strcmp(argv[argc-1], "-") == 0;
+   if (to_stdout && !opt.format) {
+      fprintf(stderr, "Error: output to stdout needs --format\n");
+      return 1;
+   }
+   if (delete_input && strcmp(argv[argc-2], "-") == 0) {
+      fprintf(stderr, "Error: --delete-input-file needs an input file\n");
+      return 1;
+   }
    opt.comment_options = opts[0] ? opts : NULL;
    memset(&ps, 0, sizeof(ps));
-   ps.name = argv[argc-2];
+   ps.name = strcmp(argv[argc-2], "-") == 0 ? "stdin" : argv[argc-2];
    ps.ratio = -1;
    if (!silent) {
       opt.progress = progress;
@@ -236,8 +246,9 @@ int main(int argc, char **argv) {
    }
    ret = fl_convert_file(argv[argc-2], argv[argc-1], &opt);
    if (!silent) {
-      if (ret == FL_OK && ps.ratio >= 0)
+      if (ret == FL_OK && ps.ratio >= 0 && !to_stdout)
          fprintf(stderr, "\r%s: wrote %lld bytes, ratio=%.3f   \n", ps.name, file_size(argv[argc-1]), ps.ratio);
+      else if (ret == FL_OK && ps.ratio >= 0) fprintf(stderr, "\r%s: done, ratio=%.3f   \n", ps.name, ps.ratio);
       else if (ret == FL_OK) fprintf(stderr, "\r%s: done              \n", ps.name);
       else if (ps.shown) fprintf(stderr, "\n");
    }

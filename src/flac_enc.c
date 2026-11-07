@@ -1214,9 +1214,10 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
    hdr[4] = (unsigned char)(last ? 0x80 : 0);
    fl_put_be24(hdr+5, 34);
    memset(zero, 0, 16);
-   fl_flac_streaminfo(s, hdr+8, 0, zero);
+   fl_flac_streaminfo(s, hdr+8, s->f == stdout && fl_exact_frames(f) > 0 ? (fl_u64)f->frames : 0, zero);
    if (fwrite(hdr, 1, sizeof(hdr), s->f) != sizeof(hdr)) return FL_ERR_IO;
    s->info_pos = 8;
+   s->base.out_bytes = sizeof(hdr);
    if (ntag) {
       const char *vendor = "flapus";
       unsigned char n4[4];
@@ -1227,6 +1228,7 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
       last = !npic && !nblk;
       n4[0] = (unsigned char)(4|(last ? 0x80 : 0));
       fl_put_be24(n4+1, len);
+      s->base.out_bytes += 4+len;
       fwrite(n4, 1, 4, s->f);
       fl_put_le32(n4, (fl_u32)strlen(vendor));
       fwrite(n4, 1, 4, s->f);
@@ -1258,6 +1260,7 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
             fl_put_be24(h4+1, (fl_u32)got);
             fwrite(h4, 1, 4, s->f);
             fwrite(pic, 1, got, s->f);
+            s->base.out_bytes += 4+got;
          }
          free(pic);
       }
@@ -1267,6 +1270,7 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
       fl_put_be24(h4+1, (fl_u32)f->blocks[i].len);
       fwrite(h4, 1, 4, s->f);
       fwrite(f->blocks[i].data, 1, f->blocks[i].len, s->f);
+      s->base.out_bytes += 4+f->blocks[i].len;
    }
    return ferror(s->f) ? FL_ERR_IO : FL_OK;
 }
@@ -1314,7 +1318,12 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
       if (fl_ws_alloc(&w->ws, s->cfg.max_block, s->cfg.max_porder) < 0 || fl_flac_dec_alloc(&w->dec, s->cfg.max_block) < 0)
          return FL_ERR_ALLOC;
    }
-   s->min_frame = 0xFFFFFF;
+   if (s->f == stdout) {
+      /* stdout cannot seek back: STREAMINFO is final now, with the block size limits
+         and unknown frame sizes and MD5 (like flac) */
+      s->min_block = s->cfg.unit ? s->cfg.unit : s->cfg.fixed_block;
+      s->max_block = s->cfg.unit ? s->cfg.max_block : s->cfg.fixed_block;
+   } else s->min_frame = 0xFFFFFF;
    return fl_flac_metadata_out(s, f);
 }
 
@@ -1577,6 +1586,7 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
       fl_u32 flen = (fl_u32)job->bytes;
       if ((ret = job->err) != FL_OK) break;
       if (fwrite(s->wk[job->worker].bw.buf+job->pos, 1, flen, s->f) != flen) ret = FL_ERR_IO;
+      s->base.out_bytes += flen;
       if (flen < s->min_frame) s->min_frame = flen;
       if (flen > s->max_frame) s->max_frame = flen;
       if (job->len > s->max_block) s->max_block = job->len;
@@ -1586,7 +1596,6 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
    for (i = 0; i < s->nthreads; i++) s->wk[i].bw.len = 0;
    s->sample_pos += len;
    s->frame_no += s->njobs;
-   s->base.out_bytes = ftell(s->f);
    s->base.out_frames = (fl_i64)s->sample_pos;
    for (c = 0; c < s->C; c++) memmove(s->buf[c], s->buf[c]+len, sizeof(fl_i32)*(s->have-len));
    s->have -= len;
@@ -1622,6 +1631,7 @@ static int fl_flacenc_finish(fl_sink *sk) {
    unsigned char info[34], md5[16];
    int ret = fl_flac_process(s, s->have);
    if (ret != FL_OK) return ret;
+   if (s->f == stdout) goto done;  /* STREAMINFO was written in start() */
    fl_md5_final(&s->md5, md5);
    if (s->frame_no == 0) s->min_frame = 0;
    if (!s->cfg.unit) {
@@ -1633,7 +1643,8 @@ static int fl_flacenc_finish(fl_sink *sk) {
    }
    fl_flac_streaminfo(s, info, s->sample_pos, md5);
    if (fseek(s->f, s->info_pos, SEEK_SET) != 0 || fwrite(info, 1, 34, s->f) != 34) return FL_ERR_IO;
-   ret = fclose(s->f) != 0 ? FL_ERR_IO : FL_OK;
+done:
+   ret = fl_fclose(s->f) != 0 ? FL_ERR_IO : FL_OK;
    s->f = NULL;
    return ret;
 }
@@ -1641,7 +1652,7 @@ static int fl_flacenc_finish(fl_sink *sk) {
 static void fl_flacenc_destroy(fl_sink *sk) {
    fl_flac_sink *s = (fl_flac_sink*)sk;
    int c;
-   if (s->f) fclose(s->f);
+   if (s->f) fl_fclose(s->f);
    for (c = 0; c < 8; c++) {
       free(s->buf[c]);
       fl_prefix_free(&s->pf[c]);

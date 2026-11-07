@@ -132,6 +132,7 @@ typedef struct {
    int is_eos;
    size_t pageno;
    FILE *out;
+   fl_i64 written;  /* bytes written (ftell does not work on pipes) */
    int error;
 } fl_oggp;
 
@@ -213,6 +214,7 @@ static void fl_oggp_write_pages(fl_oggp *o) {
       for (i = 0; i < p->buf_size; i++) crc = (crc<<8)^fl_ogg_crc_table[((crc>>24)&0xff)^o->buf[p->buf_pos+i]];
       fl_put_le32(h+22, crc);
       if (fwrite(h, 1, hs, o->out) != hs || fwrite(o->buf+p->buf_pos, 1, p->buf_size, o->out) != p->buf_size) o->error = 1;
+      o->written += hs+p->buf_size;
    }
    o->pages_fill = 0;
 }
@@ -730,7 +732,7 @@ static int fl_opus_write(fl_sink *s, const fl_i32 *pcm, int n) {
       if (o->n == 960) fl_opus_flush_read(o);
    }
    fl_x87_leave(cw);
-   o->base.out_bytes = ftell(o->e->ogg.out);
+   o->base.out_bytes = o->e->ogg.written;
    o->base.out_frames += frames_in;
    return o->e->ogg.error ? FL_ERR_IO : FL_OK;
 }
@@ -743,7 +745,7 @@ static int fl_opus_finish(fl_sink *s) {
    fl_ope_drain(o->e);
    fl_x87_leave(cw);
    ret = o->e->ogg.error ? FL_ERR_IO : FL_OK;
-   if (fclose(o->e->ogg.out) != 0) ret = FL_ERR_IO;
+   if (fl_fclose(o->e->ogg.out) != 0) ret = FL_ERR_IO;
    o->e->ogg.out = NULL;
    return ret;
 }
@@ -752,7 +754,7 @@ static void fl_opus_destroy(fl_sink *s) {
    fl_opus_sink *o = (fl_opus_sink*)s;
    fl_ope *e = o->e;
    if (e) {
-      if (e->ogg.out) fclose(e->ogg.out);
+      if (e->ogg.out) fl_fclose(e->ogg.out);
       if (e->st) fl_msenc_destroy(e->st);
       if (e->have_re) fl_ope_rs_free(&e->re);
       free(e->buffer);

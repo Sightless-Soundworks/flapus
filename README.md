@@ -94,7 +94,15 @@ flapus music.opus music.flac                  # Opus -> FLAC (decoded like opusd
 flapus old.flac new.flac                      # recompress, tags and pictures are kept
 flapus --rate 48000 music.opus music48k.wav
 flapus --delete-input-file music.wav music.flac   # remove music.wav after success
+ffmpeg -i video.mkv -f wav - | flapus - audio.opus   # read from stdin
+flapus --format wav music.flac - | lame - music.mp3  # write to stdout
 ```
+
+`-` as input reads stdin, and `-` as output writes stdout; the output format is then
+given with `--format`. stdout cannot seek back, so the headers are written once: a WAV
+header gets the length from the source (the maximum if it is unknown, as for Opus
+input), and the FLAC STREAMINFO has no MD5 and no frame sizes, like `flac` writing to
+stdout.
 
 While it works, flapus shows progress on stderr the way flac does:
 
@@ -107,12 +115,14 @@ Decoding shows only the percentage and ends with `done`.
 
 **General options**
 
-- `--format wav|flac|opus` sets the output format instead of the extension.
+- `--format wav|flac|opus` sets the output format instead of the extension (needed
+  for stdout).
 - `-s` or `--silent` turns the progress display off.
 - `-V` or `--version` shows the version, how the Opus encoder was built (portable
   math or not) and the target.
 - `--delete-input-file` deletes the input file after a successful conversion. It is
-  off by default, and nothing is deleted when an error occurs.
+  off by default, and nothing is deleted when an error occurs. It cannot be combined
+  with stdin input.
 
 **FLAC output options**
 
@@ -269,7 +279,8 @@ All functions return a negative `FL_ERR_*` code on error. See the comments in `s
 
 Paths are UTF-8 on Windows: a path that is valid UTF-8 is opened with `_wfopen`, so
 file names outside the ANSI code page work. Any other path, such as an ANSI `argv`
-string, goes to `fopen` unchanged.
+string, goes to `fopen` unchanged. The path `-` is stdin or stdout, as on the command
+line.
 
 ### Platforms
 
