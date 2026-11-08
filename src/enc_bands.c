@@ -94,11 +94,11 @@ static void fl_e_renormalise_vector(float *X, int N, float gain) {
 
 #ifdef FLAPUS_PORTABLE_MATH
 /* rcpps and rsqrtps are approximations whose exact bits are up to the CPU, and the PVQ
-   search below uses them (as libopus's SSE code does): on an AMD EPYC 7763 the default build wrote
-   other packets than on an Intel Core i7-13700K. With FLAPUS_PORTABLE_MATH they come
-   from Intel's values in enc_rcp_tables.c instead, so the result is Intel's on every
-   CPU. These two functions are the ones tools/gen_rcp.c checks against the hardware
-   for all 2^32 inputs; keep them identical. */
+   search below uses them (as libopus's SSE code does): on an AMD EPYC 7763 the default
+   build wrote other packets than on an Intel Core i7-13700K. With FLAPUS_PORTABLE_MATH
+   they come from Intel's values in enc_rcp_tables.c instead, so the result is Intel's
+   on every CPU. These two functions are the ones tools/gen_rcp.c checks against the
+   hardware for all 2^32 inputs; keep them identical. */
 static unsigned fl_p_rcp_bits(unsigned x) {
    unsigned s = x & 0x80000000u, e = (x >> 23) & 0xff, t;
    int re;

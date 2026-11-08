@@ -145,12 +145,12 @@ FLDEF int fl_opus_ms_decode_float(fl_opus_ms_decoder *dec, const unsigned char *
    On 32-bit x86, float and double arithmetic must use SSE2 (FLT_EVAL_METHOD 0, the
    default of w64devkit 2.11 and later). With x87 arithmetic (-mfpmath=387, the default
    of older 32-bit toolchains) the encoder rounds differently than designed and some
-   files encode differently, so the implementation stops with an error instead. Build with -msse2 -mfpmath=sse, or
-   define FLAPUS_NO_ENCODER.
-   The default encoder uses rcpps/rsqrtps and the x87 transcendental
-   instructions, whose results differ between CPU makers, so its output differs between
-   Intel and AMD. Define FLAPUS_PORTABLE_MATH for output that is the same on every x86
-   CPU: Intel's rcpps/rsqrtps from tables, and software replacements for the x87
+   files encode differently, so the implementation stops with an error instead. Build
+   with -msse2 -mfpmath=sse, or define FLAPUS_NO_ENCODER.
+   The default encoder uses rcpps/rsqrtps and the x87 transcendental instructions,
+   whose results differ between CPU makers, so its output differs between Intel and
+   AMD. Define FLAPUS_PORTABLE_MATH for output that is the same on every x86 CPU:
+   Intel's rcpps/rsqrtps from tables, and software replacements for the x87
    instructions (at most 2.4 ulp of the 64-bit mantissa); see README. */
 #if !defined(FLAPUS_NO_ENCODER) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
 #define FLAPUS_HAVE_ENCODER 1

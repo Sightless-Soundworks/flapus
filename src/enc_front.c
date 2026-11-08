@@ -744,6 +744,7 @@ static int fl_opus_finish(fl_sink *s) {
    fl_opus_flush_read(o);  /* the last, short read (possibly empty) */
    fl_ope_drain(o->e);
    fl_x87_leave(cw);
+   o->base.out_bytes = o->e->ogg.written;  /* the drained pages count for the final ratio */
    ret = o->e->ogg.error ? FL_ERR_IO : FL_OK;
    if (fl_fclose(o->e->ogg.out) != 0) ret = FL_ERR_IO;
    o->e->ogg.out = NULL;

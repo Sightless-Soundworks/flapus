@@ -145,12 +145,12 @@ FLDEF int fl_opus_ms_decode_float(fl_opus_ms_decoder *dec, const unsigned char *
    On 32-bit x86, float and double arithmetic must use SSE2 (FLT_EVAL_METHOD 0, the
    default of w64devkit 2.11 and later). With x87 arithmetic (-mfpmath=387, the default
    of older 32-bit toolchains) the encoder rounds differently than designed and some
-   files encode differently, so the implementation stops with an error instead. Build with -msse2 -mfpmath=sse, or
-   define FLAPUS_NO_ENCODER.
-   The default encoder uses rcpps/rsqrtps and the x87 transcendental
-   instructions, whose results differ between CPU makers, so its output differs between
-   Intel and AMD. Define FLAPUS_PORTABLE_MATH for output that is the same on every x86
-   CPU: Intel's rcpps/rsqrtps from tables, and software replacements for the x87
+   files encode differently, so the implementation stops with an error instead. Build
+   with -msse2 -mfpmath=sse, or define FLAPUS_NO_ENCODER.
+   The default encoder uses rcpps/rsqrtps and the x87 transcendental instructions,
+   whose results differ between CPU makers, so its output differs between Intel and
+   AMD. Define FLAPUS_PORTABLE_MATH for output that is the same on every x86 CPU:
+   Intel's rcpps/rsqrtps from tables, and software replacements for the x87
    instructions (at most 2.4 ulp of the 64-bit mantissa); see README. */
 #if !defined(FLAPUS_NO_ENCODER) && defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))
 #define FLAPUS_HAVE_ENCODER 1
@@ -12194,11 +12194,11 @@ static void fl_e_renormalise_vector(float *X, int N, float gain) {
 
 #ifdef FLAPUS_PORTABLE_MATH
 /* rcpps and rsqrtps are approximations whose exact bits are up to the CPU, and the PVQ
-   search below uses them (as libopus's SSE code does): on an AMD EPYC 7763 the default build wrote
-   other packets than on an Intel Core i7-13700K. With FLAPUS_PORTABLE_MATH they come
-   from Intel's values in enc_rcp_tables.c instead, so the result is Intel's on every
-   CPU. These two functions are the ones tools/gen_rcp.c checks against the hardware
-   for all 2^32 inputs; keep them identical. */
+   search below uses them (as libopus's SSE code does): on an AMD EPYC 7763 the default
+   build wrote other packets than on an Intel Core i7-13700K. With FLAPUS_PORTABLE_MATH
+   they come from Intel's values in enc_rcp_tables.c instead, so the result is Intel's
+   on every CPU. These two functions are the ones tools/gen_rcp.c checks against the
+   hardware for all 2^32 inputs; keep them identical. */
 static unsigned fl_p_rcp_bits(unsigned x) {
    unsigned s = x & 0x80000000u, e = (x >> 23) & 0xff, t;
    int re;
@@ -16054,6 +16054,7 @@ static int fl_opus_finish(fl_sink *s) {
    fl_opus_flush_read(o);  /* the last, short read (possibly empty) */
    fl_ope_drain(o->e);
    fl_x87_leave(cw);
+   o->base.out_bytes = o->e->ogg.written;  /* the drained pages count for the final ratio */
    ret = o->e->ogg.error ? FL_ERR_IO : FL_OK;
    if (fl_fclose(o->e->ogg.out) != 0) ret = FL_ERR_IO;
    o->e->ogg.out = NULL;
