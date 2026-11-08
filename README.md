@@ -16,7 +16,7 @@ includes FLAC → Opus, Opus → FLAC and FLAC → FLAC (recompression).
 ## Folder layout
 
 ```
-flapus.h           the single-file library (generated from src/ by tools/amalgamate.py)
+flapus.h           the single-file library (generated from src/ and LICENSE)
 flapus_cli.c       command line tool
 src/               library sources (see NOTES.md for the file map)
 tools/             amalgamate.py, comparison scripts, generators for tables and SILK code
@@ -41,7 +41,7 @@ gcc -O2 -ffp-contract=off -o flapus.exe flapus_cli.c
   differently, so the header stops with an error. Add `-msse2 -mfpmath=sse`, or define
   `FLAPUS_NO_ENCODER` if you only need the decoders.
 - On Linux or macOS, add `-pthread -lm`.
-- After changing anything in `src/`, regenerate the header first:
+- After changing anything in `src/` or `LICENSE`, regenerate the header first:
 
 ```bash
 python tools/amalgamate.py
@@ -63,9 +63,9 @@ file that needs no DLLs beyond Windows' own.
   and the subsystem version of both exes, and runs the four tests. It encodes
   deterministic test signals (`tools/testsignal.py`) with both builds and fails if the
   Opus files differ.
-- **Release:** every push to `main` publishes both exes as the pre-release `latest`,
-  and a tag `v*` publishes them as a versioned release. Each workflow run also keeps
-  them as two artifacts, the plain exes.
+- **Release:** every push to `main` publishes both exes and `flapus.h` as the
+  pre-release `latest`, and a tag `v*` publishes them as a versioned release. Each
+  workflow run also keeps the two exes as artifacts.
 
 The builds are reproducible: the same commit and devkit give the same exe, byte for
 byte, on any machine. To check a release, build it in the devkit shell and compare
@@ -240,7 +240,8 @@ In exactly one C file:
 ```
 
 Every other file just includes `flapus.h`. The declarations are C++-compatible; compile
-the implementation as C.
+the implementation as C. `flapus.h` is complete on its own: the license texts are at its
+end.
 
 File conversion, the same as the CLI:
 

@@ -26,5 +26,9 @@ for p in tail:
     out.append('\n/* ======== %s ======== */\n' % p)
     out.append(load(p))
 out.append('\n#endif /* FLAPUS_IMPLEMENTATION_DONE */\n#endif /* FLAPUS_IMPLEMENTATION */\n')
+# the license texts go at the end, so flapus.h is complete on its own
+lic = open(os.path.join(root, 'LICENSE'), encoding='utf-8').read()
+if '/*' in lic or '*/' in lic: sys.exit('LICENSE must not contain /* or */')
+out.append('\n/*\n' + lic.rstrip('\n') + '\n*/\n')
 open(os.path.join(root, 'flapus.h'), 'w', encoding='utf-8', newline='\n').write(''.join(out))
 print('wrote flapus.h')

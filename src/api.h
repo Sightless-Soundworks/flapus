@@ -3,7 +3,7 @@
    no dependencies besides the C library.
 
    Copyright (c) 2026 Sightless Soundworks. Three-clause BSD license; the full text and
-   the licenses of the projects below are in LICENSE.
+   the licenses of the projects below are at the end of this file.
 
    Usage as a library: in exactly one C file write
       #define FLAPUS_IMPLEMENTATION

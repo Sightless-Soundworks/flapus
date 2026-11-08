@@ -180,7 +180,7 @@ Speed and output:
 
 ## Regenerating generated sources
 
-- `python tools/amalgamate.py` rebuilds `flapus.h`.
+- `python tools/amalgamate.py` rebuilds `flapus.h` from `src/`, with `LICENSE` at the end.
 - Both generators below read a libopus 1.6.1 tree whose `#if` blocks were resolved with
   `python tools/unifdef.py <dec64|enc32> <libopus dir> <out dir>`.
 - `python tools/gen_tables.py <flattened dir> src` writes the table files.

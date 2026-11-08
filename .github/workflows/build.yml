@@ -176,7 +176,8 @@ jobs:
           test -n "$X86" && test "$X86" = "$X64" && echo "x86 and x64: identical Opus output"
 
   # main -> the release "latest" (a pre-release, rebuilt for every push), v* -> a
-  # versioned release. GitHub shows the SHA-256 of every asset.
+  # versioned release, both with the exes and flapus.h. GitHub shows the SHA-256 of
+  # every asset.
   release:
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     needs: compare
@@ -186,6 +187,7 @@ jobs:
     concurrency:
       group: release-${{ github.ref }}
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           pattern: flapus-*.exe
@@ -217,7 +219,8 @@ jobs:
             echo "$first"
             echo
             echo "- \`flapus-x86.exe\`: 32-bit Windows, \`flapus-x64.exe\`: 64-bit Windows. Single files, no DLLs beyond Windows' own."
+            echo "- \`flapus.h\`: the single-file library, with the license texts at its end."
             echo "- Built with w64devkit $W64DEVKIT_VERSION and \`FLAPUS_PORTABLE_MATH\`: the Opus output is the same on every x86 CPU."
             echo "- Reproducible: the build flags are in .github/workflows/build.yml."
           } > notes.md
-          gh release create "$tag" flapus-x86.exe flapus-x64.exe --title "$title" --notes-file notes.md "${flags[@]}"
+          gh release create "$tag" flapus-x86.exe flapus-x64.exe ../flapus.h --title "$title" --notes-file notes.md "${flags[@]}"
