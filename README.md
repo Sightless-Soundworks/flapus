@@ -63,11 +63,13 @@ file that needs no DLLs beyond Windows' own.
   and the subsystem version of both exes, and runs the four tests. It encodes
   deterministic test signals (`tools/testsignal.py`) with both builds and fails if the
   Opus files differ.
-- **Release:** a tag `v*` publishes both exes as a release, with `SHA256SUMS`.
+- **Release:** every push to `main` publishes both exes as the pre-release `latest`,
+  and a tag `v*` publishes them as a versioned release. Each workflow run also keeps
+  them as two artifacts, the plain exes.
 
 The builds are reproducible: the same commit and devkit give the same exe, byte for
 byte, on any machine. To check a release, build it in the devkit shell and compare
-with `SHA256SUMS`:
+with the SHA-256 that GitHub shows next to each release asset:
 
 ```bash
 gcc -O2 -ffp-contract=off -msse2 -mfpmath=sse -DFLAPUS_PORTABLE_MATH \

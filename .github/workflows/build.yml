@@ -3,8 +3,8 @@ name: build
 # Official builds of the flapus command line tool.
 #
 # Every push builds flapus.exe for x86 and x64 with a pinned w64devkit, runs the
-# tests, and checks that both builds write the same Opus and FLAC files. A tag v*
-# also publishes them as a release.
+# tests, and checks that both builds write the same Opus files. A push to main
+# publishes both exes as the release "latest", a tag v* as a versioned release.
 #
 # The builds are reproducible: the same commit and devkit give the same exe, byte
 # for byte, also on another machine (no timestamp, no paths, no compiler ident).
@@ -13,7 +13,8 @@ name: build
 #   gcc -O2 -ffp-contract=off -msse2 -mfpmath=sse -DFLAPUS_PORTABLE_MATH \
 #       -fno-ident -s -Wl,--no-insert-timestamp -o flapus.exe flapus_cli.c
 #
-# (x64: without -msse2 -mfpmath=sse) and compare with SHA256SUMS.
+# (x64: without -msse2 -mfpmath=sse) and compare with the SHA-256 that GitHub shows
+# next to each release asset.
 #
 # The encoder is built with FLAPUS_PORTABLE_MATH, so the output is the same on
 # every x86 CPU; see README.
@@ -35,6 +36,10 @@ env:
 jobs:
   build:
     runs-on: windows-latest
+    # One output per arch; GitHub combines the outputs of the matrix jobs.
+    outputs:
+      opus-x86: ${{ steps.encode.outputs.opus-x86 }}
+      opus-x64: ${{ steps.encode.outputs.opus-x64 }}
     strategy:
       fail-fast: false
       matrix:
@@ -129,91 +134,90 @@ jobs:
           Write-Host "api: ok"
 
       # The same input must give the same Opus files from both builds - that is
-      # what FLAPUS_PORTABLE_MATH guarantees, and the compare job checks it. The
-      # FLAC encoder and the decoders still call libm's sin/cos/log, and the two
-      # jobs can run on different CPUs, so their files are only listed.
+      # what FLAPUS_PORTABLE_MATH guarantees, and the compare job checks it with one
+      # digest of all Opus files per build. FLAC and WAV output still use libm's
+      # sin/cos/log, so they are only checked for errors.
       - name: Encode the test signals
+        id: encode
         shell: pwsh
         run: |
           python tools/testsignal.py signals
-          $exe = ".\flapus-${{ matrix.arch }}.exe"
+          function flapus { & ".\flapus-${{ matrix.arch }}.exe" -s @args; if ($LASTEXITCODE -ne 0) { throw "flapus $args failed" } }
           foreach ($s in "stereo44", "mono48") {
-            & $exe -s --serial 1 --padding 0 "signals\$s.wav" "signals\$s.opus"
-            & $exe -s --serial 1 --padding 0 --bitrate 24 "signals\$s.wav" "signals\$s-24k.opus"
-            & $exe -s "signals\$s.wav" "signals\$s.flac"
-            & $exe -s "signals\$s.opus" "signals\$s-dec.wav"
+            flapus --serial 1 --padding 0 "signals\$s.wav" "signals\$s.opus"
+            flapus --serial 1 --padding 0 --bitrate 24 "signals\$s.wav" "signals\$s-24k.opus"
+            flapus "signals\$s.wav" "signals\$s.flac"
+            flapus "signals\$s.opus" "signals\$s-dec.wav"
           }
-          $hash = { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name }
-          Get-ChildItem signals -Filter *.opus | Sort-Object Name | ForEach-Object $hash |
-            Tee-Object -FilePath "outputs-${{ matrix.arch }}.txt"
-          Get-ChildItem signals | Where-Object Extension -ne ".opus" | Sort-Object Name | ForEach-Object $hash |
-            Tee-Object -FilePath "info-${{ matrix.arch }}.txt"
+          $lines = Get-ChildItem signals -Filter *.opus | Sort-Object Name |
+            ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name }
+          $lines | Write-Host
+          $all = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($lines -join "`n"))
+          Add-Content $env:GITHUB_OUTPUT "opus-${{ matrix.arch }}=$([Convert]::ToHexString($all).ToLower())"
 
+      # A single file without archive: the artifact is the plain exe.
       - uses: actions/upload-artifact@v7
         with:
-          name: flapus-${{ matrix.arch }}
-          path: |
-            flapus-${{ matrix.arch }}.exe
-            outputs-${{ matrix.arch }}.txt
-            info-${{ matrix.arch }}.txt
+          path: flapus-${{ matrix.arch }}.exe
+          archive: false
           if-no-files-found: error
 
   compare:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v8
-        with:
-          path: art
-          merge-multiple: true
       - name: x86 and x64 write the same Opus files
+        env:
+          X86: ${{ needs.build.outputs.opus-x86 }}
+          X64: ${{ needs.build.outputs.opus-x64 }}
         run: |
-          cd art
-          cat outputs-x86.txt
-          diff outputs-x86.txt outputs-x64.txt && echo "x86 and x64: identical Opus output"
-      - name: FLAC and decoded files (information only)
-        run: |
-          cd art
-          if diff info-x86.txt info-x64.txt; then echo "identical as well"; else echo "::notice::FLAC/decoded files differ between x86 and x64 (not covered by FLAPUS_PORTABLE_MATH)"; fi
-      - name: SHA256SUMS
-        run: |
-          cd art
-          sha256sum flapus-x86.exe flapus-x64.exe | tee SHA256SUMS
-      - uses: actions/upload-artifact@v7
-        with:
-          name: flapus-release
-          path: |
-            art/flapus-x86.exe
-            art/flapus-x64.exe
-            art/SHA256SUMS
-          if-no-files-found: error
+          echo "x86: $X86"
+          echo "x64: $X64"
+          test -n "$X86" && test "$X86" = "$X64" && echo "x86 and x64: identical Opus output"
 
+  # main -> the release "latest" (a pre-release, rebuilt for every push), v* -> a
+  # versioned release. GitHub shows the SHA-256 of every asset.
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     needs: compare
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: release-${{ github.ref }}
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: flapus-release
+          pattern: flapus-*.exe
+          merge-multiple: true
           path: rel
-      - name: Publish ${{ github.ref_name }}
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           cd rel
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag=$GITHUB_REF_NAME
+            title="flapus ${tag#v}"
+            first="flapus ${tag#v}: Opus and FLAC encoder/decoder, command line tool."
+            flags=()
+          else
+            # An older run that finishes late must not replace a newer build.
+            head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+            if [ "$head" != "$GITHUB_SHA" ]; then echo "main has moved on to $head; skipped"; exit 0; fi
+            tag=latest
+            title="flapus latest"
+            first="Development build of ${GITHUB_SHA:0:7}, rebuilt for every push to main."
+            flags=(--prerelease --latest=false --target "$GITHUB_SHA")
+            gh release delete latest --cleanup-tag --yes 2>/dev/null || true
+            gh api -X DELETE "repos/$GH_REPO/git/refs/tags/latest" 2>/dev/null || true
+          fi
           {
-            echo "flapus ${GITHUB_REF_NAME#v}: Opus and FLAC encoder/decoder, command line tool."
+            echo "$first"
             echo
             echo "- \`flapus-x86.exe\`: 32-bit Windows, \`flapus-x64.exe\`: 64-bit Windows. Single files, no DLLs beyond Windows' own."
             echo "- Built with w64devkit $W64DEVKIT_VERSION and \`FLAPUS_PORTABLE_MATH\`: the Opus output is the same on every x86 CPU."
             echo "- Reproducible: the build flags are in .github/workflows/build.yml."
-            echo
-            echo '```'
-            cat SHA256SUMS
-            echo '```'
           } > notes.md
-          gh release create "$GITHUB_REF_NAME" flapus-x86.exe flapus-x64.exe SHA256SUMS \
-            --repo "$GITHUB_REPOSITORY" --title "flapus ${GITHUB_REF_NAME#v}" --notes-file notes.md
+          gh release create "$tag" flapus-x86.exe flapus-x64.exe --title "$title" --notes-file notes.md "${flags[@]}"
