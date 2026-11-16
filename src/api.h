@@ -8,7 +8,31 @@
    Usage as a library: in exactly one C file write
       #define FLAPUS_IMPLEMENTATION
       #include "flapus.h"
-   Other files include the header without the define.
+   Other files include the header without the define. On Linux and macOS, link with
+   -pthread -lm.
+
+   Example (error checks left out):
+      fl_options opt;
+      fl_audio a;
+      fl_options_init(&opt);
+      opt.bitrate = 96000;
+      fl_convert_file("in.flac", "out.opus", &opt);
+      fl_read_audio("in.opus", NULL, &a);
+      fl_write_audio("out.flac", &a, NULL);
+      fl_audio_free(&a);
+   fl_convert_file() converts any input format to the format of the output extension,
+   fl_read_audio() reads any input into memory, and fl_write_audio() writes it out.
+   On error, the functions that return int give a negative value (an FL_ERR_* code for
+   the file functions), and the create functions return NULL and set *error.
+   For single Opus packets see the packet decoder and encoder sections below.
+
+   Threads: there is no shared state between objects, so different conversions,
+   decoders and encoders can run in different threads at the same time. One object
+   must not be used by two threads at once. The default Ogg serial number of Opus
+   output comes from rand(); set opt->serialno if the C library's rand() is not
+   thread-safe.
+
+   More documentation: README.md in https://github.com/Sightless-Soundworks/flapus
 
    Opus: encoder and decoder based on libopus 1.6.1, made for the best possible encoding
    and decoding. Compile with floating point contraction disabled (-ffp-contract=off);
@@ -131,7 +155,9 @@ FLDEF void fl_opus_decoder_reset_state(fl_opus_decoder *dec);
 /* Sets the output gain in Q8 dB (as in the OpusHead header). */
 FLDEF void fl_opus_decoder_set_gain(fl_opus_decoder *dec, int gain_q8);
 /* Decodes one packet (packet=NULL or len=0 conceals a lost packet) into interleaved
-   float samples. Returns samples per channel or a negative error. */
+   float samples. pcm holds max_frame_size samples per channel: sample_rate/25*3 (120 ms,
+   5760 at 48 kHz) fits every packet. For a lost packet, max_frame_size is the length
+   to conceal (a multiple of 2.5 ms). Returns samples per channel or a negative error. */
 FLDEF int fl_opus_decode_float(fl_opus_decoder *dec, const unsigned char *packet, int len, float *pcm, int max_frame_size);
 
 /* ---- Opus multistream packet decoder (Ogg Opus channel mapping families 1, 2, 255) ---- */
@@ -180,7 +206,9 @@ FLDEF int fl_opus_encoder_lookahead(const fl_opus_encoder *enc);
 /* OpusHead mapping fields; mapping receives one byte per channel. Returns the channel count. */
 FLDEF int fl_opus_encoder_layout(const fl_opus_encoder *enc, int *family, int *streams, int *coupled, unsigned char *mapping);
 /* Encodes fl_opus_encoder_frame_size() samples per channel. max_bytes: up to 7664 per stream is
-   always enough. Returns the packet length or a negative error. */
+   always enough. Returns the packet length or a negative error. For an Ogg Opus file,
+   OpusHead takes the pre-skip from fl_opus_encoder_lookahead() and the channel fields
+   from fl_opus_encoder_layout(); fl_convert_file() writes complete files. */
 FLDEF int fl_opus_encode_float(fl_opus_encoder *enc, const float *pcm, unsigned char *packet, int max_bytes);
 #endif /* FLAPUS_HAVE_ENCODER */
 
