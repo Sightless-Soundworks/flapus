@@ -24,6 +24,7 @@
    fl_read_audio() reads any input into memory, and fl_write_audio() writes it out.
    On error, the functions that return int give a negative value (an FL_ERR_* code for
    the file functions), and the create functions return NULL and set *error.
+   fl_error_text() describes an FL_ERR_* code.
    For single Opus packets see the packet decoder and encoder sections below.
 
    Threads: there is no shared state between objects, so different conversions,
@@ -80,6 +81,9 @@ extern "C" {
 #define FL_ERR_BAD_ARG -5
 #define FL_ERR_CHECKSUM -6  /* decoded FLAC audio does not match the MD5 in its header */
 #define FL_ERR_INTERNAL -7  /* encoder self-check failed (please report) */
+
+/* Short English description of FL_OK or an FL_ERR_* code ("unknown error" for other values). */
+FLDEF const char *fl_error_text(int err);
 
 /* ---- File conversion: WAV, FLAC, Ogg FLAC (input only), Ogg Opus ---- */
 #define FL_FORMAT_AUTO 0  /* output format from the file extension (.wav, .flac, .opus) */

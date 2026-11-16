@@ -13,6 +13,20 @@ FLDEF void fl_options_init(fl_options *opt) {
    opt->serialno = -1;
 }
 
+FLDEF const char *fl_error_text(int err) {
+   switch (err) {
+   case FL_OK: return "no error";
+   case FL_ERR_IO: return "cannot read or write a file";
+   case FL_ERR_BAD_FILE: return "invalid or corrupt input file";
+   case FL_ERR_UNSUPPORTED: return "unsupported input format or output combination";
+   case FL_ERR_ALLOC: return "out of memory";
+   case FL_ERR_BAD_ARG: return "invalid option value or unknown output format";
+   case FL_ERR_CHECKSUM: return "MD5 mismatch: the FLAC input is damaged";
+   case FL_ERR_INTERNAL: return "internal FLAC encoder check failed";
+   default: return "unknown error";
+   }
+}
+
 /* Detects the input format from the first bytes of the file (they stay in the buffer). */
 static int fl_detect_format(fl_inbuf *in) {
    const unsigned char *b;
