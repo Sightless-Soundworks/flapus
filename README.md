@@ -73,7 +73,7 @@ with the SHA-256 that GitHub shows next to each release asset:
 
 ```bash
 gcc -O2 -ffp-contract=off -msse2 -mfpmath=sse -DFLAPUS_PORTABLE_MATH \
-    -fno-ident -s -Wl,--no-insert-timestamp -o flapus-x86.exe flapus_cli.c
+    -fno-ident -s -Wl,--no-insert-timestamp -Wl,--gc-sections -o flapus-x86.exe flapus_cli.c
 ```
 
 For x64, leave out `-msse2 -mfpmath=sse`. `flapus --version` shows the version,

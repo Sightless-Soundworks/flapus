@@ -11,7 +11,7 @@ name: build
 # Rebuild locally in the devkit shell with:
 #
 #   gcc -O2 -ffp-contract=off -msse2 -mfpmath=sse -DFLAPUS_PORTABLE_MATH \
-#       -fno-ident -s -Wl,--no-insert-timestamp -o flapus.exe flapus_cli.c
+#       -fno-ident -s -Wl,--no-insert-timestamp -Wl,--gc-sections -o flapus.exe flapus_cli.c
 #
 # (x64: without -msse2 -mfpmath=sse) and compare with the SHA-256 that GitHub shows
 # next to each release asset.
@@ -31,7 +31,9 @@ on:
 
 env:
   W64DEVKIT_VERSION: 2.11.0
-  CFLAGS: -O2 -ffp-contract=off -DFLAPUS_PORTABLE_MATH -fno-ident -s -Wl,--no-insert-timestamp
+  # --gc-sections drops unused sections of the MinGW runtime, among them the compiler
+  # idents of its libraries, which -fno-ident does not reach.
+  CFLAGS: -O2 -ffp-contract=off -DFLAPUS_PORTABLE_MATH -fno-ident -s -Wl,--no-insert-timestamp -Wl,--gc-sections
 
 jobs:
   build:
