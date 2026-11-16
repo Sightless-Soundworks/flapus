@@ -3,19 +3,13 @@
 #define silk_int32_MIN ((fl_i32)0x80000000)
 #define silk_int16_MAX 0x7FFF
 #define silk_int16_MIN ((fl_i16)0x8000)
-#define silk_int8_MAX 0x7F
-#define silk_int8_MIN ((fl_i8)0x80)
 #define silk_uint8_MAX 0xFF
 
 #define silk_SMULWB(a32,b32) ((fl_i32)(((a32)*(fl_i64)((fl_i16)(b32)))>>16))
 #define silk_SMLAWB(a32,b32,c32) ((fl_i32)((a32)+(((b32)*(fl_i64)((fl_i16)(c32)))>>16)))
-#define silk_SMULWT(a32,b32) ((fl_i32)(((a32)*(fl_i64)((b32)>>16))>>16))
 #define silk_SMLAWT(a32,b32,c32) ((fl_i32)((a32)+(((b32)*((fl_i64)(c32)>>16))>>16)))
 #define silk_SMULBB(a32,b32) ((fl_i32)((fl_i16)(a32))*(fl_i32)((fl_i16)(b32)))
 #define silk_SMLABB(a32,b32,c32) ((a32)+((fl_i32)((fl_i16)(b32)))*(fl_i32)((fl_i16)(c32)))
-#define silk_SMULBT(a32,b32) ((fl_i32)((fl_i16)(a32))*((b32)>>16))
-#define silk_SMLABT(a32,b32,c32) ((a32)+((fl_i32)((fl_i16)(b32)))*((c32)>>16))
-#define silk_SMLAL(a64,b32,c32) ((a64)+((fl_i64)(b32)*(fl_i64)(c32)))
 #define silk_SMULWW(a32,b32) ((fl_i32)(((fl_i64)(a32)*(b32))>>16))
 #define silk_SMLAWW(a32,b32,c32) ((fl_i32)((a32)+(((fl_i64)(b32)*(c32))>>16)))
 #define silk_ADD_SAT32(a,b) ((((fl_u32)(a)+(fl_u32)(b))&0x80000000) == 0 ? \
@@ -27,8 +21,6 @@
 #define silk_MUL(a32,b32) ((a32)*(b32))
 #define silk_MLA(a32,b32,c32) ((a32)+((b32)*(c32)))
 #define silk_SMULTT(a32,b32) (((a32)>>16)*((b32)>>16))
-#define silk_SMLATT(a32,b32,c32) ((a32)+((b32)>>16)*((c32)>>16))
-#define silk_SMLALBB(a64,b16,c16) ((a64)+(fl_i64)((fl_i32)(b16)*(fl_i32)(c16)))
 #define silk_SMULL(a32,b32) ((fl_i64)(a32)*(b32))
 #define silk_ADD32_ovflw(a,b) ((fl_i32)((fl_u32)(a)+(fl_u32)(b)))
 #define silk_SUB32_ovflw(a,b) ((fl_i32)((fl_u32)(a)-(fl_u32)(b)))
@@ -39,21 +31,16 @@
 #define silk_ADD32(a,b) ((a)+(b))
 #define silk_SUB32(a,b) ((a)-(b))
 #define silk_SAT16(a) ((a) > silk_int16_MAX ? silk_int16_MAX : ((a) < silk_int16_MIN ? silk_int16_MIN : (a)))
-#define silk_SAT32(a) ((a) > silk_int32_MAX ? silk_int32_MAX : ((a) < silk_int32_MIN ? silk_int32_MIN : (a)))
 #define silk_ADD_SAT16(a,b) (fl_i16)silk_SAT16(((fl_i32)(a))+(b))
-#define silk_SUB_SAT16(a,b) (fl_i16)silk_SAT16(((fl_i32)(a))-(b))
-#define silk_POS_SAT32(a) ((a) > silk_int32_MAX ? silk_int32_MAX : (a))
 #define silk_ADD_POS_SAT32(a,b) ((((fl_u32)(a)+(fl_u32)(b))&0x80000000) ? silk_int32_MAX : ((a)+(b)))
 #define silk_LSHIFT32(a,shift) ((fl_i32)((fl_u32)(a)<<(shift)))
 #define silk_LSHIFT(a,shift) silk_LSHIFT32(a, shift)
-#define silk_LSHIFT64(a,shift) ((fl_i64)((fl_u64)(a)<<(shift)))
 #define silk_RSHIFT(a,shift) ((a)>>(shift))
 #define silk_RSHIFT32(a,shift) ((a)>>(shift))
 #define silk_RSHIFT64(a,shift) ((a)>>(shift))
 #define silk_LIMIT(a,limit1,limit2) ((limit1) > (limit2) ? ((a) > (limit1) ? (limit1) : ((a) < (limit2) ? (limit2) : (a))) \
    : ((a) > (limit2) ? (limit2) : ((a) < (limit1) ? (limit1) : (a))))
 #define silk_LIMIT_int silk_LIMIT
-#define silk_LIMIT_16 silk_LIMIT
 #define silk_LIMIT_32 silk_LIMIT
 #define silk_LSHIFT_SAT32(a,shift) (silk_LSHIFT32(silk_LIMIT((a), silk_RSHIFT32(silk_int32_MIN, (shift)), \
    silk_RSHIFT32(silk_int32_MAX, (shift))), (shift)))
@@ -69,12 +56,10 @@
 #define silk_max(a,b) (((a) > (b)) ? (a) : (b))
 #define silk_min_int silk_min
 #define silk_max_int silk_max
-#define silk_min_16 silk_min
 #define silk_max_16 silk_max
 #define silk_min_32 silk_min
 #define silk_max_32 silk_max
 #define silk_abs(a) (((a) > 0) ? (a) : -(a))
-#define silk_abs_int32(a) (((a)^((a)>>31))-((a)>>31))
 #define SILK_FIX_CONST(C,Q) ((fl_i32)((C)*((fl_i64)1<<(Q))+0.5))
 #define silk_RAND(seed) (silk_MLA_ovflw(907633515, (seed), 196314165))
 #define silk_SMMUL(a32,b32) (fl_i32)silk_RSHIFT64(silk_SMULL((a32), (b32)), 32)
@@ -172,13 +157,7 @@ typedef struct {
 static const fl_i16 silk_resampler_up2_hq_0[3] = {1746, 14986, 39083-65536};
 static const fl_i16 silk_resampler_up2_hq_1[3] = {6854, 25769, 55542-65536};
 
-static fl_i32 silk_CLZ16(fl_i16 in16) { return 32-EC_ILOG(in16<<16|0x8000); }
 static fl_i32 silk_CLZ32(fl_i32 in32) { return in32 ? 32-EC_ILOG(in32) : 32; }
-static fl_i32 silk_CLZ64(fl_i64 in) {
-   fl_i32 in_upper = (fl_i32)silk_RSHIFT64(in, 32);
-   if (in_upper == 0) return 32+silk_CLZ32((fl_i32)in);
-   return silk_CLZ32(in_upper);
-}
 static fl_i32 silk_ROR32(fl_i32 a32, int rot) {
    fl_u32 x = (fl_u32)a32, r = (fl_u32)rot, m = (fl_u32)-rot;
    if (rot == 0) return a32;

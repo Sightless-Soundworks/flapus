@@ -1,6 +1,4 @@
 /* ---- SILK encoder: float analysis (silk/float, x87 extended precision) ---- */
-#define SILK_MAX_ORDER_LPC 24
-
 /* silk_inner_product_FLP_avx2: double FMA lanes, scalar tail on the x87 stack. */
 static xf silk_inner_product_FLP(const float *data1, const float *data2, int dataSize) {
    int i, l;
@@ -121,29 +119,6 @@ static void silk_warped_autocorrelation_FLP(float *corr, const float *input, con
    }
    for (i = 0; i < order+1; i++) corr[i] = (float)C[i];
 }
-static float silk_LPC_inverse_pred_gain_FLP(const float *A, fl_i32 order) {
-   int k, n;
-   xf invGain = 1, rc, rc_mult1, rc_mult2;
-   float Atmp[SILK_MAX_ORDER_LPC];
-   memcpy(Atmp, A, order*sizeof(float));
-   for (k = order-1; k > 0; k--) {
-      rc = -XF(Atmp[k]);
-      rc_mult1 = 1-rc*rc;
-      invGain *= rc_mult1;
-      if (invGain*1e4f < 1) return 0;
-      rc_mult2 = 1/rc_mult1;
-      for (n = 0; n < (k+1)>>1; n++) {
-         float tmp1 = Atmp[n], tmp2 = Atmp[k-n-1];
-         Atmp[n] = (float)((tmp1-tmp2*rc)*rc_mult2);
-         Atmp[k-n-1] = (float)((tmp2-tmp1*rc)*rc_mult2);
-      }
-   }
-   rc = -XF(Atmp[0]);
-   rc_mult1 = 1-rc*rc;
-   invGain *= rc_mult1;
-   if (invGain*1e4f < 1) return 0;
-   return (float)invGain;
-}
 static void silk_insertion_sort_decreasing_FLP(float *a, int *idx, const int L, const int K) {
    float value;
    int i, j;
@@ -168,11 +143,6 @@ static void silk_insertion_sort_decreasing_FLP(float *a, int *idx, const int L, 
          idx[j+1] = i;
       }
    }
-}
-static void silk_regularize_correlations_FLP(float *XX, float *xx, const float noise, const int D) {
-   int i;
-   for (i = 0; i < D; i++) XX[i*D+i] += noise;
-   xx[0] += noise;
 }
 static void silk_corrVector_FLP(const float *x, const float *t, const int L, const int Order, float *Xt) {
    int lag;
@@ -202,27 +172,6 @@ static void silk_corrMatrix_FLP(const float *x, const int L, const int Order, fl
       }
       ptr2--;
    }
-}
-static xf silk_residual_energy_covar_FLP(const float *c, float *wXX, const float *wXx, const float wxx, const int D) {
-   int i, j, k;
-   xf tmp, nrg = 0, regularization;
-   regularization = (XF(wXX[D*D-1])+wXX[0])*1e-8f;
-   for (k = 0; k < 10; k++) {
-      nrg = wxx;
-      tmp = 0;
-      for (i = 0; i < D; i++) tmp += XF(wXx[i])*c[i];
-      nrg -= tmp*2;
-      for (i = 0; i < D; i++) {
-         tmp = 0;
-         for (j = i+1; j < D; j++) tmp += XF(wXX[i*D+j])*c[j];
-         nrg += c[i]*(tmp*2+XF(wXX[i*D+i])*c[i]);
-      }
-      if (nrg > 0) break;
-      for (i = 0; i < D; i++) wXX[i*D+i] = (float)(wXX[i*D+i]+regularization);
-      regularization *= 2;
-   }
-   if (k == 10) nrg = 1;
-   return nrg;
 }
 static void silk_LTP_analysis_filter_FLP(float *LTP_res, const float *x, const float B[], const int pitchL[],
       const float invGains[], const int subfr_length, const int nb_subfr, const int pre_length) {

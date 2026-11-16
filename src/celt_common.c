@@ -58,20 +58,6 @@ static const float fl_log2_y_norm_coeff[8] = {
    3.219280838966369628906250e-01f, 4.594316184520721435546875e-01f,
    5.849624872207641601562500e-01f, 7.004396915435791015625000e-01f,
    8.073549270629882812500000e-01f, 9.068905711174011230468750e-01f};
-static float fl_celt_log2(float x) {
-   fl_i32 integer, range_idx;
-   union { float f; fl_u32 i; } in;
-   in.f = x;
-   integer = (fl_i32)(in.i>>23)-127;
-   in.i = (fl_i32)in.i-(fl_i32)((fl_u32)integer<<23);
-   range_idx = (in.i>>20)&0x7;
-   in.f = in.f*fl_log2_x_norm_coeff[range_idx]-1.0625f;
-   in.f = 8.74628424644470214843750000e-02f+in.f*(1.357829570770263671875000000000f
-         +in.f*(-6.3897705078125000000000000e-01f
-         +in.f*(4.01971250772476196289062500e-01f
-         +in.f*(-2.8415444493293762207031250e-01f))));
-   return integer+in.f+fl_log2_y_norm_coeff[range_idx];
-}
 static float fl_celt_exp2(float x) {
    fl_i32 integer;
    float frac;

@@ -36,7 +36,7 @@ extern "C" {
 #define FLAPUS_VERSION_MAJOR 0
 #define FLAPUS_VERSION_MINOR 1
 #define FLAPUS_VERSION_PATCH 0
-#define FLAPUS_VERSION "0.1.0"
+#define FLAPUS_VERSION "1.0"
 
 /* Error codes */
 #define FL_OK 0
@@ -1655,20 +1655,6 @@ static const float fl_log2_y_norm_coeff[8] = {
    3.219280838966369628906250e-01f, 4.594316184520721435546875e-01f,
    5.849624872207641601562500e-01f, 7.004396915435791015625000e-01f,
    8.073549270629882812500000e-01f, 9.068905711174011230468750e-01f};
-static float fl_celt_log2(float x) {
-   fl_i32 integer, range_idx;
-   union { float f; fl_u32 i; } in;
-   in.f = x;
-   integer = (fl_i32)(in.i>>23)-127;
-   in.i = (fl_i32)in.i-(fl_i32)((fl_u32)integer<<23);
-   range_idx = (in.i>>20)&0x7;
-   in.f = in.f*fl_log2_x_norm_coeff[range_idx]-1.0625f;
-   in.f = 8.74628424644470214843750000e-02f+in.f*(1.357829570770263671875000000000f
-         +in.f*(-6.3897705078125000000000000e-01f
-         +in.f*(4.01971250772476196289062500e-01f
-         +in.f*(-2.8415444493293762207031250e-01f))));
-   return integer+in.f+fl_log2_y_norm_coeff[range_idx];
-}
 static float fl_celt_exp2(float x) {
    fl_i32 integer;
    float frac;
@@ -3871,19 +3857,13 @@ static int fl_celt_decode(fl_celt_dec *st, const unsigned char *data, int len, f
 #define silk_int32_MIN ((fl_i32)0x80000000)
 #define silk_int16_MAX 0x7FFF
 #define silk_int16_MIN ((fl_i16)0x8000)
-#define silk_int8_MAX 0x7F
-#define silk_int8_MIN ((fl_i8)0x80)
 #define silk_uint8_MAX 0xFF
 
 #define silk_SMULWB(a32,b32) ((fl_i32)(((a32)*(fl_i64)((fl_i16)(b32)))>>16))
 #define silk_SMLAWB(a32,b32,c32) ((fl_i32)((a32)+(((b32)*(fl_i64)((fl_i16)(c32)))>>16)))
-#define silk_SMULWT(a32,b32) ((fl_i32)(((a32)*(fl_i64)((b32)>>16))>>16))
 #define silk_SMLAWT(a32,b32,c32) ((fl_i32)((a32)+(((b32)*((fl_i64)(c32)>>16))>>16)))
 #define silk_SMULBB(a32,b32) ((fl_i32)((fl_i16)(a32))*(fl_i32)((fl_i16)(b32)))
 #define silk_SMLABB(a32,b32,c32) ((a32)+((fl_i32)((fl_i16)(b32)))*(fl_i32)((fl_i16)(c32)))
-#define silk_SMULBT(a32,b32) ((fl_i32)((fl_i16)(a32))*((b32)>>16))
-#define silk_SMLABT(a32,b32,c32) ((a32)+((fl_i32)((fl_i16)(b32)))*((c32)>>16))
-#define silk_SMLAL(a64,b32,c32) ((a64)+((fl_i64)(b32)*(fl_i64)(c32)))
 #define silk_SMULWW(a32,b32) ((fl_i32)(((fl_i64)(a32)*(b32))>>16))
 #define silk_SMLAWW(a32,b32,c32) ((fl_i32)((a32)+(((fl_i64)(b32)*(c32))>>16)))
 #define silk_ADD_SAT32(a,b) ((((fl_u32)(a)+(fl_u32)(b))&0x80000000) == 0 ? \
@@ -3895,8 +3875,6 @@ static int fl_celt_decode(fl_celt_dec *st, const unsigned char *data, int len, f
 #define silk_MUL(a32,b32) ((a32)*(b32))
 #define silk_MLA(a32,b32,c32) ((a32)+((b32)*(c32)))
 #define silk_SMULTT(a32,b32) (((a32)>>16)*((b32)>>16))
-#define silk_SMLATT(a32,b32,c32) ((a32)+((b32)>>16)*((c32)>>16))
-#define silk_SMLALBB(a64,b16,c16) ((a64)+(fl_i64)((fl_i32)(b16)*(fl_i32)(c16)))
 #define silk_SMULL(a32,b32) ((fl_i64)(a32)*(b32))
 #define silk_ADD32_ovflw(a,b) ((fl_i32)((fl_u32)(a)+(fl_u32)(b)))
 #define silk_SUB32_ovflw(a,b) ((fl_i32)((fl_u32)(a)-(fl_u32)(b)))
@@ -3907,21 +3885,16 @@ static int fl_celt_decode(fl_celt_dec *st, const unsigned char *data, int len, f
 #define silk_ADD32(a,b) ((a)+(b))
 #define silk_SUB32(a,b) ((a)-(b))
 #define silk_SAT16(a) ((a) > silk_int16_MAX ? silk_int16_MAX : ((a) < silk_int16_MIN ? silk_int16_MIN : (a)))
-#define silk_SAT32(a) ((a) > silk_int32_MAX ? silk_int32_MAX : ((a) < silk_int32_MIN ? silk_int32_MIN : (a)))
 #define silk_ADD_SAT16(a,b) (fl_i16)silk_SAT16(((fl_i32)(a))+(b))
-#define silk_SUB_SAT16(a,b) (fl_i16)silk_SAT16(((fl_i32)(a))-(b))
-#define silk_POS_SAT32(a) ((a) > silk_int32_MAX ? silk_int32_MAX : (a))
 #define silk_ADD_POS_SAT32(a,b) ((((fl_u32)(a)+(fl_u32)(b))&0x80000000) ? silk_int32_MAX : ((a)+(b)))
 #define silk_LSHIFT32(a,shift) ((fl_i32)((fl_u32)(a)<<(shift)))
 #define silk_LSHIFT(a,shift) silk_LSHIFT32(a, shift)
-#define silk_LSHIFT64(a,shift) ((fl_i64)((fl_u64)(a)<<(shift)))
 #define silk_RSHIFT(a,shift) ((a)>>(shift))
 #define silk_RSHIFT32(a,shift) ((a)>>(shift))
 #define silk_RSHIFT64(a,shift) ((a)>>(shift))
 #define silk_LIMIT(a,limit1,limit2) ((limit1) > (limit2) ? ((a) > (limit1) ? (limit1) : ((a) < (limit2) ? (limit2) : (a))) \
    : ((a) > (limit2) ? (limit2) : ((a) < (limit1) ? (limit1) : (a))))
 #define silk_LIMIT_int silk_LIMIT
-#define silk_LIMIT_16 silk_LIMIT
 #define silk_LIMIT_32 silk_LIMIT
 #define silk_LSHIFT_SAT32(a,shift) (silk_LSHIFT32(silk_LIMIT((a), silk_RSHIFT32(silk_int32_MIN, (shift)), \
    silk_RSHIFT32(silk_int32_MAX, (shift))), (shift)))
@@ -3937,12 +3910,10 @@ static int fl_celt_decode(fl_celt_dec *st, const unsigned char *data, int len, f
 #define silk_max(a,b) (((a) > (b)) ? (a) : (b))
 #define silk_min_int silk_min
 #define silk_max_int silk_max
-#define silk_min_16 silk_min
 #define silk_max_16 silk_max
 #define silk_min_32 silk_min
 #define silk_max_32 silk_max
 #define silk_abs(a) (((a) > 0) ? (a) : -(a))
-#define silk_abs_int32(a) (((a)^((a)>>31))-((a)>>31))
 #define SILK_FIX_CONST(C,Q) ((fl_i32)((C)*((fl_i64)1<<(Q))+0.5))
 #define silk_RAND(seed) (silk_MLA_ovflw(907633515, (seed), 196314165))
 #define silk_SMMUL(a32,b32) (fl_i32)silk_RSHIFT64(silk_SMULL((a32), (b32)), 32)
@@ -5162,13 +5133,7 @@ static const fl_i16 fl_resampler_frac_FIR_12[12][RESAMPLER_ORDER_FIR_12/2] = {
 static const fl_i16 silk_resampler_up2_hq_0[3] = {1746, 14986, 39083-65536};
 static const fl_i16 silk_resampler_up2_hq_1[3] = {6854, 25769, 55542-65536};
 
-static fl_i32 silk_CLZ16(fl_i16 in16) { return 32-EC_ILOG(in16<<16|0x8000); }
 static fl_i32 silk_CLZ32(fl_i32 in32) { return in32 ? 32-EC_ILOG(in32) : 32; }
-static fl_i32 silk_CLZ64(fl_i64 in) {
-   fl_i32 in_upper = (fl_i32)silk_RSHIFT64(in, 32);
-   if (in_upper == 0) return 32+silk_CLZ32((fl_i32)in);
-   return silk_CLZ32(in_upper);
-}
 static fl_i32 silk_ROR32(fl_i32 a32, int rot) {
    fl_u32 x = (fl_u32)a32, r = (fl_u32)rot, m = (fl_u32)-rot;
    if (rot == 0) return a32;
@@ -11113,7 +11078,6 @@ static xf fl_m_sqrtf(float f) {
    if (f == 1.0f) return 1.0L;
    return fl_x87_sqrt(XF(f));
 }
-static xf fl_m_floor(double d) { return floorl(XF(d)); }
 static xf fl_m_floorf(float f) { return floorl(XF(f)); }
 
 #ifdef FLAPUS_PORTABLE_MATH
@@ -11222,10 +11186,6 @@ static double fl_m_acos(double d) {
    return (double)acosl(XF(d));
 }
 #endif
-
-/* SSE float->int conversions (_mm_cvt_ss2si / cvttss2si). */
-static int fl_cvt_ss2si(float f) { return (int)lrintf(f); }
-static int fl_cvtt_ss2si(float f) { return (int)f; }
 
 /* ======== enc_celt_dsp.c ======== */
 /* ---- CELT encoder DSP with x87 rounding behaviour ---- */
@@ -17487,16 +17447,13 @@ static int fl_msenc_encode(fl_msenc *st, const float *pcm, int analysis_frame_si
 #define silk_encoder_state_Fxx silk_encoder_state_FLP
 #define silk_encode_frame_Fxx silk_encode_frame_FLP
 #define silk_encode_do_VAD_Fxx silk_encode_do_VAD_FLP
-#define silk_VAD_GetSA_Q8(a, b, arch) silk_VAD_GetSA_Q8_c(a, b)
 #define silk_VQ_WMat_EC(a, b, c, d, e, f, g, h, i, j, k, l, arch) silk_VQ_WMat_EC_c(a, b, c, d, e, f, g, h, i, j, k, l)
-#define silk_biquad_alt_stride2(a, b, c, d, e, f, arch) silk_biquad_alt_stride2_c(a, b, c, d, e, f)
 #define RES2INT16(a) ((fl_i16)lrintf(FL_MAX(-32768.f, FL_MIN(32767.f, (a)*32768.f))))
 #define silk_memcpy memcpy
 #define silk_memset memset
 #define silk_memmove memmove
 #define celt_assert(x)
 #define silk_assert(x)
-#define celt_assert2(x, y)
 #define SAVE_STACK
 #define RESTORE_STACK
 #define VARDECL(type, var) type *var
@@ -17510,10 +17467,8 @@ static int fl_msenc_encode(fl_msenc *st, const float *pcm, int analysis_frame_si
 #define SILK_ENC_INVALID_INBAND_FEC_SETTING -107
 #define SILK_ENC_INVALID_DTX_SETTING -108
 #define SILK_ENC_INVALID_CBR_SETTING -109
-#define SILK_ENC_INTERNAL_ERROR -110
 #define SILK_ENC_INVALID_NUMBER_OF_CHANNELS_ERROR -111
 #define opus_likely(x) (x)
-#define opus_unlikely(x) (x)
 #define silk_NLSF2A(a, b, c, arch) (silk_NLSF2A)(a, b, c)
 #define opus_res float
 #define silk_LPC_analysis_filter(a, b, c, d, e, arch) (silk_LPC_analysis_filter)(a, b, c, d, e)
@@ -17530,18 +17485,9 @@ static void silk_short2float_array(float *out, const fl_i16 *in, fl_i32 length) 
 #define silk_short_prediction_create_arch_coef(a, b, c) ((void)(a), (void)(b), (void)(c))
 
 #define ENCODER_NUM_CHANNELS 2
-#define DECODER_NUM_CHANNELS 2
-#define MIN_TARGET_RATE_BPS 5000
-#define MAX_TARGET_RATE_BPS 80000
-#define LBRR_NB_MIN_RATE_BPS 12000
-#define LBRR_MB_MIN_RATE_BPS 14000
-#define LBRR_WB_MIN_RATE_BPS 16000
 #define NB_SPEECH_FRAMES_BEFORE_DTX 10
 #define MAX_CONSECUTIVE_DTX 20
-#define DTX_ACTIVITY_THRESHOLD 0.1f
-#define VAD_NO_DECISION -1
 #define VAD_NO_ACTIVITY 0
-#define VAD_ACTIVITY 1
 #define STEREO_RATIO_SMOOTH_COEF 0.01
 #define LA_PITCH_MS 2
 #define LA_PITCH_MAX ( LA_PITCH_MS * MAX_FS_KHZ )
@@ -17552,15 +17498,10 @@ static void silk_short2float_array(float *out, const fl_i16 *in, fl_i32 length) 
 #define LA_SHAPE_MS 5
 #define LA_SHAPE_MAX ( LA_SHAPE_MS * MAX_FS_KHZ )
 #define SHAPE_LPC_WIN_MAX ( 15 * MAX_FS_KHZ )
-#define MAX_PREDICTION_POWER_GAIN_AFTER_RESET 1e2f
-#define USE_HARM_SHAPING 1
 #define MAX_SHAPE_LPC_ORDER 24
 #define HARM_SHAPE_FIR_TAPS 3
 #define MAX_DEL_DEC_STATES 4
-#define LTP_BUF_LENGTH 512
-#define LTP_MASK ( LTP_BUF_LENGTH - 1 )
 #define DECISION_DELAY 40
-#define MAX_MATRIX_SIZE MAX_LPC_ORDER
 #define NSQ_LPC_BUF_LENGTH MAX_LPC_ORDER
 #define VAD_N_BANDS 4
 #define VAD_INTERNAL_SUBFRAMES_LOG2 2
@@ -17571,112 +17512,34 @@ static void silk_short2float_array(float *out, const fl_i16 *in, fl_i32 length) 
 #define VAD_SNR_FACTOR_Q16 45000
 #define VAD_SNR_SMOOTH_COEF_Q18 4096
 #define NLSF_W_Q 2
-#define NLSF_VQ_MAX_VECTORS 32
 #define NLSF_QUANT_MAX_AMPLITUDE_EXT 10
 #define NLSF_QUANT_DEL_DEC_STATES_LOG2 2
 #define NLSF_QUANT_DEL_DEC_STATES ( 1 << NLSF_QUANT_DEL_DEC_STATES_LOG2 )
 #define TRANSITION_TIME_MS 5120
 #define TRANSITION_FRAMES ( TRANSITION_TIME_MS / MAX_FRAME_LENGTH_MS )
-#define TRANSITION_INT_STEPS ( TRANSITION_FRAMES / ( TRANSITION_INT_NUM - 1 ) )
 #define BITRESERVOIR_DECAY_TIME_MS 500
-#define FIND_PITCH_WHITE_NOISE_FRACTION 1e-3f
-#define FIND_PITCH_BANDWIDTH_EXPANSION 0.99f
-#define FIND_LPC_COND_FAC 1e-5f
 #define MAX_SUM_LOG_GAIN_DB 250.0f
-#define LTP_CORR_INV_MAX 0.03f
 #define VARIABLE_HP_SMTH_COEF1 0.1f
-#define VARIABLE_HP_SMTH_COEF2 0.015f
 #define VARIABLE_HP_MAX_DELTA_FREQ 0.4f
 #define VARIABLE_HP_MIN_CUTOFF_HZ 60
 #define VARIABLE_HP_MAX_CUTOFF_HZ 100
 #define SPEECH_ACTIVITY_DTX_THRES 0.05f
 #define LBRR_SPEECH_ACTIVITY_THRES 0.3f
-#define BG_SNR_DECR_dB 2.0f
-#define HARM_SNR_INCR_dB 2.0f
-#define SPARSE_SNR_INCR_dB 2.0f
-#define ENERGY_VARIATION_THRESHOLD_QNT_OFFSET 0.6f
 #define WARPING_MULTIPLIER 0.015f
-#define SHAPE_WHITE_NOISE_FRACTION 3e-5f
-#define BANDWIDTH_EXPANSION 0.94f
-#define HARMONIC_SHAPING 0.3f
-#define HIGH_RATE_OR_LOW_QUALITY_HARMONIC_SHAPING 0.2f
-#define HP_NOISE_COEF 0.25f
-#define HARM_HP_NOISE_COEF 0.35f
-#define INPUT_TILT 0.05f
-#define HIGH_RATE_INPUT_TILT 0.1f
-#define LOW_FREQ_SHAPING 4.0f
-#define LOW_QUALITY_LOW_FREQ_SHAPING_DECR 0.5f
-#define SUBFR_SMTH_COEF 0.4f
-#define LAMBDA_OFFSET 1.2f
-#define LAMBDA_SPEECH_ACT -0.2f
-#define LAMBDA_DELAYED_DECISIONS -0.05f
-#define LAMBDA_INPUT_QUALITY -0.1f
-#define LAMBDA_CODING_QUALITY -0.2f
-#define LAMBDA_QUANT_OFFSET 0.8f
-#define REDUCE_BITRATE_10_MS_BPS 2200
 #define MAX_BANDWIDTH_SWITCH_DELAY_MS 5000
 #define PE_MAX_FS_KHZ 16
 #define PE_SUBFR_LENGTH_MS 5
 #define PE_LTP_MEM_LENGTH_MS ( 4 * PE_SUBFR_LENGTH_MS )
 #define PE_MAX_FRAME_LENGTH_MS ( PE_LTP_MEM_LENGTH_MS + PE_MAX_NB_SUBFR * PE_SUBFR_LENGTH_MS )
-#define PE_MAX_FRAME_LENGTH ( PE_MAX_FRAME_LENGTH_MS * PE_MAX_FS_KHZ )
-#define PE_MAX_FRAME_LENGTH_ST_1 ( PE_MAX_FRAME_LENGTH >> 2 )
-#define PE_MAX_FRAME_LENGTH_ST_2 ( PE_MAX_FRAME_LENGTH >> 1 )
 #define PE_MAX_LAG ( PE_MAX_LAG_MS * PE_MAX_FS_KHZ )
-#define PE_MIN_LAG ( PE_MIN_LAG_MS * PE_MAX_FS_KHZ )
 #define PE_D_SRCH_LENGTH 24
 #define PE_NB_STAGE3_LAGS 5
-#define PE_SHORTLAG_BIAS 0.2f
-#define PE_PREVLAG_BIAS 0.2f
-#define PE_FLATCONTOUR_BIAS 0.05f
 #define SILK_PE_MIN_COMPLEX 0
 #define SILK_PE_MID_COMPLEX 1
-#define silk_DWORD_ALIGN __attribute__((aligned(4)))
-#define silk_MUL_uint(a32,b32) silk_MUL(a32, b32)
-#define silk_MLA_uint(a32,b32,c32) silk_MLA(a32, b32, c32)
 #define silk_ADD16(a,b) ((a) + (b))
-#define silk_ADD64(a,b) ((a) + (b))
 #define silk_SUB16(a,b) ((a) - (b))
-#define silk_SUB64(a,b) ((a) - (b))
-#define silk_SAT8(a) ((a) > silk_int8_MAX ? silk_int8_MAX : \
-                                 ((a) < silk_int8_MIN ? silk_int8_MIN : (a)))
-#define silk_CHECK_FIT8(a) (a)
-#define silk_CHECK_FIT16(a) (a)
-#define silk_CHECK_FIT32(a) (a)
-#define silk_ADD_SAT64(a,b) ((((a) + (b)) & 0x8000000000000000LL) == 0 ? \
-                                 ((((a) & (b)) & 0x8000000000000000LL) != 0 ? silk_int64_MIN : (a)+(b)) : \
-                                 ((((a) | (b)) & 0x8000000000000000LL) == 0 ? silk_int64_MAX : (a)+(b)) )
-#define silk_SUB_SAT64(a,b) ((((a)-(b)) & 0x8000000000000000LL) == 0 ? \
-                                 (( (a) & ((b)^0x8000000000000000LL) & 0x8000000000000000LL) ? silk_int64_MIN : (a)-(b)) : \
-                                 ((((a)^0x8000000000000000LL) & (b) & 0x8000000000000000LL) ? silk_int64_MAX : (a)-(b)) )
-#define silk_ADD_POS_SAT8(a,b) ((((a)+(b)) & 0x80) ? silk_int8_MAX : ((a)+(b)))
-#define silk_ADD_POS_SAT16(a,b) ((((a)+(b)) & 0x8000) ? silk_int16_MAX : ((a)+(b)))
-#define silk_LSHIFT8(a,shift) ((fl_i8)((fl_u8)(a)<<(shift)))
 #define silk_LSHIFT16(a,shift) ((fl_i16)((fl_u16)(a)<<(shift)))
-#define silk_RSHIFT8(a,shift) ((a)>>(shift))
-#define silk_RSHIFT16(a,shift) ((a)>>(shift))
-#define silk_LSHIFT_uint(a,shift) ((a) << (shift))
-#define silk_RSHIFT_uint(a,shift) ((a) >> (shift))
-#define silk_ADD_LSHIFT(a,b,shift) ((a) + silk_LSHIFT((b), (shift)))
-#define silk_ADD_LSHIFT_uint(a,b,shift) ((a) + silk_LSHIFT_uint((b), (shift)))
 #define silk_ADD_RSHIFT(a,b,shift) ((a) + silk_RSHIFT((b), (shift)))
-#define silk_NSHIFT_MUL_32_32(a,b) ( -(31- (32-silk_CLZ32(silk_abs(a)) + (32-silk_CLZ32(silk_abs(b))))) )
-#define silk_NSHIFT_MUL_16_16(a,b) ( -(15- (16-silk_CLZ16(silk_abs(a)) + (16-silk_CLZ16(silk_abs(b))))) )
-#define silk_abs_int(a) (((a) ^ ((a) >> (8 * sizeof(a) - 1))) - ((a) >> (8 * sizeof(a) - 1)))
-#define silk_abs_int64(a) (((a) > 0) ? (a) : -(a))
-#define silk_sign(a) ((a) > 0 ? 1 : ( (a) < 0 ? -1 : 0 ))
-#define RAND_MULTIPLIER 196314165
-#define RAND_INCREMENT 907633515
-#define silk_burg_modified(res_nrg,res_nrg_Q,A_Q16,x,minInvGain_Q30,subfr_length,nb_subfr,D,arch) \
-   ((void)(arch), silk_burg_modified_c(res_nrg, res_nrg_Q, A_Q16, x, minInvGain_Q30, subfr_length, nb_subfr, D, arch))
-#define silk_inner_prod16(inVec1,inVec2,len,arch) \
-   ((void)(arch),silk_inner_prod16_c(inVec1, inVec2, len))
-#define matrix_ptr(Matrix_base_adr,row,column,N) \
-   (*((Matrix_base_adr) + ((row)*(N)+(column))))
-#define matrix_adr(Matrix_base_adr,row,column,N) \
-    ((Matrix_base_adr) + ((row)*(N)+(column)))
-#define matrix_c_ptr(Matrix_base_adr,row,column,M) \
-   (*((Matrix_base_adr) + ((row)+(M)*(column))))
 #define RESAMPLER_MAX_FS_KHZ 48
 #define RESAMPLER_MAX_BATCH_SIZE_IN ( RESAMPLER_MAX_BATCH_SIZE_MS * RESAMPLER_MAX_FS_KHZ )
 
@@ -17912,7 +17775,6 @@ static const unsigned char silk_TargetRate_WB_21[201 - 10] = {
    247,248,249,249,250,251,252,253,255
 };
 
-#define silk_encoder_state_Fxx silk_encoder_state_FLP
 static int silk_setup_resamplers(
    silk_encoder_state_Fxx *psEnc,
    int fs_kHz
@@ -17949,7 +17811,6 @@ static const fl_i32 tiltWeights[ VAD_N_BANDS ] = { 30000, 6000, -12000, -12000 }
 #define BIN_DIV_STEPS_A2NLSF_FIX 3
 #define MAX_ITERATIONS_A2NLSF_FIX 16
 
-#define SILK_NSQ_H
 
 #define silk_noise_shape_quantizer_short_prediction(in,coef,coefRev,order,arch) ((void)arch,silk_noise_shape_quantizer_short_prediction_c(in, coef, order))
 
@@ -18100,14 +17961,6 @@ static void silk_LP_variable_cutoff(
    const int frame_length
 );
 static void silk_biquad_alt_stride1(
-   const fl_i16 *in,
-   const fl_i32 *B_Q28,
-   const fl_i32 *A_Q28,
-   fl_i32 *S,
-   fl_i16 *out,
-   const fl_i32 len
-);
-static void silk_biquad_alt_stride2_c(
    const fl_i16 *in,
    const fl_i32 *B_Q28,
    const fl_i32 *A_Q28,
@@ -18416,10 +18269,6 @@ static void silk_resampler_down2_3(
    fl_i16 *out,
    const fl_i16 *in,
    fl_i32 inLen
-);
-static int silk_Get_Encoder_Size(
-   int *encSizeBytes,
-   int channels
 );
 static int silk_InitEncoder(
    void *encState,
@@ -19041,40 +18890,6 @@ static void silk_biquad_alt_stride1(
    }
 }
 
-static void silk_biquad_alt_stride2_c(
-   const fl_i16 *in,
-   const fl_i32 *B_Q28,
-   const fl_i32 *A_Q28,
-   fl_i32 *S,
-   fl_i16 *out,
-   const fl_i32 len
-)
-{
-   int k;
-   fl_i32 A0_U_Q28, A0_L_Q28, A1_U_Q28, A1_L_Q28, out32_Q14[ 2 ];
-   A0_L_Q28 = ( -A_Q28[ 0 ] ) & 0x00003FFF;
-   A0_U_Q28 = silk_RSHIFT( -A_Q28[ 0 ], 14 );
-   A1_L_Q28 = ( -A_Q28[ 1 ] ) & 0x00003FFF;
-   A1_U_Q28 = silk_RSHIFT( -A_Q28[ 1 ], 14 );
-   for( k = 0; k < len; k++ ) {
-      out32_Q14[ 0 ] = silk_LSHIFT( silk_SMLAWB( S[ 0 ], B_Q28[ 0 ], in[ 2 * k + 0 ] ), 2 );
-      out32_Q14[ 1 ] = silk_LSHIFT( silk_SMLAWB( S[ 2 ], B_Q28[ 0 ], in[ 2 * k + 1 ] ), 2 );
-      S[ 0 ] = S[ 1 ] + silk_RSHIFT_ROUND( silk_SMULWB( out32_Q14[ 0 ], A0_L_Q28 ), 14 );
-      S[ 2 ] = S[ 3 ] + silk_RSHIFT_ROUND( silk_SMULWB( out32_Q14[ 1 ], A0_L_Q28 ), 14 );
-      S[ 0 ] = silk_SMLAWB( S[ 0 ], out32_Q14[ 0 ], A0_U_Q28 );
-      S[ 2 ] = silk_SMLAWB( S[ 2 ], out32_Q14[ 1 ], A0_U_Q28 );
-      S[ 0 ] = silk_SMLAWB( S[ 0 ], B_Q28[ 1 ], in[ 2 * k + 0 ] );
-      S[ 2 ] = silk_SMLAWB( S[ 2 ], B_Q28[ 1 ], in[ 2 * k + 1 ] );
-      S[ 1 ] = silk_RSHIFT_ROUND( silk_SMULWB( out32_Q14[ 0 ], A1_L_Q28 ), 14 );
-      S[ 3 ] = silk_RSHIFT_ROUND( silk_SMULWB( out32_Q14[ 1 ], A1_L_Q28 ), 14 );
-      S[ 1 ] = silk_SMLAWB( S[ 1 ], out32_Q14[ 0 ], A1_U_Q28 );
-      S[ 3 ] = silk_SMLAWB( S[ 3 ], out32_Q14[ 1 ], A1_U_Q28 );
-      S[ 1 ] = silk_SMLAWB( S[ 1 ], B_Q28[ 2 ], in[ 2 * k + 0 ] );
-      S[ 3 ] = silk_SMLAWB( S[ 3 ], B_Q28[ 2 ], in[ 2 * k + 1 ] );
-      out[ 2 * k + 0 ] = (fl_i16)silk_SAT16( silk_RSHIFT( out32_Q14[ 0 ] + (1<<14) - 1, 14 ) );
-      out[ 2 * k + 1 ] = (fl_i16)silk_SAT16( silk_RSHIFT( out32_Q14[ 1 ] + (1<<14) - 1, 14 ) );
-   }
-}
 
 static int silk_sigm_Q15(
    int in_Q5
@@ -21357,18 +21172,6 @@ static void silk_resampler_down2_3(
    RESTORE_STACK;
 }
 
-static int silk_Get_Encoder_Size(
-   int *encSizeBytes,
-   int channels
-)
-{
-   int ret = SILK_NO_ERROR;
-   *encSizeBytes = sizeof( fl_silk_encoder );
-   if ( channels == 1 ) {
-      *encSizeBytes -= sizeof( silk_encoder_state_Fxx );
-   }
-   return ret;
-}
 
 static int silk_InitEncoder(
    void *encState,
@@ -21794,8 +21597,6 @@ static int silk_Encode(
 
 /* ======== enc_silk_flp.c ======== */
 /* ---- SILK encoder: float analysis (silk/float, x87 extended precision) ---- */
-#define SILK_MAX_ORDER_LPC 24
-
 /* silk_inner_product_FLP_avx2: double FMA lanes, scalar tail on the x87 stack. */
 static xf silk_inner_product_FLP(const float *data1, const float *data2, int dataSize) {
    int i, l;
@@ -21916,29 +21717,6 @@ static void silk_warped_autocorrelation_FLP(float *corr, const float *input, con
    }
    for (i = 0; i < order+1; i++) corr[i] = (float)C[i];
 }
-static float silk_LPC_inverse_pred_gain_FLP(const float *A, fl_i32 order) {
-   int k, n;
-   xf invGain = 1, rc, rc_mult1, rc_mult2;
-   float Atmp[SILK_MAX_ORDER_LPC];
-   memcpy(Atmp, A, order*sizeof(float));
-   for (k = order-1; k > 0; k--) {
-      rc = -XF(Atmp[k]);
-      rc_mult1 = 1-rc*rc;
-      invGain *= rc_mult1;
-      if (invGain*1e4f < 1) return 0;
-      rc_mult2 = 1/rc_mult1;
-      for (n = 0; n < (k+1)>>1; n++) {
-         float tmp1 = Atmp[n], tmp2 = Atmp[k-n-1];
-         Atmp[n] = (float)((tmp1-tmp2*rc)*rc_mult2);
-         Atmp[k-n-1] = (float)((tmp2-tmp1*rc)*rc_mult2);
-      }
-   }
-   rc = -XF(Atmp[0]);
-   rc_mult1 = 1-rc*rc;
-   invGain *= rc_mult1;
-   if (invGain*1e4f < 1) return 0;
-   return (float)invGain;
-}
 static void silk_insertion_sort_decreasing_FLP(float *a, int *idx, const int L, const int K) {
    float value;
    int i, j;
@@ -21963,11 +21741,6 @@ static void silk_insertion_sort_decreasing_FLP(float *a, int *idx, const int L, 
          idx[j+1] = i;
       }
    }
-}
-static void silk_regularize_correlations_FLP(float *XX, float *xx, const float noise, const int D) {
-   int i;
-   for (i = 0; i < D; i++) XX[i*D+i] += noise;
-   xx[0] += noise;
 }
 static void silk_corrVector_FLP(const float *x, const float *t, const int L, const int Order, float *Xt) {
    int lag;
@@ -21997,27 +21770,6 @@ static void silk_corrMatrix_FLP(const float *x, const int L, const int Order, fl
       }
       ptr2--;
    }
-}
-static xf silk_residual_energy_covar_FLP(const float *c, float *wXX, const float *wXx, const float wxx, const int D) {
-   int i, j, k;
-   xf tmp, nrg = 0, regularization;
-   regularization = (XF(wXX[D*D-1])+wXX[0])*1e-8f;
-   for (k = 0; k < 10; k++) {
-      nrg = wxx;
-      tmp = 0;
-      for (i = 0; i < D; i++) tmp += XF(wXx[i])*c[i];
-      nrg -= tmp*2;
-      for (i = 0; i < D; i++) {
-         tmp = 0;
-         for (j = i+1; j < D; j++) tmp += XF(wXX[i*D+j])*c[j];
-         nrg += c[i]*(tmp*2+XF(wXX[i*D+i])*c[i]);
-      }
-      if (nrg > 0) break;
-      for (i = 0; i < D; i++) wXX[i*D+i] = (float)(wXX[i*D+i]+regularization);
-      regularization *= 2;
-   }
-   if (k == 10) nrg = 1;
-   return nrg;
 }
 static void silk_LTP_analysis_filter_FLP(float *LTP_res, const float *x, const float B[], const int pitchL[],
       const float invGains[], const int subfr_length, const int nb_subfr, const int pre_length) {

@@ -194,7 +194,6 @@ static xf fl_m_sqrtf(float f) {
    if (f == 1.0f) return 1.0L;
    return fl_x87_sqrt(XF(f));
 }
-static xf fl_m_floor(double d) { return floorl(XF(d)); }
 static xf fl_m_floorf(float f) { return floorl(XF(f)); }
 
 #ifdef FLAPUS_PORTABLE_MATH
@@ -303,7 +302,3 @@ static double fl_m_acos(double d) {
    return (double)acosl(XF(d));
 }
 #endif
-
-/* SSE float->int conversions (_mm_cvt_ss2si / cvttss2si). */
-static int fl_cvt_ss2si(float f) { return (int)lrintf(f); }
-static int fl_cvtt_ss2si(float f) { return (int)f; }

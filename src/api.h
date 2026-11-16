@@ -36,7 +36,7 @@ extern "C" {
 #define FLAPUS_VERSION_MAJOR 0
 #define FLAPUS_VERSION_MINOR 1
 #define FLAPUS_VERSION_PATCH 0
-#define FLAPUS_VERSION "0.1.0"
+#define FLAPUS_VERSION "1.0"
 
 /* Error codes */
 #define FL_OK 0
