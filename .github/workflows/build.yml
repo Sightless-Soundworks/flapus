@@ -3,8 +3,8 @@ name: build
 # Official builds of the flapus command line tool.
 #
 # Every push builds flapus.exe for x86 and x64 with a pinned w64devkit, runs the
-# tests, and checks that both builds write the same Opus files. A push to main
-# publishes both exes as the release "latest", a tag v* as a versioned release.
+# tests, and checks that both builds write the same Opus files. A push to main with
+# a new version (FLAPUS_VERSION_* in src/api.h) publishes the release V<version>.
 #
 # The builds are reproducible: the same commit and devkit give the same exe, byte
 # for byte, also on another machine (no timestamp, no paths, no compiler ident).
@@ -25,7 +25,6 @@ name: build
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -42,6 +41,7 @@ jobs:
     outputs:
       opus-x86: ${{ steps.encode.outputs.opus-x86 }}
       opus-x64: ${{ steps.encode.outputs.opus-x64 }}
+      version: ${{ steps.build.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -81,14 +81,20 @@ jobs:
           git diff --exit-code -- flapus.h
           if ($LASTEXITCODE -ne 0) { throw "flapus.h is out of date: run python tools/amalgamate.py" }
 
+      # The version for the release comes from the exe itself ("flapus 1.0").
       - name: Build flapus-${{ matrix.arch }}.exe
+        id: build
         shell: pwsh
         run: |
           $env:PATH = "C:\w64devkit\bin;$env:PATH"
           $flags = "$env:CFLAGS ${{ matrix.archflags }}".Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
           & gcc @flags -o flapus-${{ matrix.arch }}.exe flapus_cli.c
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
-          & .\flapus-${{ matrix.arch }}.exe --version
+          $info = @(& .\flapus-${{ matrix.arch }}.exe --version)
+          $info | Write-Host
+          $ver = $info[0] -replace '^flapus ', ''
+          if ($ver -notmatch '^\d+\.\d+(\.\d+)?$') { throw "unexpected version: $($info[0])" }
+          Add-Content $env:GITHUB_OUTPUT "version=$ver"
 
       # Older Windows versions start the exe only if it imports nothing beyond
       # KERNEL32.dll and msvcrt.dll, only KERNEL32 functions they have, and its
@@ -177,19 +183,22 @@ jobs:
           echo "x64: $X64"
           test -n "$X86" && test "$X86" = "$X64" && echo "x86 and x64: identical Opus output"
 
-  # main -> the release "latest" (a pre-release, rebuilt for every push), v* -> a
-  # versioned release, both with the exes and flapus.h. GitHub shows the SHA-256 of
-  # every asset.
+  # A push to main whose version has no tag V<version> yet -> the release V<version>
+  # with the exes and flapus.h; the notes list the commits since the previous
+  # release. GitHub shows the SHA-256 of every asset.
   release:
-    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
-    needs: compare
+    if: github.ref == 'refs/heads/main'
+    needs: [build, compare]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     concurrency:
       group: release-${{ github.ref }}
     steps:
+      # The full history with tags, for the check below and the release notes.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
           pattern: flapus-*.exe
@@ -199,30 +208,29 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
         run: |
           cd rel
-          if [ "$GITHUB_REF_TYPE" = tag ]; then
-            tag=$GITHUB_REF_NAME
-            title="flapus ${tag#v}"
-            first="flapus ${tag#v}: Opus and FLAC encoder/decoder, command line tool."
-            flags=()
-          else
-            # An older run that finishes late must not replace a newer build.
-            head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
-            if [ "$head" != "$GITHUB_SHA" ]; then echo "main has moved on to $head; skipped"; exit 0; fi
-            tag=latest
-            title="flapus latest"
-            first="Development build of ${GITHUB_SHA:0:7}, rebuilt for every push to main."
-            flags=(--prerelease --latest=false --target "$GITHUB_SHA")
-            gh release delete latest --cleanup-tag --yes 2>/dev/null || true
-            gh api -X DELETE "repos/$GH_REPO/git/refs/tags/latest" 2>/dev/null || true
-          fi
+          test -n "$VERSION" || { echo "no version from the build"; exit 1; }
+          tag=V$VERSION
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then echo "$tag is already released; skipped"; exit 0; fi
+          # An older run that finishes late must not publish an older commit.
+          head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then echo "main has moved on to $head; skipped"; exit 0; fi
+          prev=$(git describe --tags --abbrev=0 --match 'V[0-9]*' HEAD 2>/dev/null || true)
           {
-            echo "$first"
+            echo "flapus $VERSION: Opus and FLAC encoder/decoder, command line tool."
+            echo
+            if [ -n "$prev" ]; then echo "Changes since $prev:"; range=$prev..HEAD; else echo "Changes:"; range=HEAD; fi
+            echo
+            git log --no-merges --reverse --format='- %s (%h)' $range
+            echo
+            echo "Files:"
             echo
             echo "- \`flapus-x86.exe\`: 32-bit Windows, \`flapus-x64.exe\`: 64-bit Windows. Single files, no DLLs beyond Windows' own."
             echo "- \`flapus.h\`: the single-file library, with the license texts at its end."
             echo "- Built with w64devkit $W64DEVKIT_VERSION and \`FLAPUS_PORTABLE_MATH\`: the Opus output is the same on every x86 CPU."
             echo "- Reproducible: the build flags are in .github/workflows/build.yml."
           } > notes.md
-          gh release create "$tag" flapus-x86.exe flapus-x64.exe ../flapus.h --title "$title" --notes-file notes.md "${flags[@]}"
+          cat notes.md
+          gh release create "$tag" flapus-x86.exe flapus-x64.exe ../flapus.h --title "$tag" --target "$GITHUB_SHA" --notes-file notes.md

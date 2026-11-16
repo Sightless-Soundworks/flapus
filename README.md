@@ -63,9 +63,10 @@ file that needs no DLLs beyond Windows' own.
   and the subsystem version of both exes, and runs the four tests. It encodes
   deterministic test signals (`tools/testsignal.py`) with both builds and fails if the
   Opus files differ.
-- **Release:** every push to `main` publishes both exes and `flapus.h` as the
-  pre-release `latest`, and a tag `v*` publishes them as a versioned release. Each
-  workflow run also keeps the two exes as artifacts.
+- **Release:** a push to `main` with a new version publishes both exes and `flapus.h`
+  as the release `V<version>` (for example `V1.0`), with the commits since the
+  previous release as release notes. A push that keeps the version publishes
+  nothing. Each workflow run also keeps the two exes as artifacts.
 
 The builds are reproducible: the same commit and devkit give the same exe, byte for
 byte, on any machine. To check a release, build it in the devkit shell and compare
@@ -79,6 +80,10 @@ gcc -O2 -ffp-contract=off -msse2 -mfpmath=sse -DFLAPUS_PORTABLE_MATH \
 For x64, leave out `-msse2 -mfpmath=sse`. `flapus --version` shows the version,
 how the encoder was built and the target. The version is also `FLAPUS_VERSION` in
 `flapus.h`.
+
+To release a new version, change `FLAPUS_VERSION_MAJOR`, `FLAPUS_VERSION_MINOR` or
+`FLAPUS_VERSION_PATCH` in `src/api.h` (1, 1, 0 is version 1.1), run
+`python tools/amalgamate.py` and push both files to `main`.
 
 ## Command line
 
