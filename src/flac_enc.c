@@ -789,11 +789,13 @@ static fl_u64 fl_try_lpc_float(fl_search *s, const double *lp, int order, int ra
 static void fl_climb(fl_search *s, int passes) {
    fl_ws *w = s->ws;
    int order = s->best.order, prec = s->best.prec, shift = s->best.shift, n = s->n, pass, j, d;
-   int qmax = (1<<(prec-1))-1, qmin = -qmax-1, kmax = s->bps > 16 ? 30 : 14;
+   int qmax, qmin, kmax = s->bps > 16 ? 30 : 14;
    fl_i32 q[FL_FLAC_MAX_ORDER];
    const fl_i32 *x = s->x;
    fl_u64 cur;
    if (s->best.type != 3) return;
+   qmax = (1<<(prec-1))-1;
+   qmin = -qmax-1;
    memcpy(q, s->best.coef, sizeof(q[0])*order);
    fl_lpc_sums(x, w->xd, n, q, order, fl_lpc_mode(s->bps, prec, order), w->acc);
    cur = s->best_bits;
