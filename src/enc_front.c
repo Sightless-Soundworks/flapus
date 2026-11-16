@@ -1,14 +1,6 @@
 /* ---- Opus encoder front end: libopusenc buffering/resampling, Ogg output, opusenc main loop ---- */
 
-/* ---- libopusenc resampler: speex quality 5 with the sinc table computed on the x87 ---- */
-typedef struct {
-   fl_u32 num_rate, den_rate, filt_len, mem_alloc_size;
-   int int_advance, frac_advance, channels;
-   float *sinc_table, *mem;
-   fl_i32 last_sample[255];
-   fl_u32 samp_frac_num[255];
-} fl_ope_rs;
-
+/* ---- libopusenc resampler: fl_resampler with the sinc table computed on the x87 ---- */
 /* sinc() with compute_func() as compiled in libopusenc (window KAISER10). */
 static float fl_ope_sinc(float cutoff, int i, fl_u32 den, int jterm, int N) {
    xf x = XF(jterm)-XF(i)/XF(den), y, frac, f2, f3, i0, i1, i2, i3, cf;
@@ -36,80 +28,17 @@ static float fl_ope_sinc(float cutoff, int i, fl_u32 den, int jterm, int N) {
    return (float)(((XF(s)*cutoff)/XF(arg))*cf);
 }
 
-static int fl_ope_rs_init(fl_ope_rs *r, int channels, fl_u32 in_rate, fl_u32 out_rate) {
-   fl_u32 fact = fl_gcd(in_rate, out_rate), i;
+static int fl_ope_rs_init(fl_resampler *r, int channels, fl_u32 in_rate, fl_u32 out_rate) {
+   fl_u32 i;
    float cutoff;
    int j;
-   memset(r, 0, sizeof(*r));
-   r->channels = channels;
-   r->num_rate = in_rate/fact;
-   r->den_rate = out_rate/fact;
-   r->int_advance = r->num_rate/r->den_rate;
-   r->frac_advance = r->num_rate%r->den_rate;
-   r->filt_len = 80;
-   if (r->num_rate > r->den_rate) {
-      fl_u32 major = r->filt_len/r->den_rate, remain = r->filt_len%r->den_rate;
-      cutoff = (float)(XF(0.922f)*XF((double)r->den_rate)/XF((double)r->num_rate));
-      r->filt_len = remain*r->num_rate/r->den_rate+major*r->num_rate;
-      r->filt_len = ((r->filt_len-1)&(~0x7))+8;
-   } else cutoff = 0.940f;
-   r->sinc_table = (float*)malloc(sizeof(float)*r->filt_len*r->den_rate);
-   r->mem_alloc_size = r->filt_len-1+160;
-   r->mem = (float*)calloc((size_t)channels*r->mem_alloc_size, sizeof(float));
-   if (!r->sinc_table || !r->mem) return -1;
+   if (fl_resampler_alloc(r, channels, in_rate, out_rate) < 0) return -1;
+   if (r->num_rate > r->den_rate) cutoff = (float)(XF(0.922f)*XF((double)r->den_rate)/XF((double)r->num_rate));
+   else cutoff = 0.940f;
    for (i = 0; i < r->den_rate; i++)
       for (j = 0; j < (int)r->filt_len; j++)
          r->sinc_table[i*r->filt_len+j] = fl_ope_sinc(cutoff, (int)i, r->den_rate, j-(fl_i32)r->filt_len/2+1, r->filt_len);
-   for (j = 0; j < channels; j++) r->last_sample[j] = r->filt_len/2;
    return 0;
-}
-static void fl_ope_rs_free(fl_ope_rs *r) {
-   free(r->sinc_table);
-   free(r->mem);
-}
-static void fl_ope_rs_native(fl_ope_rs *r, int ch, fl_u32 *in_len, float *out, fl_u32 *out_len) {
-   const int N = r->filt_len;
-   int out_sample = 0, j;
-   float *mem = r->mem+ch*r->mem_alloc_size;
-   fl_i32 last_sample = r->last_sample[ch];
-   fl_u32 samp_frac_num = r->samp_frac_num[ch], ilen;
-   while (!(last_sample >= (fl_i32)*in_len || out_sample >= (fl_i32)*out_len)) {
-      out[r->channels*out_sample++] = fl_rs_inner(&r->sinc_table[samp_frac_num*N], &mem[last_sample], N);
-      last_sample += r->int_advance;
-      samp_frac_num += r->frac_advance;
-      if (samp_frac_num >= r->den_rate) {
-         samp_frac_num -= r->den_rate;
-         last_sample++;
-      }
-   }
-   r->last_sample[ch] = last_sample;
-   r->samp_frac_num[ch] = samp_frac_num;
-   if (r->last_sample[ch] < (fl_i32)*in_len) *in_len = r->last_sample[ch];
-   *out_len = out_sample;
-   r->last_sample[ch] -= *in_len;
-   ilen = *in_len;
-   for (j = 0; j < N-1; ++j) mem[j] = mem[j+ilen];
-}
-static void fl_ope_rs_process(fl_ope_rs *r, const float *in, fl_u32 *in_len, float *out, fl_u32 *out_len) {
-   fl_u32 bak_in = *in_len, bak_out = *out_len;
-   int ch, C = r->channels;
-   for (ch = 0; ch < C; ch++) {
-      fl_u32 ilen = bak_in, olen = bak_out, xlen = r->mem_alloc_size-(r->filt_len-1);
-      float *x = r->mem+ch*r->mem_alloc_size, *o = out+ch;
-      const float *ip = in ? in+ch : NULL;
-      const int filt_offs = r->filt_len-1;
-      while (ilen && olen) {
-         fl_u32 j, ichunk = (ilen > xlen) ? xlen : ilen, ochunk = olen;
-         for (j = 0; j < ichunk; ++j) x[j+filt_offs] = ip ? ip[j*C] : 0;
-         fl_ope_rs_native(r, ch, &ichunk, o, &ochunk);
-         ilen -= ichunk;
-         olen -= ochunk;
-         o += ochunk*C;
-         if (ip) ip += ichunk*C;
-      }
-      *in_len = bak_in-ilen;
-      *out_len = bak_out-olen;
-   }
 }
 
 /* ---- Ogg page packer (libopusenc ogg_packer.c) ---- */
@@ -266,7 +195,7 @@ typedef struct {
    int channels, streams;
    fl_i32 rate;
    fl_msenc *st;
-   fl_ope_rs re;
+   fl_resampler re;
    int have_re;
    float *buffer, *lpc_buffer;
    int buffer_start, buffer_end, frame_size, frame_size_request, decision_delay, draining;
@@ -406,7 +335,7 @@ static void fl_ope_write_float(fl_ope *e, const float *pcm, int n) {
       fl_u32 in_samples, out_samples = OPE_BUFFER_SAMPLES-e->buffer_end;
       if (e->have_re) {
          in_samples = n;
-         fl_ope_rs_process(&e->re, pcm, &in_samples, &e->buffer[C*e->buffer_end], &out_samples);
+         fl_resampler_process(&e->re, pcm, &in_samples, &e->buffer[C*e->buffer_end], &out_samples);
       } else {
          int curr = (int)FL_MIN((fl_u32)n, out_samples);
          for (i = 0; i < C*curr; i++) e->buffer[C*e->buffer_end+i] = pcm[i];
@@ -433,7 +362,7 @@ static void fl_ope_drain(fl_ope *e) {
       fl_ope_extend_signal(&e->lpc_buffer[OPE_LPC_INPUT*C], OPE_LPC_INPUT, OPE_LPC_PADDING, C);
       do {
          fl_u32 in_samples = OPE_LPC_PADDING, out_samples = pad_samples;
-         fl_ope_rs_process(&e->re, &e->lpc_buffer[OPE_LPC_INPUT*C], &in_samples, &e->buffer[C*e->buffer_end], &out_samples);
+         fl_resampler_process(&e->re, &e->lpc_buffer[OPE_LPC_INPUT*C], &in_samples, &e->buffer[C*e->buffer_end], &out_samples);
          e->buffer_end += out_samples;
          pad_samples -= out_samples;
          memset(&e->lpc_buffer[OPE_LPC_INPUT*C], 0, OPE_LPC_PADDING*C*sizeof(e->lpc_buffer[0]));
@@ -757,7 +686,7 @@ static void fl_opus_destroy(fl_sink *s) {
    if (e) {
       if (e->ogg.out) fl_fclose(e->ogg.out);
       if (e->st) fl_msenc_destroy(e->st);
-      if (e->have_re) fl_ope_rs_free(&e->re);
+      if (e->have_re) fl_resampler_free(&e->re);
       free(e->buffer);
       free(e->lpc_buffer);
       free(e->packet);

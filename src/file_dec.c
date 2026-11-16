@@ -180,8 +180,8 @@ typedef struct {
    fl_u32 num_rate, den_rate, filt_len, mem_alloc_size;
    int int_advance, frac_advance, channels;
    float *sinc_table, *mem;
-   fl_i32 last_sample[8];
-   fl_u32 samp_frac_num[8];
+   fl_i32 last_sample[255];
+   fl_u32 samp_frac_num[255];
 } fl_resampler;
 
 static double fl_rs_compute_func(float x, const double *table, int oversample) {
@@ -211,10 +211,9 @@ static fl_u32 fl_gcd(fl_u32 a, fl_u32 b) {
    }
    return a;
 }
-/* speex_resampler_init(channels, in, out, 5) followed by skip_zeros(). */
-static int fl_resampler_init(fl_resampler *r, int channels, fl_u32 in_rate, fl_u32 out_rate) {
-   fl_u32 fact = fl_gcd(in_rate, out_rate), i;
-   float cutoff;
+/* fl_resampler_init() without the sinc table, which the caller fills. */
+static int fl_resampler_alloc(fl_resampler *r, int channels, fl_u32 in_rate, fl_u32 out_rate) {
+   fl_u32 fact = fl_gcd(in_rate, out_rate);
    int j;
    memset(r, 0, sizeof(*r));
    r->channels = channels;
@@ -225,18 +224,27 @@ static int fl_resampler_init(fl_resampler *r, int channels, fl_u32 in_rate, fl_u
    r->filt_len = 80;
    if (r->num_rate > r->den_rate) {
       fl_u32 major = r->filt_len/r->den_rate, remain = r->filt_len%r->den_rate;
-      cutoff = 0.922f*r->den_rate/r->num_rate;
       r->filt_len = remain*r->num_rate/r->den_rate+major*r->num_rate;
       r->filt_len = ((r->filt_len-1)&(~0x7))+8;
-   } else cutoff = 0.940f;
+   }
    r->sinc_table = (float*)malloc(sizeof(float)*r->filt_len*r->den_rate);
    r->mem_alloc_size = r->filt_len-1+160;
    r->mem = (float*)calloc((size_t)channels*r->mem_alloc_size, sizeof(float));
    if (!r->sinc_table || !r->mem) return -1;
+   for (j = 0; j < channels; j++) r->last_sample[j] = r->filt_len/2;
+   return 0;
+}
+/* speex_resampler_init(channels, in, out, 5) followed by skip_zeros(). */
+static int fl_resampler_init(fl_resampler *r, int channels, fl_u32 in_rate, fl_u32 out_rate) {
+   fl_u32 i;
+   float cutoff;
+   int j;
+   if (fl_resampler_alloc(r, channels, in_rate, out_rate) < 0) return -1;
+   if (r->num_rate > r->den_rate) cutoff = 0.922f*r->den_rate/r->num_rate;
+   else cutoff = 0.940f;
    for (i = 0; i < r->den_rate; i++)
       for (j = 0; j < (int)r->filt_len; j++)
          r->sinc_table[i*r->filt_len+j] = fl_rs_sinc(cutoff, ((j-(fl_i32)r->filt_len/2+1)-((float)i)/r->den_rate), r->filt_len);
-   for (j = 0; j < channels; j++) r->last_sample[j] = r->filt_len/2;
    return 0;
 }
 static void fl_resampler_free(fl_resampler *r) {
