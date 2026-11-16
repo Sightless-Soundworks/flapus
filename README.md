@@ -13,6 +13,8 @@ decoding.
 Any input converts to any output: WAV, FLAC, Ogg FLAC (input only) and Ogg Opus. That
 includes FLAC → Opus, Opus → FLAC and FLAC → FLAC (recompression).
 
+Please Note: this tool has been created with the help of AI, so not everything might be perfect. All contributions and feedback are very welcome.
+
 ## Folder layout
 
 ```
@@ -279,8 +281,9 @@ fl_opus_ms_decoder *dec = fl_opus_ms_decoder_create(48000, channels, streams, co
 int got = fl_opus_ms_decode_float(dec, packet, len, out, 5760); /* len 0 = packet loss concealment */
 ```
 
-All functions return a negative `FL_ERR_*` code on error. See the comments in `src/api.h`
-(the top of `flapus.h`) for the full API.
+All functions return a negative `FL_ERR_*` code on error, and `fl_error_text()` gives a
+short description of it. See the comments in `src/api.h` (the top of `flapus.h`) for the
+full API.
 
 Paths are UTF-8 on Windows: a path that is valid UTF-8 is opened with `_wfopen`, so
 file names outside the ANSI code page work. Any other path, such as an ANSI `argv`

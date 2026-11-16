@@ -61,19 +61,6 @@ static void version(void) {
           __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
 }
 
-static const char *error_text(int err) {
-   switch (err) {
-   case FL_ERR_IO: return "cannot read or write a file";
-   case FL_ERR_BAD_FILE: return "invalid or corrupt input file";
-   case FL_ERR_UNSUPPORTED: return "unsupported input format or output combination";
-   case FL_ERR_ALLOC: return "out of memory";
-   case FL_ERR_BAD_ARG: return "invalid option value or unknown output format";
-   case FL_ERR_CHECKSUM: return "MD5 mismatch: the FLAC input is damaged (output written anyway)";
-   case FL_ERR_INTERNAL: return "internal FLAC encoder check failed";
-   default: return "unknown error";
-   }
-}
-
 /* Appends an option to the ENCODER_OPTIONS tag text. */
 static void note(char *opts, size_t size, const char *a, const char *b) {
    size_t len = strlen(opts);
@@ -253,7 +240,7 @@ int main(int argc, char **argv) {
       else if (ps.shown) fprintf(stderr, "\n");
    }
    if (ret != FL_OK) {
-      fprintf(stderr, "Error: %s\n", error_text(ret));
+      fprintf(stderr, "Error: %s%s\n", fl_error_text(ret), ret == FL_ERR_CHECKSUM ? " (output written anyway)" : "");
       return 1;
    }
    /* only after success, like flac --delete-input-file */
