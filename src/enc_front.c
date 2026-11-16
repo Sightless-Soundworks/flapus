@@ -65,15 +65,15 @@ typedef struct {
    int error;
 } fl_oggp;
 
-static fl_u32 fl_ogg_crc_table[256];
-static void fl_ogg_crc_init(void) {
-   fl_u32 i, j;
-   if (fl_ogg_crc_table[1]) return;
-   for (i = 0; i < 256; i++) {
-      fl_u32 r = i<<24;
-      for (j = 0; j < 8; j++) r = (r&0x80000000U) ? (r<<1)^0x04c11db7U : r<<1;
-      fl_ogg_crc_table[i] = r;
+/* Ogg page CRC (polynomial 0x04c11db7) bit by bit: no table that threads would share,
+   and the pages of an Opus file are small. */
+static fl_u32 fl_ogg_crc(fl_u32 crc, const unsigned char *p, size_t n) {
+   int k;
+   while (n--) {
+      crc ^= (fl_u32)*p++<<24;
+      for (k = 0; k < 8; k++) crc = (crc&0x80000000U) ? (crc<<1)^0x04c11db7U : crc<<1;
    }
+   return crc;
 }
 static void fl_oggp_reserve(unsigned char **p, size_t *cap, size_t need) {
    if (need > *cap) {
@@ -139,8 +139,8 @@ static void fl_oggp_write_pages(fl_oggp *o) {
       memset(h+22, 0, 4);
       h[26] = (unsigned char)p->lacing_size;
       memcpy(h+27, &o->lacing[p->lacing_pos], p->lacing_size);
-      for (i = 0; i < hs; i++) crc = (crc<<8)^fl_ogg_crc_table[((crc>>24)&0xff)^h[i]];
-      for (i = 0; i < p->buf_size; i++) crc = (crc<<8)^fl_ogg_crc_table[((crc>>24)&0xff)^o->buf[p->buf_pos+i]];
+      crc = fl_ogg_crc(crc, h, hs);
+      crc = fl_ogg_crc(crc, o->buf+p->buf_pos, p->buf_size);
       fl_put_le32(h+22, crc);
       if (fwrite(h, 1, hs, o->out) != hs || fwrite(o->buf+p->buf_pos, 1, p->buf_size, o->out) != p->buf_size) o->error = 1;
       o->written += hs+p->buf_size;
@@ -539,7 +539,6 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
    o->raw = (float*)malloc(sizeof(float)*960*IC);
    if (!e || !o->input || !o->raw) return FL_ERR_ALLOC;
    cw = fl_x87_enter();
-   fl_ogg_crc_init();
    fl_opus_gain_from_tags(f, r128, &gain);
    e->channels = C;
    e->rate = f->rate;

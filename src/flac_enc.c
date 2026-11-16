@@ -1304,7 +1304,6 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
    s->jobs = (fl_frame_job*)malloc(sizeof(fl_frame_job)*(FL_FLAC_SEGMENT/16+2));
    s->wk = (fl_worker*)calloc(s->nthreads, sizeof(fl_worker));
    if (!s->jobs || !s->wk) return FL_ERR_ALLOC;
-   fl_flac_crc_init();
    fl_md5_init(&s->md5);
    slen = FL_FLAC_SEGMENT+s->cfg.max_block+FL_SLACK;
    for (c = 0; c < s->C; c++)
