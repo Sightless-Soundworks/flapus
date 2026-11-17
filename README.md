@@ -293,7 +293,9 @@ line.
 ### Platforms
 
 - **FLAC and all decoders**: portable C99. Threads use the Win32 API on Windows and
-  pthreads elsewhere. Define `FLAPUS_NO_THREADS` to build without threads.
+  pthreads elsewhere. Define `FLAPUS_NO_THREADS` to build without threads. On x86 the
+  FLAC encoder uses SSE2 when the compiler targets it (always on x86-64, with `-msse2` on
+  32-bit); the output is the same either way.
 - **Opus encoder**: needs GCC or Clang on x86 or x86-64. It computes with 80-bit x87
   extended precision, through `long double` and a few x87 instructions.
   - On other compilers or CPUs (MSVC, ARM) the Opus encoder is left out automatically,

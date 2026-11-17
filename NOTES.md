@@ -135,8 +135,8 @@ Residual coding:
 
 Arithmetic:
 
-- Prediction sums use 32-bit math when `bps+prec+log2(order) <= 32`, and double when
-  it is at most 53 (exact integers, vectorizable).
+- Prediction sums use 32-bit math when `bps+prec+bitlen(order) <= 33` (the sum then
+  fits in 32 bits), and double when it is at most 53 (exact integers, vectorizable).
 - 64-bit math is used otherwise.
 - Residuals that do not fit in 32 bits reject the candidate.
 
@@ -162,6 +162,14 @@ Some measurements on the test corpus, in total size:
 
 Speed and output:
 
+- The fixed residuals of each source (left, right, side, mid or channel) are computed
+  once per segment, and the block searches read slices of them. Blocks with wasted bits
+  compute their own.
+- Where only the comparison with the best candidate matters, a Rice estimate stops as
+  soon as it cannot win.
+- With SSE2, the 32-bit prediction sums use `pmaddwd` on 16-bit parts of the samples,
+  and the residuals, the autocorrelation and the Rice sums have SSE2 versions as well.
+  They give the same results as the plain C code, so the output does not depend on SSE2.
 - With `threads` above 1, block costs and frames are computed in parallel (static
   interleaving, per-thread work spaces). The output does not depend on the thread
   count. The default is one thread.
