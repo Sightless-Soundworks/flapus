@@ -229,10 +229,11 @@ static int fl_rice_k0(fl_u64 s, fl_u32 n) {
    corr = n*(2^k-1)/2 rounded down; exact for k == 0. */
 static fl_u64 fl_rice_q(fl_u64 s, fl_u64 corr, int k) { return s > corr ? (s-corr)>>k : 0; }
 
-/* Best estimated cost of a partition (Rice parameter k0-1, k0, k0+1 or escape). */
+/* Best estimated cost of a partition (Rice parameter k0-1, k0, k0+1 or escape). An escape
+   stores at most 31 bits per sample. */
 static fl_u64 fl_rice_part_est(fl_u64 s, fl_u32 n, fl_u32 umax, int kmax) {
    fl_u64 nk, base, best, c;
-   int k;
+   int k, eb;
    if (n == 0) return 0;
    k = fl_rice_k0(s, n);
    if (k > kmax) k = kmax;
@@ -241,7 +242,8 @@ static fl_u64 fl_rice_part_est(fl_u64 s, fl_u32 n, fl_u32 umax, int kmax) {
    best = base+fl_rice_q(s, (nk-n)>>1, k);
    if (k > 0 && (c = base-n+fl_rice_q(s, ((nk>>1)-n)>>1, k-1)) < best) best = c;
    if (k < kmax && (c = base+n+fl_rice_q(s, ((nk<<1)-n)>>1, k+1)) < best) best = c;
-   c = 5+(fl_u64)n*fl_bitlen(umax);
+   if ((eb = fl_bitlen(umax)) > 31) return best;
+   c = 5+(fl_u64)n*eb;
    return c < best ? c : best;
 }
 
@@ -345,7 +347,8 @@ static fl_u64 fl_rice_part_exact(const fl_u32 *u, fl_u32 n, int k) {
    return s;
 }
 
-/* Best exact parameter (or escape) of one partition; returns bits without the parameter field. */
+/* Best exact parameter (or escape, at most 31 bits) of one partition; returns bits without the
+   parameter field. */
 static fl_u64 fl_rice_part_best(const fl_u32 *u, fl_u32 n, int kmax, int *kout) {
    fl_u64 s = 0, best, c;
    fl_u32 m = 0, i;
@@ -373,7 +376,7 @@ static fl_u64 fl_rice_part_best(const fl_u32 *u, fl_u32 n, int kmax, int *kout) 
       }
    eb = fl_bitlen(m);
    c = 5+(fl_u64)n*eb;
-   if (c < best) {
+   if (eb <= 31 && c < best) {
       best = c;
       *kout = -1-eb;
    }
