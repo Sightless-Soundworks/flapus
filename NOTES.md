@@ -172,7 +172,7 @@ Speed and output:
   They give the same results as the plain C code, so the output does not depend on SSE2.
 - With `threads` above 1, block costs and frames are computed in parallel (static
   interleaving, per-thread work spaces). The output does not depend on the thread
-  count. The default is one thread.
+  count. The library default is one thread; the command line tool uses one per CPU.
 - Subset limits apply unless `--lax`: up to 48 kHz, order ≤ 12, partition order ≤ 8
   and blocks ≤ 4608. Above 48 kHz, blocks ≤ 16384.
 - `--lax` allows order 32 and blocks up to 16384 (32768 above 48 kHz). That gives

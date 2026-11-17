@@ -141,8 +141,8 @@ Decoding shows only the percentage and ends with `done`.
 - `--lax` allows streams outside the FLAC subset: LPC order up to 32 and blocks up to
   16384 samples. The files are valid FLAC and decode with libFLAC and FFmpeg, but some
   hardware players only support the subset.
-- `--threads N` sets the number of encoder threads. The default is 1, and 0 means one
-  per CPU. The output does not depend on it.
+- `--threads N` sets the number of encoder threads. The default is 0, one per CPU (in
+  the library, `threads` defaults to 1). The output does not depend on it.
 
 **Opus input options**
 
@@ -221,16 +221,17 @@ The table compares file sizes with `flac -8 --no-padding --no-seektable` (flac 1
 | vocals, 16-bit | -1.40 % | -1.45 % | -1.51 % | -3.41 % |
 | speech, 16-bit | -1.63 % | -1.85 % | -1.91 % | -7.10 % |
 
-The table below shows encoding speed for 16-bit stereo, as multiples of real time:
+The table below shows encoding speed for 16-bit stereo music, as multiples of real time,
+on a 2-core Xeon at 2.1 GHz. The command line tool uses every CPU by default.
 
-| Level | 1 thread (default) | 24 threads (`--threads 0`) |
-|-------|-------------------:|---------------------------:|
-| 3 | 13x | |
-| 4 | 4.6x | 40x |
-| 5 (default) | 1.6x | |
-| 8 | 0.43x | 5x |
+| Level | 1 thread (`--threads 1`) | 2 threads |
+|-------|-------------------------:|----------:|
+| 3 | 11.6x | 19.7x |
+| 4 | 5.5x | 8.4x |
+| 5 (default) | 2.0x | 3.7x |
+| 8 | 0.56x | 1.0x |
 
-From level 5 to 8 the files shrink by only about 0.05 %, at about a quarter of the speed.
+From level 5 to 8 the files shrink by only about 0.05 %, at less than a third of the speed.
 Use `--level 8` when the last bytes matter more than time.
 
 flapus also omits padding and seek tables, and writes a `VORBIS_COMMENT` block only

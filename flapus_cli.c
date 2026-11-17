@@ -22,7 +22,7 @@ static void usage(void) {
       "      --level N        0 (fastest) .. 8 (smallest), default 5\n"
       "      --lax            allow streams outside the FLAC subset (even smaller, but\n"
       "                       not every hardware player supports them)\n"
-      "      --threads N      encoder threads (default 1, 0 = one per CPU)\n"
+      "      --threads N      encoder threads (default 0 = one per CPU)\n"
       "Opus input:\n"
       "      --rate N         output sample rate (default: original input rate)\n"
       "      --no-dither      plain rounding instead of shaped dither\n"
@@ -116,6 +116,7 @@ int main(int argc, char **argv) {
       return 1;
    }
    fl_options_init(&opt);
+   opt.threads = 0;  /* the command line tool uses every CPU (the library default is 1) */
    for (i = 1; i < last; i++) {
       const char *a = argv[i], *v = i+1 < last ? argv[i+1] : NULL;
       if (strcmp(a, "-s") == 0 || strcmp(a, "--silent") == 0) {
