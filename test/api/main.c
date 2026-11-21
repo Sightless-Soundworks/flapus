@@ -197,16 +197,21 @@ static int test_stream(void) {
       fails += test_reader(names[fmt], fmt < 2);
    }
    fails += test_reader("api_c.flac", 1);
-   /* FLAC frames: varying block sizes, the STREAMINFO of the encoder, both decoders */
+   /* FLAC frames: varying block sizes, the STREAMINFO of the encoder, both decoders; the
+      encoder verifies its frames */
    {
       static const int sizes[6] = {4096, 1000, 4608, 17, 16384, 300};
-      fl_flac_frame_encoder *e = fl_flac_frame_encoder_create(2, 44100, 16, NULL, &err);
+      fl_options fopt;
+      fl_flac_frame_encoder *e;
       fl_flac_frame_decoder *d;
       unsigned char *buf = (unsigned char*)malloc(1<<22), info34[34];
       int *pcm = (int*)malloc(sizeof(int)*65536*2), used, n, i;
       size_t len = 42;
       int bad = 0;
       FILE *f;
+      fl_options_init(&fopt);
+      fopt.flac_verify = 1;
+      e = fl_flac_frame_encoder_create(2, 44100, 16, &fopt, &err);
       if (!e) return printf("frame encoder error %d\n", err), 1;
       k = 0;
       for (i = 0; k < a.frames; i++) {

@@ -27,7 +27,8 @@ cases = [  # output name, input, options
 lines = []
 for out, src, opts in cases:
     o = os.path.join(work, out)
-    cmd = [exe, '-s', '-f', '--serial', '1'] if out.endswith('.opus') else [exe, '-s', '-f']
+    # FLAC output is verified (-V), so every build also runs the encoder's self-check
+    cmd = [exe, '-s', '-f', '--serial', '1'] if out.endswith('.opus') else [exe, '-s', '-f'] + (['-V'] if out.endswith('.flac') else [])
     subprocess.run(cmd+opts+[os.path.join(work, src), o], check=True)
     if out.endswith('.wav') or out.endswith('-dec.flac'):
         continue

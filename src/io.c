@@ -16,7 +16,7 @@ static int fl_check_options(const fl_options *o) {
    if (o->quality >= 0 && o->bitrate > 0) return FL_ERR_BAD_ARG;
    if (o->signal < 0 || o->signal > 2 || o->expect_loss < 0 || o->expect_loss > 100) return FL_ERR_BAD_ARG;
    if (o->downmix < 0 || o->downmix > 2 || o->padding < 0 || o->padding > 0xFFFFFF) return FL_ERR_BAD_ARG;
-   if ((o->flac_seektable & ~1) || (o->keep_time & ~1)) return FL_ERR_BAD_ARG;
+   if ((o->flac_seektable|o->flac_verify|o->keep_time) & ~1) return FL_ERR_BAD_ARG;
    if (o->serialno < -1 || o->serialno > 4294967295LL) return FL_ERR_BAD_ARG;
    return FL_OK;
 }

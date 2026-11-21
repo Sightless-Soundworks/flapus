@@ -144,7 +144,7 @@ as with stdin). Decoding shows only the percentage and ends with `done`.
   error, as `flac` does.
 - `-s` or `--silent` turns the progress display off.
 - `-h` or `--help` shows the options.
-- `-V` or `--version` shows the version, whether the Opus encoder is built in, and the
+- `--version` shows the version, whether the Opus encoder is built in, and the
   target and compiler.
 - `--delete-input-file` deletes the input file after a successful conversion. It is
   off by default, and nothing is deleted when an error occurs. It cannot be combined
@@ -169,6 +169,9 @@ file it links to, so the links stay.
   hardware players only support the subset. Bit depths other than 8, 12, 16, 20, 24 and
   32 and sample rates that a frame header cannot hold (such as 700 kHz) are outside the
   subset as well; without `--lax` they stop with an error, as with `flac`.
+- `-V` or `--verify` decodes every frame again and compares it with the input, as
+  `flac -V` does; a mismatch stops with an error. It is off by default and makes level 5
+  about 10 % slower.
 - `--no-seektable` leaves out the seek table (a point every 10 seconds by default).
 - `--padding` reserves 8192 free bytes for later tag edits, `--padding N` N bytes. By
   default there is no padding.

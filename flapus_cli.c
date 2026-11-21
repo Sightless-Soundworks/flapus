@@ -25,10 +25,11 @@ static void usage(FILE *f) {
       "                       FLAC to FLAC or Opus to Opus, its creation time)\n"
       "  -f, --force          overwrite an existing output file\n"
       "  -s, --silent         no progress display\n"
-      "  -V, --version        show the version and how this build was made\n"
+      "      --version        show the version and how this build was made\n"
       "      --delete-input-file  delete the input file after a successful conversion\n"
       "FLAC output:\n"
       "      --level N        0 (fastest) .. 8 (smallest), default 5\n"
+      "  -V, --verify         decode every frame again and compare it with the input\n"
       "      --lax            allow streams outside the FLAC subset (even smaller, but\n"
       "                       not every hardware player supports them)\n"
       "      --threads N      encoder threads (default 0 = one per CPU)\n"
@@ -122,8 +123,9 @@ static void progress(void *user, double done, double ratio) {
 
 /* Options without a value, and with one (--padding takes one only if it is a number). */
 static const char *const flag_opts[] = {"-s", "--silent", "-f", "--force", "--delete-input-file", "--lax", "--no-seektable",
-                                        "--no-timestamp", "--no-dither", "--float", "--vbr", "--cvbr", "--hard-cbr", "--music",
-                                        "--speech", "--no-phase-inv", "--downmix-mono", "--downmix-stereo", NULL};
+                                        "-V", "--verify", "--no-timestamp", "--no-dither", "--float", "--vbr", "--cvbr",
+                                        "--hard-cbr", "--music", "--speech", "--no-phase-inv", "--downmix-mono",
+                                        "--downmix-stereo", NULL};
 static const char *const value_opts[] = {"--format", "--level", "--threads", "--rate", "--bits", "--bitrate", "--comp",
                                          "--framesize", "--quality", "--expect-loss", "--padding", "--serial", NULL};
 
@@ -190,7 +192,7 @@ int main(int argc, char **argv) {
    int i, ret, paths, last, silent = 0, force = 0, delete_input = 0, padding_on = 0, to_stdout, in_place;
    const char *in_path, *out_path;
    double d;
-   if (argc == 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)) {
+   if (argc == 2 && strcmp(argv[1], "--version") == 0) {
       version();
       return 0;
    }
@@ -198,7 +200,7 @@ int main(int argc, char **argv) {
       usage(stdout);
       return 0;
    }
-   if (argc < 2) {
+   if (argc < 2 || (argc == 2 && option_args(argv[1], NULL) >= 0)) {
       usage(stderr);
       return 1;
    }
@@ -226,6 +228,9 @@ int main(int argc, char **argv) {
          takes = 0;
       } else if (strcmp(a, "--no-seektable") == 0) {
          opt.flac_seektable = 0;
+         takes = 0;
+      } else if (strcmp(a, "-V") == 0 || strcmp(a, "--verify") == 0) {
+         opt.flac_verify = 1;
          takes = 0;
       } else if (strcmp(a, "--no-timestamp") == 0) {
          opt.keep_time = 0;

@@ -107,6 +107,8 @@ typedef struct {
                           frame header cannot hold */
    int threads;        /* FLAC encoder threads: 1 (default), 0 = one per CPU; the output does not depend on it */
    int flac_seektable; /* 1 = a seek point every 10 s (default), 0 = none */
+   int flac_verify;    /* 1 = decode every frame again and compare (FL_ERR_INTERNAL on a mismatch),
+                          0 (default) = not */
    /* Opus output */
    int bitrate;        /* bits per second (0 = automatic: 64 kbps per stream + 32 kbps per coupled pair) */
    int complexity;     /* 0..10, default 10 */
@@ -229,7 +231,7 @@ FLDEF int fl_writer_close(fl_writer *w);
 
 /* ---- FLAC frames ----
    The frame encoder codes each block as one frame with the full subframe search of
-   opt->flac_level (the block sizes are the caller's). Frames carry sample numbers, so the
+   opt->flac_level, verified with opt->flac_verify (the block sizes are the caller's). Frames carry sample numbers, so the
    sizes may vary. fl_flac_frame_encoder_streaminfo() gives the 34-byte STREAMINFO
    contents for the frames so far (block and frame sizes, total and MD5). */
 typedef struct fl_flac_frame_encoder fl_flac_frame_encoder;

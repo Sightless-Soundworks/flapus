@@ -98,8 +98,9 @@ with `tools/build_ref_opusenc.sh`, and run `test/grid.sh`.
 
 ## FLAC encoder
 
-The goal is the smallest valid FLAC file. The decoder in `flac_dec.c` decodes every
-frame again before it is written, and any mismatch aborts with `FL_ERR_INTERNAL`.
+The goal is the smallest valid FLAC file. With `flac_verify` (`-V`), the decoder in
+`flac_dec.c` decodes every frame again before it is written, and any mismatch aborts with
+`FL_ERR_INTERNAL`.
 
 ### Per subframe (`fl_search_subframe`)
 

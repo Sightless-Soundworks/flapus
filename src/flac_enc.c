@@ -5,7 +5,8 @@
    method (exact least squares), iteratively reweighted least squares that approximates the
    Rice cost, and a hill climb on the quantized coefficients. Rice partitions and parameters
    are chosen exactly. Block sizes are chosen per segment by dynamic programming (variable
-   block size stream). Every frame is decoded again and compared before it is written. */
+   block size stream). With verify, every frame is decoded again and compared before it is
+   written. */
 
 #define FL_FLAC_SEGMENT 65536   /* samples per channel analysed at once */
 #define FL_FLAC_MAX_ORDER 32
@@ -1944,7 +1945,7 @@ typedef struct {
    fl_ws ws;
    int *plans;        /* Rice plans of the frame's subframes, 8 of 1<<max_porder entries */
    fl_wcache wc;
-   fl_flac_dec dec;   /* verification */
+   fl_flac_dec dec;   /* verification (only with verify) */
    fl_bw bw;          /* frames encoded by this thread in the current segment */
 } fl_worker;
 
@@ -1983,7 +1984,7 @@ typedef struct {
    fl_prefix pf[8];
    fl_frame_job *jobs;
    int njobs, seg_len;
-   int padding, want_seek, frame_api;
+   int padding, want_seek, frame_api, verify;
    int avx2;              /* the CPU has AVX2 */
    int nseek, seek_k, seek_fill;  /* seek points (one per 10 s), next target, points known */
    fl_u64 *seek;          /* per point: first sample, frame offset and samples of its frame */
@@ -2254,7 +2255,7 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
       w->dec.si.channels = s->C;
       w->dec.si.bits = s->bits;
       w->dec.si.rate = s->rate;
-      if (fl_ws_alloc(&w->ws, s->cfg.max_block, s->cfg.max_porder) < 0 || fl_flac_dec_alloc(&w->dec, s->cfg.max_block) < 0 ||
+      if (fl_ws_alloc(&w->ws, s->cfg.max_block, s->cfg.max_porder) < 0 || (s->verify && fl_flac_dec_alloc(&w->dec, s->cfg.max_block) < 0) ||
           !(w->plans = (int*)malloc(sizeof(int)*8<<s->cfg.max_porder)))
          return FL_ERR_ALLOC;
       w->ws.avx2 = s->avx2;
@@ -2320,7 +2321,7 @@ static int fl_use_stereo(const fl_flac_sink *s, int off, int bs) {
    return s->stereo && (!s->side_bad || s->side_bad[off+bs] == s->side_bad[off]);
 }
 
-/* Encodes one frame into the worker's bit writer and verifies it by decoding. */
+/* Encodes one frame into the worker's bit writer and (with verify) checks it by decoding. */
 static int fl_encode_frame(fl_flac_sink *s, fl_worker *wk, fl_frame_job *job, fl_u64 num) {
    fl_sf sf[8], sfx[4];
    fl_bw *w = &wk->bw;
@@ -2386,11 +2387,13 @@ static int fl_encode_frame(fl_flac_sink *s, fl_worker *wk, fl_frame_job *job, fl
    }
    flen = w->len-start;
    /* decode the frame again and compare with the input */
-   if (fl_flac_decode_frame(&wk->dec, w->buf+start, flen, &n) != flen || n != bs) return FL_ERR_INTERNAL;
-   for (c = 0; c < s->C; c++) {
-      const fl_i32 *x = s->buf[c]+off;
-      for (i = 0; i < bs; i++)
-         if (wk->dec.out[i*s->C+c] != x[i]) return FL_ERR_INTERNAL;
+   if (s->verify) {
+      if (fl_flac_decode_frame(&wk->dec, w->buf+start, flen, &n) != flen || n != bs) return FL_ERR_INTERNAL;
+      for (c = 0; c < s->C; c++) {
+         const fl_i32 *x = s->buf[c]+off;
+         for (i = 0; i < bs; i++)
+            if (wk->dec.out[i*s->C+c] != x[i]) return FL_ERR_INTERNAL;
+      }
    }
    job->pos = start;
    job->bytes = flen;
@@ -2731,6 +2734,7 @@ static fl_sink *fl_flac_sink_create(fl_out *out, const fl_options *opt, int *err
    s->lax = opt->flac_lax;
    s->padding = opt->padding;
    s->want_seek = opt->flac_seektable;
+   s->verify = opt->flac_verify;
    s->nthreads = opt->threads > 0 ? opt->threads : opt->threads == 0 ? fl_cpu_count() : 1;
    if (s->nthreads > FL_MAX_THREADS) s->nthreads = FL_MAX_THREADS;
    if (s->nthreads < 1) s->nthreads = 1;
