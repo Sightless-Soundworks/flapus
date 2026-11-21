@@ -80,6 +80,7 @@ extern "C" {
 #define FL_ERR_BAD_ARG -5
 #define FL_ERR_CHECKSUM -6  /* decoded FLAC audio does not match the MD5 in its header */
 #define FL_ERR_INTERNAL -7  /* encoder self-check failed (please report) */
+#define FL_ERR_NOT_SUBSET -8  /* FLAC bit depth or rate outside the subset (needs flac_lax) */
 
 /* Short English description of FL_OK or an FL_ERR_* code ("unknown error" for other values). */
 FLDEF const char *fl_error_text(int err);
@@ -100,7 +101,9 @@ typedef struct {
    int as_float;       /* 1 = 32-bit float samples (WAV output), Opus as decoded without clipping */
    /* FLAC output */
    int flac_level;     /* 0 (fastest) .. 8 (smallest); default 5 */
-   int flac_lax;       /* 1 = allow streams outside the FLAC subset (LPC order 32 etc.) */
+   int flac_lax;       /* 1 = allow streams outside the FLAC subset (LPC order 32 etc.); needed for
+                          bit depths other than 8, 12, 16, 20, 24 and 32 and for rates that a
+                          frame header cannot hold */
    int threads;        /* FLAC encoder threads: 1 (default), 0 = one per CPU; the output does not depend on it */
    int flac_seektable; /* 1 = a seek point every 10 s (default), 0 = none */
    /* Opus output */

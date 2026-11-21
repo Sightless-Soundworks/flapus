@@ -1,6 +1,7 @@
 #!/bin/sh
 # FLAC tests: encodes every edge case at several settings, validates with the reference
 # flac decoder (flac -t), and compares decoded samples (flapus and flac -d) with the input.
+# Cases outside the subset (bit depth or rate) must be refused without --lax.
 # Usage: run_flac.sh [case dir]   (FLAC overrides the reference flac path)
 FLAC=${FLAC:-flac}
 dir=${1:-flac_cases}
@@ -11,8 +12,14 @@ for w in "$dir"/*.wav; do
    b=$(basename "$w" .wav)
    for set in "--level 0" "--level 3" "--level 8" "--level 8 --lax"; do
       tag=$(echo "$set" | tr -d ' -')
-      ../flapus.exe -s -f $set "$w" out/$b.$tag.flac
+      ../flapus.exe -s -f $set "$w" out/$b.$tag.flac 2>/dev/null
       r=$?
+      case "$b:$set" in
+         v18:*--lax*|rate700000:*--lax*) ;;
+         v18:*|rate700000:*)
+            if [ $r = 0 ]; then echo "$b $set: not refused outside the subset"; fail=1; fi
+            continue;;
+      esac
       if [ $r != 0 ]; then
          echo "$b $set: encoder error $r"; fail=1; continue
       fi

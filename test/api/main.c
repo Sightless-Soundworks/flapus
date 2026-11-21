@@ -307,6 +307,17 @@ int main(void) {
          free(a.samples);
          fl_audio_free(&b);
       }
+      /* 18 bits are outside the subset: refused without flac_lax */
+      a.bits = 18;
+      a.frames = 1000;
+      a.samples = (int*)calloc((size_t)a.frames*2, sizeof(int));
+      err = fl_write_audio("api_test18.flac", &a, &opt);
+      opt.flac_lax = 1;
+      if (err != FL_ERR_NOT_SUBSET || fl_write_audio("api_test18.flac", &a, &opt) != FL_OK) return printf("FLAC 18-bit: FAILED\n"), 1;
+      printf("FLAC 18-bit: refused without lax, ok with lax\n");
+      opt.flac_lax = 0;
+      free(a.samples);
+      remove("api_test18.flac");
 #ifdef FLAPUS_HAVE_ENCODER
       if ((err = fl_convert_file("api_test.flac", "api_test.opus", NULL)) != FL_OK) return printf("convert error %d\n", err), 1;
       if ((err = fl_read_audio("api_test.opus", NULL, &b)) != FL_OK) return printf("Opus read error %d\n", err), 1;

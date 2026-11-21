@@ -23,6 +23,7 @@ FLDEF const char *fl_error_text(int err) {
    case FL_ERR_BAD_ARG: return "invalid option value or unknown output format";
    case FL_ERR_CHECKSUM: return "MD5 mismatch: the FLAC input is damaged";
    case FL_ERR_INTERNAL: return "internal FLAC encoder check failed";
+   case FL_ERR_NOT_SUBSET: return "bit depth or sample rate outside the FLAC subset (needs --lax)";
    default: return "unknown error";
    }
 }

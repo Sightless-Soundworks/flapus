@@ -1813,11 +1813,40 @@ done:
    return ret;
 }
 
+/* Frame header code of the sample rate (0 = only in STREAMINFO) and its extra bytes. */
+static int fl_rate_code(int rate, int *extra) {
+   static const int rate_codes[12] = {0, 88200, 176400, 192000, 8000, 16000, 22050, 24000, 32000, 44100, 48000, 96000};
+   int i;
+   *extra = 0;
+   for (i = 1; i < 12; i++)
+      if (rate_codes[i] == rate) return i;
+   if (rate%1000 == 0 && rate/1000 <= 255) { *extra = 1; return 12; }
+   if (rate <= 65535) { *extra = 2; return 13; }
+   if (rate%10 == 0 && rate/10 <= 65535) { *extra = 2; return 14; }
+   return 0;
+}
+
+/* Frame header code of the bit depth (0 = only in STREAMINFO). */
+static int fl_bits_code(int bits) {
+   switch (bits) {
+   case 8: return 1;
+   case 12: return 2;
+   case 16: return 4;
+   case 20: return 5;
+   case 24: return 6;
+   case 32: return 7;
+   default: return 0;
+   }
+}
+
 static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
    fl_flac_sink *s = (fl_flac_sink*)sk;
-   int c, t, slen;
+   int c, t, slen, extra;
    if (f->is_float) return FL_ERR_UNSUPPORTED;  /* FLAC is integer PCM only */
    if (f->channels < 1 || f->channels > 8 || f->bits < 4 || f->bits > 32 || f->rate < 1 || f->rate > FL_MAX_RATE) return FL_ERR_UNSUPPORTED;
+   /* the subset needs the bit depth and rate in the frame headers (the frame API leaves
+      the subset to the caller) */
+   if (!s->lax && !s->frame_api && (!fl_bits_code(f->bits) || !fl_rate_code(f->rate, &extra))) return FL_ERR_NOT_SUBSET;
    s->C = f->channels;
    s->bits = f->bits;
    s->rate = f->rate;
@@ -1884,29 +1913,14 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
 
 /* Frame header for frame/sample number num; returns its length in bytes. */
 static int fl_frame_header(fl_flac_sink *s, unsigned char *h, int bs, int assignment, fl_u64 num) {
-   static const int rate_codes[12] = {0, 88200, 176400, 192000, 8000, 16000, 22050, 24000, 32000, 44100, 48000, 96000};
-   int pos = 4, bcode, rcode = 0, scode, i, extra_b = 0, extra_r = 0;
+   int pos = 4, bcode, rcode, scode, i, extra_b = 0, extra_r;
    if (bs == 192) bcode = 1;
    else if (bs == 576 || bs == 1152 || bs == 2304 || bs == 4608) bcode = 2+fl_ilog(bs/576)-1;
    else if (bs >= 256 && bs <= 32768 && (bs&(bs-1)) == 0) bcode = 8+fl_ilog(bs/256)-1;
    else if (bs <= 256) { bcode = 6; extra_b = 1; }
    else { bcode = 7; extra_b = 2; }
-   for (i = 1; i < 12; i++)
-      if (rate_codes[i] == s->rate) rcode = i;
-   if (!rcode) {
-      if (s->rate%1000 == 0 && s->rate/1000 <= 255) { rcode = 12; extra_r = 1; }
-      else if (s->rate <= 65535) { rcode = 13; extra_r = 2; }
-      else if (s->rate%10 == 0 && s->rate/10 <= 65535) { rcode = 14; extra_r = 2; }
-   }
-   switch (s->bits) {
-   case 8: scode = 1; break;
-   case 12: scode = 2; break;
-   case 16: scode = 4; break;
-   case 20: scode = 5; break;
-   case 24: scode = 6; break;
-   case 32: scode = 7; break;
-   default: scode = 0; break;
-   }
+   rcode = fl_rate_code(s->rate, &extra_r);
+   scode = fl_bits_code(s->bits);
    h[0] = 0xFF;
    h[1] = (unsigned char)(0xF8|s->variable);
    h[2] = (unsigned char)(bcode<<4|rcode);

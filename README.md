@@ -159,7 +159,9 @@ to recompress a FLAC file in place.
 - `--level N` sets the effort: 0 (fastest) to 8 (smallest). The default is 5.
 - `--lax` allows streams outside the FLAC subset: LPC order up to 32 and blocks up to
   16384 samples. The files are valid FLAC and decode with libFLAC and FFmpeg, but some
-  hardware players only support the subset.
+  hardware players only support the subset. Bit depths other than 8, 12, 16, 20, 24 and
+  32 and sample rates that a frame header cannot hold (such as 700 kHz) are outside the
+  subset as well; without `--lax` they stop with an error, as with `flac`.
 - `--no-seektable` leaves out the seek table (a point every 10 seconds by default).
 - `--padding` reserves 8192 free bytes for later tag edits, `--padding N` N bytes. By
   default there is no padding.
@@ -387,7 +389,7 @@ line.
 **FLAC output**
 
 - FLAC takes integer PCM only, from 4 to 32 bits and 1-8 channels; float WAV input needs
-  `--bits`. 32-bit audio gets LPC and stereo decorrelation (33-bit side channel) like
+  `--bits`. Bit depths other than 8, 12, 16, 20, 24 and 32 need `--lax` (or `--bits`). 32-bit audio gets LPC and stereo decorrelation (33-bit side channel) like
   any other bit depth.
 - Tags and pictures carry over between FLAC and Opus:
   - FLAC pictures become `METADATA_BLOCK_PICTURE` comments in Opus, and back.
@@ -441,11 +443,13 @@ the Opus output options); pass it in the `OPUSENC` variable.
   (this needs an opusenc built with libFLAC).
   This covers flac- and flapus-made files, 8-24 bit, 3-8 channels, 96 kHz and the
   ReplayGain rules.
-- `run_flac.sh`: 38 edge cases (`make_flac_cases.py`) at levels 0, 3, 8 and `--lax`.
+- `run_flac.sh`: 39 edge cases (`make_flac_cases.py`) at levels 0, 3, 8 and `--lax`.
   - Every file passes `flac -t`.
   - Both flapus and `flac -d` decode every sample back exactly.
-  - The cases cover 1 to 70000 samples, silence, noise, full scale, 8/12/16/20/24/32
+  - The cases cover 1 to 70000 samples, silence, noise, full scale, 8/12/16/18/20/24/32
     bits, 3-8 channels, and rates from 8 kHz to 700 kHz.
+  - 18 bits and 700 kHz are outside the subset: without `--lax` the encoder must refuse
+    them.
 - The FLAC decoder gives byte-identical WAV files to `flac -d` on 88 files encoded with
   different flac settings (`-0` to `-8ep`, `--lax -l 32 -b 16384`, block size 16 to
   65535). FFmpeg decodes flapus FLAC files exactly as well.
