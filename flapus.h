@@ -341,6 +341,7 @@ FLDEF int fl_opus_encode_float(fl_opus_encoder *enc, const float *pcm, unsigned 
 #elif defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <utime.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -451,21 +452,80 @@ static fl_u32 fl_random32(const void *salt) {
    return (fl_u32)((x^(x>>31))>>32);
 }
 
+/* 1 if something exists at path, also a file that cannot be read or a dangling link. */
 static int fl_file_exists(const char *path) {
-   FILE *f = fl_is_std(path) ? NULL : fl_fopen(path, "rb");
-   if (f) fclose(f);
+#ifdef _WIN32
+   wchar_t *w;
+   HANDLE h;
+   DWORD e;
+#elif defined(__unix__) || defined(__APPLE__)
+   struct stat st;
+#else
+   FILE *f;
+#endif
+   if (fl_is_std(path)) return 0;
+#ifdef _WIN32
+   /* no access rights needed: only whether it can be found */
+   if ((w = fl_widen(path))) {
+      h = CreateFileW(w, 0, FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+      free(w);
+   } else h = CreateFileA(path, 0, FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+   if (h != INVALID_HANDLE_VALUE) {
+      CloseHandle(h);
+      return 1;
+   }
+   e = GetLastError();
+   return e == ERROR_ACCESS_DENIED || e == ERROR_SHARING_VIOLATION;
+#elif defined(__unix__) || defined(__APPLE__)
+   return lstat(path, &st) == 0;
+#else
+   if ((f = fl_fopen(path, "rb"))) fclose(f);
    return f != NULL;
+#endif
 }
 
-/* A new file name next to path ("path.1a2b3c4d.tmp"); free it. */
+/* Creates path as a new empty file, never opening an existing one (or a link). Returns 1,
+   0 if path exists, or -1 on another error. */
+static int fl_create_new(const char *path) {
+#ifdef _WIN32
+   wchar_t *w;
+   HANDLE h;
+   DWORD e;
+   if ((w = fl_widen(path))) {
+      h = CreateFileW(w, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+      free(w);
+   } else h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+   if (h == INVALID_HANDLE_VALUE) {
+      e = GetLastError();
+      return e == ERROR_FILE_EXISTS || e == ERROR_ALREADY_EXISTS ? 0 : -1;
+   }
+   CloseHandle(h);
+   return 1;
+#elif defined(__unix__) || defined(__APPLE__)
+   int fd = open(path, O_WRONLY|O_CREAT|O_EXCL, 0666);
+   if (fd < 0) return errno == EEXIST ? 0 : -1;
+   close(fd);
+   return 1;
+#else
+   FILE *f;
+   if (fl_file_exists(path)) return 0;
+   if (!(f = fl_fopen(path, "wb"))) return -1;
+   fclose(f);
+   return 1;
+#endif
+}
+
+/* Creates a new empty file next to path ("path.1a2b3c4d.tmp") and returns its name (free
+   it), or NULL. */
 static char *fl_temp_path(const char *path) {
    size_t n = strlen(path);
    char *t = (char*)malloc(n+14);
-   int tries;
+   int tries, r;
    if (!t) return NULL;
    for (tries = 0; tries < 100; tries++) {
       sprintf(t, "%s.%08x.tmp", path, (unsigned)fl_random32(t));
-      if (!fl_file_exists(t)) return t;
+      if ((r = fl_create_new(t)) > 0) return t;
+      if (r < 0) break;
    }
    free(t);
    return NULL;
@@ -40919,7 +40979,7 @@ static fl_writer *fl_writer_create(const char *path, const fl_io *io, const fl_i
       w->tmp = fl_temp_path(path);
       w->path = (char*)malloc(strlen(path)+1);
       if (!w->tmp || !w->path) {
-         err = FL_ERR_ALLOC;
+         err = w->path ? FL_ERR_IO : FL_ERR_ALLOC;
          goto fail;
       }
       strcpy(w->path, path);

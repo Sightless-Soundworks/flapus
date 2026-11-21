@@ -584,7 +584,7 @@ static fl_writer *fl_writer_create(const char *path, const fl_io *io, const fl_i
       w->tmp = fl_temp_path(path);
       w->path = (char*)malloc(strlen(path)+1);
       if (!w->tmp || !w->path) {
-         err = FL_ERR_ALLOC;
+         err = w->path ? FL_ERR_IO : FL_ERR_ALLOC;
          goto fail;
       }
       strcpy(w->path, path);
