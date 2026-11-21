@@ -95,18 +95,34 @@ static int fl_same_file(const char *a, const char *b) {
 #endif
 }
 
-/* --version: the version, how the Opus encoder was built, and the target. */
+/* --version: the version, whether the Opus encoder is built in, the target and the compiler. */
 static void version(void) {
    printf("flapus %s\n", FLAPUS_VERSION);
-#if defined(FLAPUS_HAVE_ENCODER) && defined(FLAPUS_PORTABLE_MATH)
-   printf("Opus encoder: portable math (the same output on every x86 CPU)\n");
-#elif defined(FLAPUS_HAVE_ENCODER)
-   printf("Opus encoder: native CPU instructions (output can differ between Intel and AMD)\n");
+#ifdef FLAPUS_HAVE_ENCODER
+   printf("Opus encoder: libopus 1.6.1\n");
 #else
    printf("Opus encoder: not included\n");
 #endif
-   printf("%s, GCC %d.%d.%d\n", sizeof(void*) == 8 ? "x86-64" : "x86 (32-bit)",
-          __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
+#if defined(__x86_64__) || defined(_M_X64)
+   printf("x86-64");
+#elif defined(__i386__) || defined(_M_IX86)
+   printf("x86 (32-bit)");
+#elif defined(__aarch64__) || defined(_M_ARM64)
+   printf("ARM64");
+#elif defined(__arm__) || defined(_M_ARM)
+   printf("ARM (32-bit)");
+#else
+   printf("%d-bit", (int)sizeof(void*)*8);
+#endif
+#if defined(__clang__)
+   printf(", Clang %d.%d.%d\n", __clang_major__, __clang_minor__, __clang_patchlevel__);
+#elif defined(__GNUC__)
+   printf(", GCC %d.%d.%d\n", __GNUC__, __GNUC_MINOR__, __GNUC_PATCHLEVEL__);
+#elif defined(_MSC_VER)
+   printf(", MSVC %d\n", _MSC_VER);
+#else
+   printf("\n");
+#endif
 }
 
 /* Appends an option to the ENCODER_OPTIONS tag text. */
@@ -299,8 +315,10 @@ int main(int argc, char **argv) {
       }
       if (!ok) return 1;
       if (takes) {
+         /* as in opusenc, only options that shape the encoding */
          if (strcmp(a, "--level") != 0 && strcmp(a, "--threads") != 0 && strcmp(a, "--rate") != 0 &&
-             strcmp(a, "--bits") != 0 && strcmp(a, "--format") != 0)
+             strcmp(a, "--bits") != 0 && strcmp(a, "--format") != 0 && strcmp(a, "--padding") != 0 &&
+             strcmp(a, "--serial") != 0)
             note(opts, sizeof(opts), a, v);
          i++;
       }

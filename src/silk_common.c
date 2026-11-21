@@ -221,37 +221,7 @@ static fl_i32 silk_log2lin(const fl_i32 inLog_Q7) {
       out = silk_MLA(out, silk_RSHIFT(out, 7), silk_SMLAWB(frac_Q7, silk_SMULBB(frac_Q7, 128-frac_Q7), -174));
    return out;
 }
-static fl_i32 silk_lin2log(const fl_i32 inLin) {
-   fl_i32 lz, frac_Q7;
-   silk_CLZ_FRAC(inLin, &lz, &frac_Q7);
-   return silk_ADD_LSHIFT32(silk_SMLAWB(frac_Q7, silk_MUL(frac_Q7, 128-frac_Q7), 179), 31-lz, 7);
-}
 
-static void silk_insertion_sort_increasing(fl_i32 *a, int *idx, const int L, const int K) {
-   fl_i32 value;
-   int i, j;
-   for (i = 0; i < K; i++) idx[i] = i;
-   for (i = 1; i < K; i++) {
-      value = a[i];
-      for (j = i-1; (j >= 0) && (value < a[j]); j--) {
-         a[j+1] = a[j];
-         idx[j+1] = idx[j];
-      }
-      a[j+1] = value;
-      idx[j+1] = i;
-   }
-   for (i = K; i < L; i++) {
-      value = a[i];
-      if (value < a[K-1]) {
-         for (j = K-2; (j >= 0) && (value < a[j]); j--) {
-            a[j+1] = a[j];
-            idx[j+1] = idx[j];
-         }
-         a[j+1] = value;
-         idx[j+1] = i;
-      }
-   }
-}
 static void silk_insertion_sort_increasing_all_values_int16(fl_i16 *a, const int L) {
    int value, i, j;
    for (i = 1; i < L; i++) {
@@ -541,33 +511,7 @@ static void silk_NLSF_decode(fl_i16 *pNLSF_Q15, fl_i8 *NLSFIndices, const fl_nls
 }
 
 #define GAIN_OFFSET ((MIN_QGAIN_DB*128)/6+16*128)
-#define GAIN_SCALE_Q16 ((65536*(N_LEVELS_QGAIN-1))/(((MAX_QGAIN_DB-MIN_QGAIN_DB)*128)/6))
 #define GAIN_INV_SCALE_Q16 ((65536*(((MAX_QGAIN_DB-MIN_QGAIN_DB)*128)/6))/(N_LEVELS_QGAIN-1))
-static void silk_gains_quant(fl_i8 ind[MAX_NB_SUBFR], fl_i32 gain_Q16[MAX_NB_SUBFR], fl_i8 *prev_ind,
-      const int conditional, const int nb_subfr) {
-   int k, double_step_size_threshold;
-   for (k = 0; k < nb_subfr; k++) {
-      ind[k] = silk_SMULWB(GAIN_SCALE_Q16, silk_lin2log(gain_Q16[k])-GAIN_OFFSET);
-      if (ind[k] < *prev_ind) ind[k]++;
-      ind[k] = silk_LIMIT_int(ind[k], 0, N_LEVELS_QGAIN-1);
-      if (k == 0 && conditional == 0) {
-         ind[k] = silk_LIMIT_int(ind[k], *prev_ind+MIN_DELTA_GAIN_QUANT, N_LEVELS_QGAIN-1);
-         *prev_ind = ind[k];
-      } else {
-         ind[k] = ind[k]-*prev_ind;
-         double_step_size_threshold = 2*MAX_DELTA_GAIN_QUANT-N_LEVELS_QGAIN+*prev_ind;
-         if (ind[k] > double_step_size_threshold)
-            ind[k] = double_step_size_threshold+silk_RSHIFT(ind[k]-double_step_size_threshold+1, 1);
-         ind[k] = silk_LIMIT_int(ind[k], MIN_DELTA_GAIN_QUANT, MAX_DELTA_GAIN_QUANT);
-         if (ind[k] > double_step_size_threshold) {
-            *prev_ind += silk_LSHIFT(ind[k], 1)-double_step_size_threshold;
-            *prev_ind = silk_min_int(*prev_ind, N_LEVELS_QGAIN-1);
-         } else *prev_ind += ind[k];
-         ind[k] -= MIN_DELTA_GAIN_QUANT;
-      }
-      gain_Q16[k] = silk_log2lin(silk_min_32(silk_SMULWB(GAIN_INV_SCALE_Q16, *prev_ind)+GAIN_OFFSET, 3967));
-   }
-}
 static void silk_gains_dequant(fl_i32 gain_Q16[MAX_NB_SUBFR], const fl_i8 ind[MAX_NB_SUBFR], fl_i8 *prev_ind,
       const int conditional, const int nb_subfr) {
    int k, ind_tmp, double_step_size_threshold;
@@ -583,12 +527,6 @@ static void silk_gains_dequant(fl_i32 gain_Q16[MAX_NB_SUBFR], const fl_i8 ind[MA
       *prev_ind = silk_LIMIT_int(*prev_ind, 0, N_LEVELS_QGAIN-1);
       gain_Q16[k] = silk_log2lin(silk_min_32(silk_SMULWB(GAIN_INV_SCALE_Q16, *prev_ind)+GAIN_OFFSET, 3967));
    }
-}
-static fl_i32 silk_gains_ID(const fl_i8 ind[MAX_NB_SUBFR], const int nb_subfr) {
-   int k;
-   fl_i32 gainsID = 0;
-   for (k = 0; k < nb_subfr; k++) gainsID = silk_ADD_LSHIFT32(ind[k], gainsID, 8);
-   return gainsID;
 }
 
 static void silk_decode_pitch(fl_i16 lagIndex, fl_i8 contourIndex, int pitch_lags[], const int Fs_kHz, const int nb_subfr) {
@@ -620,14 +558,6 @@ static void silk_decode_pitch(fl_i16 lagIndex, fl_i8 contourIndex, int pitch_lag
    }
 }
 
-/* Shell coder */
-static void silk_combine_pulses(int *out, const int *in, const int len) {
-   int k;
-   for (k = 0; k < len; k++) out[k] = in[2*k]+in[2*k+1];
-}
-static void silk_encode_split(ec_ctx *enc, const int p_child1, const int p, const fl_u8 *shell_table) {
-   if (p > 0) ec_enc_icdf(enc, p_child1, &shell_table[fl_shell_code_table_offsets[p]], 8);
-}
 static void silk_decode_split(fl_i16 *p_child1, fl_i16 *p_child2, ec_ctx *dec, const int p, const fl_u8 *shell_table) {
    if (p > 0) {
       p_child1[0] = ec_dec_icdf(dec, &shell_table[fl_shell_code_table_offsets[p]], 8);
@@ -636,28 +566,6 @@ static void silk_decode_split(fl_i16 *p_child1, fl_i16 *p_child2, ec_ctx *dec, c
       p_child1[0] = 0;
       p_child2[0] = 0;
    }
-}
-static void silk_shell_encoder(ec_ctx *enc, const int *pulses0) {
-   int pulses1[8], pulses2[4], pulses3[2], pulses4[1];
-   silk_combine_pulses(pulses1, pulses0, 8);
-   silk_combine_pulses(pulses2, pulses1, 4);
-   silk_combine_pulses(pulses3, pulses2, 2);
-   silk_combine_pulses(pulses4, pulses3, 1);
-   silk_encode_split(enc, pulses3[0], pulses4[0], fl_shell_code_table3);
-   silk_encode_split(enc, pulses2[0], pulses3[0], fl_shell_code_table2);
-   silk_encode_split(enc, pulses1[0], pulses2[0], fl_shell_code_table1);
-   silk_encode_split(enc, pulses0[0], pulses1[0], fl_shell_code_table0);
-   silk_encode_split(enc, pulses0[2], pulses1[1], fl_shell_code_table0);
-   silk_encode_split(enc, pulses1[2], pulses2[1], fl_shell_code_table1);
-   silk_encode_split(enc, pulses0[4], pulses1[2], fl_shell_code_table0);
-   silk_encode_split(enc, pulses0[6], pulses1[3], fl_shell_code_table0);
-   silk_encode_split(enc, pulses2[2], pulses3[1], fl_shell_code_table2);
-   silk_encode_split(enc, pulses1[4], pulses2[2], fl_shell_code_table1);
-   silk_encode_split(enc, pulses0[8], pulses1[4], fl_shell_code_table0);
-   silk_encode_split(enc, pulses0[10], pulses1[5], fl_shell_code_table0);
-   silk_encode_split(enc, pulses1[6], pulses2[3], fl_shell_code_table1);
-   silk_encode_split(enc, pulses0[12], pulses1[6], fl_shell_code_table0);
-   silk_encode_split(enc, pulses0[14], pulses1[7], fl_shell_code_table0);
 }
 static void silk_shell_decoder(fl_i16 *pulses0, ec_ctx *dec, const int pulses4) {
    fl_i16 pulses3[2], pulses2[4], pulses1[8];
@@ -678,26 +586,6 @@ static void silk_shell_decoder(fl_i16 *pulses0, ec_ctx *dec, const int pulses4) 
    silk_decode_split(&pulses0[14], &pulses0[15], dec, pulses1[7], fl_shell_code_table0);
 }
 
-static void silk_encode_signs(ec_ctx *enc, const fl_i8 pulses[], int length, const int signalType,
-      const int quantOffsetType, const int sum_pulses[MAX_NB_SHELL_BLOCKS]) {
-   int i, j, p;
-   fl_u8 icdf[2];
-   const fl_i8 *q_ptr = pulses;
-   const fl_u8 *icdf_ptr;
-   icdf[1] = 0;
-   i = silk_SMULBB(7, silk_ADD_LSHIFT32(quantOffsetType, signalType, 1));
-   icdf_ptr = &fl_sign_iCDF[i];
-   length = silk_RSHIFT(length+SHELL_CODEC_FRAME_LENGTH/2, LOG2_SHELL_CODEC_FRAME_LENGTH);
-   for (i = 0; i < length; i++) {
-      p = sum_pulses[i];
-      if (p > 0) {
-         icdf[0] = icdf_ptr[silk_min(p&0x1F, 6)];
-         for (j = 0; j < SHELL_CODEC_FRAME_LENGTH; j++)
-            if (q_ptr[j] != 0) ec_enc_icdf(enc, silk_RSHIFT(q_ptr[j], 15)+1, icdf, 8);
-      }
-      q_ptr += SHELL_CODEC_FRAME_LENGTH;
-   }
-}
 static void silk_decode_signs(ec_ctx *dec, fl_i16 pulses[], int length, const int signalType,
       const int quantOffsetType, const int sum_pulses[MAX_NB_SHELL_BLOCKS]) {
    int i, j, p;

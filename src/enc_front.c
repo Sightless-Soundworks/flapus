@@ -1,46 +1,5 @@
 /* ---- Opus encoder front end: libopusenc buffering/resampling, Ogg output, opusenc main loop ---- */
 
-/* ---- libopusenc resampler: fl_resampler with the sinc table computed on the x87 ---- */
-/* sinc() with compute_func() as compiled in libopusenc (window KAISER10). */
-static float fl_ope_sinc(float cutoff, int i, fl_u32 den, int jterm, int N) {
-   xf x = XF(jterm)-XF(i)/XF(den), y, frac, f2, f3, i0, i1, i2, i3, cf;
-   double arg, s, Nd = N;
-   float x_f, cf_arg, y_f;
-   int ind;
-   if (fabsl(x) < XF(1e-6)) return cutoff;
-   if (fabsl(x) > XF(.5f)*N) return 0;
-   x_f = (float)x;
-   arg = (double)(XF(3.14159265358979323846)*(x*cutoff));
-   s = fl_m_sin(arg);
-   cf_arg = (float)((XF(x_f)+XF(x_f))/XF(Nd));
-   cf_arg = fabsf(cf_arg);
-   y = XF(cf_arg)*32;
-   y_f = (float)y;
-   ind = (int)(float)fl_m_floorf(y_f);
-   frac = XF(y_f)-ind;
-   f2 = frac*frac;
-   f3 = frac*f2;
-   i3 = XF(-0.1666666667)*frac+XF(0.1666666667)*f3;
-   i2 = frac+XF(0.5)*f2-XF(0.5)*f3;
-   i0 = XF(-0.3333333333)*frac+XF(0.5)*f2-XF(0.1666666667)*f3;
-   i1 = XF(1.f)-i3-i2-i0;
-   cf = i0*XF(fl_kaiser10_table[ind])+i1*XF(fl_kaiser10_table[ind+1])+i2*XF(fl_kaiser10_table[ind+2])+i3*XF(fl_kaiser10_table[ind+3]);
-   return (float)(((XF(s)*cutoff)/XF(arg))*cf);
-}
-
-static int fl_ope_rs_init(fl_resampler *r, int channels, fl_u32 in_rate, fl_u32 out_rate) {
-   fl_u32 i;
-   float cutoff;
-   int j, ret;
-   if ((ret = fl_resampler_alloc(r, channels, in_rate, out_rate)) != FL_OK) return ret;
-   if (r->num_rate > r->den_rate) cutoff = (float)(XF(0.922f)*XF((double)r->den_rate)/XF((double)r->num_rate));
-   else cutoff = 0.940f;
-   for (i = 0; i < r->den_rate; i++)
-      for (j = 0; j < (int)r->filt_len; j++)
-         r->sinc_table[i*r->filt_len+j] = fl_ope_sinc(cutoff, (int)i, r->den_rate, j-(fl_i32)r->filt_len/2+1, r->filt_len);
-   return FL_OK;
-}
-
 /* ---- Ogg page packer (libopusenc ogg_packer.c) ---- */
 typedef struct {
    fl_u64 granulepos;
@@ -181,15 +140,94 @@ static void fl_oggp_compact(fl_oggp *o) {
 #define OPE_LPC_GOERTZEL_CONST 1.99931465f
 #define OPE_BUFFER_SAMPLES (96000+24000)
 
-typedef struct fl_msenc fl_msenc;
-static fl_msenc *fl_msenc_create(int channels, int family, int *err);
-static int fl_msenc_layout(int channels, int family, int *streams, int *coupled, unsigned char *mapping);
-static void fl_msenc_destroy(fl_msenc *st);
-static int fl_msenc_encode(fl_msenc *st, const float *pcm, int frame_size, unsigned char *data, fl_i32 max_bytes);
-static int fl_msenc_lookahead(fl_msenc *st);
-static void fl_msenc_setup(fl_msenc *st, const fl_options *opt, int lsb_depth);
-static int fl_msenc_get_duration(fl_msenc *st);
-static void fl_msenc_set_duration(fl_msenc *st, int request);
+/* ---- libopus multistream encoder, set up like opusenc ---- */
+typedef struct {
+   oe_OpusMSEncoder *ms;
+   int duration;  /* OPUS_SET_EXPERT_FRAME_DURATION value */
+} fl_msenc;
+
+/* Stream layout of opus_multistream_surround_encoder_init() for families 0, 1 and 255. */
+static int fl_msenc_layout(int channels, int family, int *streams, int *coupled, unsigned char *mapping) {
+   static const unsigned char vorbis[8][10] = {
+      {1, 0, 0}, {1, 1, 0, 1}, {2, 1, 0, 2, 1}, {2, 2, 0, 1, 2, 3}, {3, 2, 0, 4, 1, 2, 3},
+      {4, 2, 0, 4, 1, 2, 3, 5}, {4, 3, 0, 4, 1, 2, 3, 5, 6}, {5, 3, 0, 6, 1, 2, 3, 4, 5, 7}};
+   int i;
+   if (channels < 1 || channels > 255) return FL_ERR_BAD_ARG;
+   if (family == 0 && channels <= 2) {
+      *streams = 1;
+      *coupled = channels-1;
+      for (i = 0; i < channels; i++) mapping[i] = (unsigned char)i;
+   } else if (family == 1 && channels <= 8) {
+      *streams = vorbis[channels-1][0];
+      *coupled = vorbis[channels-1][1];
+      for (i = 0; i < channels; i++) mapping[i] = vorbis[channels-1][2+i];
+   } else if (family == 255) {
+      *streams = channels;
+      *coupled = 0;
+      for (i = 0; i < channels; i++) mapping[i] = (unsigned char)i;
+   } else return FL_ERR_UNSUPPORTED;
+   return FL_OK;
+}
+
+static void fl_msenc_destroy(fl_msenc *st) {
+   if (!st) return;
+   free(st->ms);
+   free(st);
+}
+
+static fl_msenc *fl_msenc_create(int channels, int family, int *err) {
+   fl_msenc *st;
+   int streams, coupled;
+   unsigned char mapping[255];
+   *err = fl_msenc_layout(channels, family, &streams, &coupled, mapping);
+   if (*err != FL_OK) return NULL;
+   *err = FL_ERR_ALLOC;
+   st = (fl_msenc*)calloc(1, sizeof(*st));
+   if (!st) return NULL;
+   st->ms = (oe_OpusMSEncoder*)malloc(oe_opus_multistream_surround_encoder_get_size(channels, family));
+   if (!st->ms || oe_opus_multistream_surround_encoder_init(st->ms, 48000, channels, family, &streams, &coupled,
+         mapping, oe_OPUS_APPLICATION_AUDIO) != oe_OPUS_OK) {
+      fl_msenc_destroy(st);
+      return NULL;
+   }
+   st->duration = oe_OPUS_FRAMESIZE_20_MS;
+   *err = FL_OK;
+   return st;
+}
+
+static int fl_msenc_lookahead(fl_msenc *st) {
+   oe_opus_int32 v = 0;
+   oe_opus_multistream_encoder_ctl(st->ms, oe_OPUS_GET_LOOKAHEAD_REQUEST, &v);
+   return v;
+}
+
+static void fl_msenc_set_duration(fl_msenc *st, int request) {
+   st->duration = request;
+   oe_opus_multistream_encoder_ctl(st->ms, oe_OPUS_SET_EXPERT_FRAME_DURATION_REQUEST, request);
+}
+
+/* The opusenc ctl sequence; bitrate is already limited to 750 kbps per channel. */
+static void fl_msenc_setup(fl_msenc *st, const fl_options *opt, int lsb_depth) {
+   int f = opt->frame_ms_x10;
+   fl_msenc_set_duration(st, f == 25 ? oe_OPUS_FRAMESIZE_2_5_MS : f == 50 ? oe_OPUS_FRAMESIZE_5_MS :
+         f == 100 ? oe_OPUS_FRAMESIZE_10_MS : f == 400 ? oe_OPUS_FRAMESIZE_40_MS : f == 600 ? oe_OPUS_FRAMESIZE_60_MS :
+         f == 800 ? oe_OPUS_FRAMESIZE_80_MS : f == 1000 ? oe_OPUS_FRAMESIZE_100_MS : f == 1200 ? oe_OPUS_FRAMESIZE_120_MS :
+         oe_OPUS_FRAMESIZE_20_MS);
+   oe_opus_multistream_encoder_ctl(st->ms, oe_OPUS_SET_BITRATE_REQUEST, (oe_opus_int32)opt->bitrate);
+   oe_opus_multistream_encoder_ctl(st->ms, oe_OPUS_SET_VBR_REQUEST, (oe_opus_int32)opt->vbr);
+   if (opt->vbr) oe_opus_multistream_encoder_ctl(st->ms, oe_OPUS_SET_VBR_CONSTRAINT_REQUEST, (oe_opus_int32)opt->cvbr);
+   oe_opus_multistream_encoder_ctl(st->ms, oe_OPUS_SET_SIGNAL_REQUEST, (oe_opus_int32)(opt->signal == 1 ?
+         oe_OPUS_SIGNAL_MUSIC : opt->signal == 2 ? oe_OPUS_SIGNAL_VOICE : oe_OPUS_AUTO));
+   oe_opus_multistream_encoder_ctl(st->ms, oe_OPUS_SET_COMPLEXITY_REQUEST, (oe_opus_int32)opt->complexity);
+   oe_opus_multistream_encoder_ctl(st->ms, oe_OPUS_SET_PACKET_LOSS_PERC_REQUEST, (oe_opus_int32)opt->expect_loss);
+   oe_opus_multistream_encoder_ctl(st->ms, oe_OPUS_SET_LSB_DEPTH_REQUEST, (oe_opus_int32)lsb_depth);
+   if (opt->no_phase_inv) oe_opus_multistream_encoder_ctl(st->ms, oe_OPUS_SET_PHASE_INVERSION_DISABLED_REQUEST, (oe_opus_int32)1);
+}
+
+/* analysis_frame_size samples are available; the frame size is the expert duration. */
+static int fl_msenc_encode(fl_msenc *st, const float *pcm, int analysis_frame_size, unsigned char *data, fl_i32 max_bytes) {
+   return oe_opus_multistream_encode_float(st->ms, pcm, analysis_frame_size, data, max_bytes);
+}
 
 typedef struct {
    int channels, streams;
@@ -204,7 +242,45 @@ typedef struct {
    unsigned char *packet;
 } fl_ope;
 
-/* LPC extrapolation of the input tail (extend_signal / vorbis_lpc_from_data). */
+/* LPC extrapolation of the input tail (libopusenc extend_signal, vorbis_lpc_from_data). */
+static void fl_ope_lpc_from_data(const float *data, float *lpci, int n, int stride) {
+   double aut[OPE_LPC_ORDER+1], lpc[OPE_LPC_ORDER], error, epsilon;
+   int i, j;
+   j = OPE_LPC_ORDER+1;
+   while (j--) {
+      double d = 0;
+      for (i = j; i < n; i++) d += (double)data[i*stride]*data[(i-j)*stride];
+      aut[j] = d;
+   }
+   for (i = 1; i <= OPE_LPC_ORDER; i++) aut[i] -= aut[i]*(0.008f*0.008f)*i*i;
+   error = aut[0]*(1.+1e-7);
+   epsilon = 1e-6*aut[0]+1e-7;
+   for (i = 0; i < OPE_LPC_ORDER; i++) {
+      double r = -aut[i+1];
+      if (error < epsilon) {
+         memset(lpc+i, 0, (OPE_LPC_ORDER-i)*sizeof(*lpc));
+         break;
+      }
+      for (j = 0; j < i; j++) r -= lpc[j]*aut[i-j];
+      r /= error;
+      lpc[i] = r;
+      for (j = 0; j < i/2; j++) {
+         double tmp = lpc[j];
+         lpc[j] += r*lpc[i-1-j];
+         lpc[i-1-j] += r*tmp;
+      }
+      if (i&1) lpc[j] += lpc[j]*r;
+      error *= 1.-r*r;
+   }
+   {
+      double g = .999, damp = g;
+      for (j = 0; j < OPE_LPC_ORDER; j++) {
+         lpc[j] *= damp;
+         damp *= g;
+      }
+   }
+   for (j = 0; j < OPE_LPC_ORDER; j++) lpci[j] = (float)lpc[j];
+}
 static void fl_ope_extend_signal(float *x, int before, int after, int channels) {
    int c, i, j;
    float window[OPE_LPC_PADDING];
@@ -215,61 +291,25 @@ static void fl_ope_extend_signal(float *x, int before, int after, int channels) 
       return;
    }
    {
-      xf m0 = 1, m1 = (float)(.5*OPE_LPC_GOERTZEL_CONST), a1 = OPE_LPC_GOERTZEL_CONST, w;
+      /* window from a resonating IIR (Goertzel) */
+      float m0 = 1, m1 = .5*OPE_LPC_GOERTZEL_CONST, a1 = OPE_LPC_GOERTZEL_CONST;
       window[0] = 1;
       for (i = 1; i < OPE_LPC_PADDING; i++) {
-         w = a1*m0-m1;
-         window[i] = (float)w;
+         window[i] = a1*m0-m1;
          m1 = m0;
-         m0 = w;
+         m0 = window[i];
       }
-      for (i = 0; i < OPE_LPC_PADDING; i++) window[i] = (float)(XF(.5f)+XF(.5f)*window[i]);
+      for (i = 0; i < OPE_LPC_PADDING; i++) window[i] = .5+.5*window[i];
    }
    for (c = 0; c < channels; c++) {
-      float lpci[OPE_LPC_ORDER], *data = x-channels*before+c;
-      double aut[OPE_LPC_ORDER+1], lpc[OPE_LPC_ORDER];
-      xf error, epsilon;
-      int n = before;
-      j = OPE_LPC_ORDER+1;
-      while (j--) {
-         xf d = 0;
-         for (i = j; i < n; i++) d += XF(data[i*channels])*data[(i-j)*channels];
-         aut[j] = (double)d;
-      }
-      for (i = 1; i <= OPE_LPC_ORDER; i++) aut[i] = (double)(XF(aut[i])-XF(aut[i])*(0.008f*0.008f)*i*i);
-      error = XF(aut[0])*XF(1.+1e-7);
-      epsilon = XF(1e-6)*XF(aut[0])+XF(1e-7);
-      for (i = 0; i < OPE_LPC_ORDER; i++) {
-         xf r = -XF(aut[i+1]);
-         if (error < epsilon) {
-            memset(lpc+i, 0, (OPE_LPC_ORDER-i)*sizeof(*lpc));
-            break;
-         }
-         for (j = 0; j < i; j++) r -= XF(lpc[j])*XF(aut[i-j]);
-         r /= error;
-         lpc[i] = (double)r;
-         for (j = 0; j < i/2; j++) {
-            double tmp = lpc[j];
-            lpc[j] = (double)(XF(lpc[j])+r*XF(lpc[i-1-j]));
-            lpc[i-1-j] = (double)(XF(lpc[i-1-j])+r*XF(tmp));
-         }
-         if (i&1) lpc[j] = (double)(XF(lpc[j])+XF(lpc[j])*r);
-         error *= XF(1.)-r*r;
-      }
-      {
-         xf g = XF(.999), damp = g;
-         for (j = 0; j < OPE_LPC_ORDER; j++) {
-            lpc[j] = (double)(XF(lpc[j])*damp);
-            damp *= g;
-         }
-      }
-      for (j = 0; j < OPE_LPC_ORDER; j++) lpci[j] = (float)lpc[j];
+      float lpc[OPE_LPC_ORDER];
+      fl_ope_lpc_from_data(x-channels*before+c, lpc, before, channels);
       for (i = 0; i < after; i++) {
-         xf sum = 0;
-         for (j = 0; j < OPE_LPC_ORDER; j++) sum -= XF(x[(i-j-1)*channels+c])*lpci[j];
-         x[i*channels+c] = (float)sum;
+         float sum = 0;
+         for (j = 0; j < OPE_LPC_ORDER; j++) sum -= x[(i-j-1)*channels+c]*lpc[j];
+         x[i*channels+c] = sum;
       }
-      for (i = 0; i < after; i++) x[i*channels+c] = (float)(XF(x[i*channels+c])*window[i]);
+      for (i = 0; i < after; i++) x[i*channels+c] *= window[i];
    }
 }
 
@@ -382,19 +422,16 @@ static void fl_put_bytes(unsigned char **p, size_t *len, const void *src, size_t
    *len += n;
 }
 
-/* Encodes a WAV file to Ogg Opus like opusenc (opus-tools 0.2 + libopusenc 0.3). */
+/* Encodes a WAV file to Ogg Opus like opusenc (opus-tools git) and libopusenc 0.3. */
 /* opusenc automatic bitrate for a stream layout and input rate, scaled by --quality. */
 static int fl_default_bitrate(int streams, int coupled, fl_i32 rate, double quality) {
    static const double ratio[11] = {1/4., 1/3., 5/12., 1/2., 2/3., 5/6., 1., 7/6., 4/3., 5/3., 2.};
    int r = rate < 44100 ? (int)rate : 48000;
    int bitrate = ((64000*streams+32000*coupled)*(IMIN(48, IMAX(8, (r+1000)/1000))+16)+32)>>6;
    if (quality >= 0) {
-      /* quality_scale() in x87, rounded to double before truncation */
-      unsigned short cw = fl_x87_enter();
       int l = (int)quality;
-      xf sc = quality >= 10 ? XF(2) : (xf)ratio[l]+((xf)ratio[l+1]-ratio[l])*((xf)quality-l);
-      bitrate = (int)(double)((xf)bitrate*sc+XF(.5f));
-      fl_x87_leave(cw);
+      double sc = quality >= 10 ? 2 : ratio[l]+(ratio[l+1]-ratio[l])*(quality-l);
+      bitrate = (int)(bitrate*sc+.5);
    }
    return bitrate;
 }
@@ -409,46 +446,42 @@ static int fl_setup_downmix(float *m, int in, int out) {
       {{1, 0}, {0.7071f, 0.7071f}, {0, 1}, {0.866f, 0.5f}, {0.5f, 0.866f}, {0.7071f, 0.7071f}},
       {{1, 0}, {0.7071f, 0.7071f}, {0, 1}, {0.866f, 0.5f}, {0.5f, 0.866f}, {0.6123f, 0.6123f}, {0.7071f, 0.7071f}},
       {{1, 0}, {0.7071f, 0.7071f}, {0, 1}, {0.866f, 0.5f}, {0.5f, 0.866f}, {0.866f, 0.5f}, {0.5f, 0.866f}, {0.7071f, 0.7071f}}};
+   float sum = 0;
    int i, j;
-   if (in > 8) out = 1;
-   if (in <= out || in <= 1) return 0;
-   if (in <= 8) {
-      unsigned short cw = fl_x87_enter();
-      xf sum = 0, scale;
-      if (out == 2) {
-         for (j = 0; j < 2; j++)
-            for (i = 0; i < in; i++) m[in*j+i] = tab[in-2][i][j];
-      } else {
-         for (i = 0; i < in; i++) m[i] = (float)((xf)tab[in-2][i][0]+tab[in-2][i][1]);
-      }
-      /* the sum and scale stay in x87 registers */
-      for (i = 0; i < in*out; i++) sum += m[i];
-      scale = (xf)out/sum;
-      for (i = 0; i < in*out; i++) m[i] = (float)(m[i]*scale);
-      fl_x87_leave(cw);
-   } else {
-      unsigned short cw = fl_x87_enter();
-      for (i = 0; i < in; i++) m[i] = (float)(XF(1)/in);
-      fl_x87_leave(cw);
+   if (in > 8) out = 1;  /* more than 8 channels only go to mono */
+   if (in <= out) return 0;
+   if (in > 8) {
+      for (i = 0; i < in; i++) m[i] = 1.0f/in;
+      return 1;
    }
+   if (out == 2) {
+      for (j = 0; j < 2; j++)
+         for (i = 0; i < in; i++) m[in*j+i] = tab[in-2][i][j];
+   } else {
+      for (i = 0; i < in; i++) m[i] = tab[in-2][i][0]+tab[in-2][i][1];
+   }
+   for (i = 0; i < in*out; i++) sum += m[i];
+   sum = (float)out/sum;
+   for (i = 0; i < in*out; i++) m[i] *= sum;
    return out;
 }
 
-/* opusenc read_downmix(): extended precision accumulation, one float store. */
+/* opusenc read_downmix(). */
 static void fl_apply_downmix(const float *m, const float *in, float *out, int n, int ic, int oc) {
    int i, j, k;
    for (i = 0; i < n; i++)
       for (j = 0; j < oc; j++) {
-         xf acc = 0;
-         for (k = 0; k < ic; k++) acc += (xf)in[i*ic+k]*m[ic*j+k];
-         out[i*oc+j] = (float)acc;
+         float *samp = &out[i*oc+j];
+         *samp = 0;
+         for (k = 0; k < ic; k++) *samp += in[i*ic+k]*m[ic*j+k];
       }
 }
 
 /* opusenc ReplayGain handling for FLAC input: album gain -> OpusHead gain (R128 level),
-   track gain -> R128_TRACK_GAIN. Other ReplayGain tags are dropped. */
+   track gain -> R128_TRACK_GAIN. Other ReplayGain tags are dropped. The reference
+   loudness is in dB SPL (89 = -18 LUFS) or, if negative, in LUFS. */
 static void fl_opus_gain_from_tags(const fl_format *f, char *r128, int *gain_q8) {
-   float album = 0, track = 0, ref = 89.0f, g;
+   double album = 0, track = 0, ref = -18, g;
    int saw_album = 0, saw_track = 0, i;
    *gain_q8 = 0;
    r128[0] = 0;
@@ -458,26 +491,25 @@ static void fl_opus_gain_from_tags(const fl_format *f, char *r128, int *gain_q8)
       double v;
       if (fl_tag_is(t, "REPLAYGAIN_REFERENCE_LOUDNESS")) {
          v = strtod(t+30, &end);
-         if (end > t+30) ref = (float)v;
-      } else if (fl_tag_is(t, "REPLAYGAIN_ALBUM_GAIN") || fl_tag_is(t, "REPLAYGAIN_TRACK_GAIN")) {
+         if (end > t+30) ref = v < 0 ? v : v-89-18;
+      } else if (fl_tag_is(t, "REPLAYGAIN_ALBUM_GAIN")) {
          v = strtod(t+22, &end);
          if (end > t+22) {
-            if (t[11] == 'A' || t[11] == 'a') {
-               album = (float)v;
-               saw_album = 1;
-            } else {
-               track = (float)v;
-               saw_track = 1;
-            }
+            album = v;
+            saw_album = 1;
          }
+      } else if (fl_tag_is(t, "REPLAYGAIN_TRACK_GAIN")) {
+         /* opusenc takes an unparsable track gain as 0 */
+         track = strtod(t+22, &end);
+         saw_track = 1;
       }
    }
    if (saw_album) {
-      g = (float)(256*(album+(84-ref))+(xf)0.5);
+      g = 256*(album+(-23-ref))+0.5;
       *gain_q8 = g < -32768 ? -32768 : g < 32767 ? (int)floor(g) : 32767;
    }
    if (saw_track) {
-      g = (float)(256*(track-album)+(xf)0.5);
+      g = 256*(track-album)+0.5;
       sprintf(r128, "R128_TRACK_GAIN=%i", g < -32768 ? -32768 : g < 32767 ? (int)floor(g) : 32767);
    }
 }
@@ -515,7 +547,6 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
    int ret, err, C, IC, bitrate, family, streams, coupled, gain;
    unsigned char mapping[255];
    char r128[40];
-   unsigned short cw;
    IC = C = f->channels;
    /* below 1000 Hz the resampler drain would not fit in the buffer */
    if (C < 1 || C > 255 || f->rate < 1000 || f->rate > FL_MAX_RATE) return FL_ERR_UNSUPPORTED;
@@ -532,14 +563,13 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
    /* opusenc default bitrate and limits */
    bitrate = opt->bitrate > 0 ? opt->bitrate : fl_default_bitrate(streams, coupled, f->rate, opt->quality);
    if (bitrate > 1024000*C || bitrate < 500) return FL_ERR_BAD_ARG;
-   opt->bitrate = bitrate;
+   opt->bitrate = IMIN(750000*C, bitrate);
    o->C = C;
    o->IC = IC;
    o->e = e = (fl_ope*)calloc(1, sizeof(*e));
    o->input = (float*)malloc(sizeof(float)*960*C);
    o->raw = (float*)malloc(sizeof(float)*960*IC);
    if (!e || !o->input || !o->raw) return FL_ERR_ALLOC;
-   cw = fl_x87_enter();
    fl_opus_gain_from_tags(f, r128, &gain);
    e->channels = C;
    e->rate = f->rate;
@@ -552,7 +582,7 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
    e->st = fl_msenc_create(C, family, &err);
    if (f->rate != 48000) {
       e->have_re = 1;
-      if ((ret = fl_ope_rs_init(&e->re, C, f->rate, 48000)) != FL_OK) goto done;
+      if ((ret = fl_resampler_init_sin(&e->re, C, f->rate, 48000, fl_sin)) != FL_OK) goto done;
       e->lpc_buffer = (float*)calloc((OPE_LPC_INPUT+OPE_LPC_PADDING)*C, sizeof(float));
       if (!e->lpc_buffer) {
          ret = FL_ERR_ALLOC;
@@ -560,7 +590,7 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
       }
    }
    fl_msenc_setup(e->st, opt, IMAX(8, IMIN(24, f->container_bits)));
-   e->frame_size_request = fl_msenc_get_duration(e->st);
+   e->frame_size_request = e->st->duration;
    e->frame_size = fl_frame_samples(e->frame_size_request);
    e->ogg.out = o->out;
    o->out = NULL;
@@ -575,7 +605,7 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
       unsigned char head[21+255];
       unsigned char *tags = NULL;
       size_t tlen = 0;
-      const char *vendor = "flapus (libopus 1.6.1 compatible)";
+      const char *vendor = "flapus (libopus 1.6.1)";
       unsigned char n4[4];
       int ncom = 1, padded, pad, i;
       e->global_granule_offset = fl_msenc_lookahead(e->st);
@@ -625,7 +655,6 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
    }
    ret = e->ogg.error ? FL_ERR_IO : FL_OK;
 done:
-   fl_x87_leave(cw);
    return ret;
 }
 
@@ -657,7 +686,6 @@ static void fl_opus_flush_read(fl_opus_sink *o) {
 static int fl_opus_write(fl_sink *s, const fl_i32 *pcm, int n) {
    fl_opus_sink *o = (fl_opus_sink*)s;
    int frames_in = n;
-   unsigned short cw = fl_x87_enter();
    while (n > 0) {
       int k = FL_MIN(n, 960-o->n);
       fl_opus_convert(o, pcm, k);
@@ -666,7 +694,6 @@ static int fl_opus_write(fl_sink *s, const fl_i32 *pcm, int n) {
       n -= k;
       if (o->n == 960) fl_opus_flush_read(o);
    }
-   fl_x87_leave(cw);
    o->base.out_bytes = o->e->ogg.written;
    o->base.out_frames += frames_in;
    return o->e->ogg.error ? FL_ERR_IO : FL_OK;
@@ -674,11 +701,9 @@ static int fl_opus_write(fl_sink *s, const fl_i32 *pcm, int n) {
 
 static int fl_opus_finish(fl_sink *s) {
    fl_opus_sink *o = (fl_opus_sink*)s;
-   unsigned short cw = fl_x87_enter();
    int ret;
    fl_opus_flush_read(o);  /* the last, short read (possibly empty) */
    fl_ope_drain(o->e);
-   fl_x87_leave(cw);
    o->base.out_bytes = o->e->ogg.written;  /* the drained pages count for the final ratio */
    ret = o->e->ogg.error ? FL_ERR_IO : FL_OK;
    if (fl_out_close(o->e->ogg.out) != FL_OK) ret = FL_ERR_IO;
@@ -750,6 +775,7 @@ FLDEF fl_opus_encoder *fl_opus_encoder_create(int channels, const fl_options *op
       free(enc);
       return NULL;
    }
+   opt.bitrate = IMIN(750000*channels, opt.bitrate);
    enc->ms = fl_msenc_create(channels, enc->family, &err);
    if (!enc->ms) {
       free(enc);
@@ -757,7 +783,7 @@ FLDEF fl_opus_encoder *fl_opus_encoder_create(int channels, const fl_options *op
       return NULL;
    }
    fl_msenc_setup(enc->ms, &opt, 24);
-   enc->frame_size = fl_frame_samples(fl_msenc_get_duration(enc->ms));
+   enc->frame_size = fl_frame_samples(enc->ms->duration);
    if (error) *error = FL_OK;
    return enc;
 }
@@ -780,8 +806,6 @@ FLDEF int fl_opus_encoder_layout(const fl_opus_encoder *enc, int *family, int *s
 }
 
 FLDEF int fl_opus_encode_float(fl_opus_encoder *enc, const float *pcm, unsigned char *packet, int max_bytes) {
-   unsigned short cw = fl_x87_enter();
    int ret = fl_msenc_encode(enc->ms, pcm, enc->frame_size, packet, max_bytes);
-   fl_x87_leave(cw);
    return ret < 0 ? FL_ERR_BAD_ARG : ret;
 }

@@ -820,7 +820,7 @@ static void fl_window(double *w, int n, int type) {
       double p = type == 0 ? 0.5 : type == 7 ? 0.25 : 1.0;
       int np = (int)(p/2*n);
       for (i = 0; i < n; i++) w[i] = 1;
-      for (i = 0; i < np; i++) w[i] = w[n-1-i] = 0.5-0.5*cos(FL_PI*(i+1)/(np+1));
+      for (i = 0; i < np; i++) w[i] = w[n-1-i] = 0.5-0.5*fl_cos(FL_PI*(i+1)/(np+1));
    } else if (type == 6) {
       double h = (n-1)/2.0;
       for (i = 0; i < n; i++) w[i] = 1-((i-h)/(h+1))*((i-h)/(h+1));
@@ -829,20 +829,20 @@ static void fl_window(double *w, int n, int type) {
       int sn = (int)(start*n), en = (int)(end*n), Np = (int)(0.2/2*(en-sn));
       for (i = 0; i < n; i++) w[i] = i >= sn && i < en ? 1 : 0;
       for (k = 1; k <= Np; k++) {
-         if (sn+k-1 < n) w[sn+k-1] = 0.5-0.5*cos(FL_PI*k/Np);
-         if (en-k >= 0 && en-k < n) w[en-k] = 0.5-0.5*cos(FL_PI*k/Np);
+         if (sn+k-1 < n) w[sn+k-1] = 0.5-0.5*fl_cos(FL_PI*k/Np);
+         if (en-k >= 0 && en-k < n) w[en-k] = 0.5-0.5*fl_cos(FL_PI*k/Np);
       }
    } else {
       double units = 1.0/(1.0-0.2)-1.0, start = (type-3)/(3+units), end = (type-2+units)/(3+units);
       int sn = (int)(start*n), en = (int)(end*n), Ns = (int)(0.2/2*sn), Ne = (int)(0.2/2*(n-en));
       for (i = 0; i < n; i++) w[i] = i >= sn && i < en ? 0 : 1;
       for (k = 1; k <= Ns; k++) {
-         w[k-1] = 0.5-0.5*cos(FL_PI*k/Ns);
-         if (sn-k >= 0) w[sn-k] = 0.5-0.5*cos(FL_PI*k/Ns);
+         w[k-1] = 0.5-0.5*fl_cos(FL_PI*k/Ns);
+         if (sn-k >= 0) w[sn-k] = 0.5-0.5*fl_cos(FL_PI*k/Ns);
       }
       for (k = 1; k <= Ne; k++) {
-         if (en+k-1 < n) w[en+k-1] = 0.5-0.5*cos(FL_PI*k/Ne);
-         w[n-k] = 0.5-0.5*cos(FL_PI*k/Ne);
+         if (en+k-1 < n) w[en+k-1] = 0.5-0.5*fl_cos(FL_PI*k/Ne);
+         w[n-k] = 0.5-0.5*fl_cos(FL_PI*k/Ne);
       }
    }
 }
@@ -1234,7 +1234,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
             int pick[3] = {0, 0, 0}, k;
             for (o = 1; o <= got; o++) {
                double e = err[o] > 0 ? err[o]/n : 1e-9;
-               est[o] = (n-o)*0.5*log(e+1e-9)/log(2.0)+o*(bps+fl_default_prec(n));
+               est[o] = (n-o)*0.5*fl_log(e+1e-9)/fl_log(2.0)+o*(bps+fl_default_prec(n));
             }
             for (k = 0; k < 3; k++) {
                double bv = 1e300;
@@ -1398,7 +1398,7 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
       got = fl_levinson(R, max_order, lpc, err);
       for (o = 1; o <= got; o++) {
          double e = err[o] > 0 ? err[o]/n : 1e-9;
-         double est = (n-o)*0.5*log(e+1e-9)/log(2.0)+o*(bps+fl_default_prec(n));
+         double est = (n-o)*0.5*fl_log(e+1e-9)/fl_log(2.0)+o*(bps+fl_default_prec(n));
          if (est < bv) {
             bv = est;
             bo = o;

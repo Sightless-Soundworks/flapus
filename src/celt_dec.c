@@ -1108,7 +1108,7 @@ static int fl_celt_decode(fl_celt_dec *st, const unsigned char *data, int len, f
    anti_collapse_rsv = isTransient && LM >= 2 && bits >= ((LM+2)<<BITRES) ? (1<<BITRES) : 0;
    bits -= anti_collapse_rsv;
    codedBands = fl_compute_allocation(start, end, offsets, cap, alloc_trim, &intensity, &dual_stereo, bits, &balance,
-         pulses, fine_quant, fine_priority, C, LM, dec, 0, 0, 0);
+         pulses, fine_quant, fine_priority, C, LM, dec);
    fl_unquant_fine_energy(start, end, st->oldBandE, fine_quant, dec, C);
    c = 0;
    do FL_COPY(decode_mem[c], decode_mem[c]+N, DECODE_BUFFER_SIZE-N+CELT_OVERLAP);

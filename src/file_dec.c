@@ -239,11 +239,11 @@ static double fl_rs_compute_func(float x, const double *table, int oversample) {
    interp[1] = 1.f-interp[3]-interp[2]-interp[0];
    return interp[0]*table[ind]+interp[1]*table[ind+1]+interp[2]*table[ind+2]+interp[3]*table[ind+3];
 }
-static float fl_rs_sinc(float cutoff, float x, int N) {
+static float fl_rs_sinc(float cutoff, float x, int N, double (*sin_fn)(double)) {
    float xx = x*cutoff;
    if (fabs(x) < 1e-6) return cutoff;
    else if (fabs(x) > .5*N) return 0;
-   return cutoff*sin(3.14159265358979323846*xx)/(3.14159265358979323846*xx)*fl_rs_compute_func(fabs(2.*x/N), fl_kaiser10_table, 32);
+   return cutoff*sin_fn(3.14159265358979323846*xx)/(3.14159265358979323846*xx)*fl_rs_compute_func(fabs(2.*x/N), fl_kaiser10_table, 32);
 }
 static fl_u32 fl_gcd(fl_u32 a, fl_u32 b) {
    while (b != 0) {
@@ -279,8 +279,8 @@ static int fl_resampler_alloc(fl_resampler *r, int channels, fl_u32 in_rate, fl_
    for (j = 0; j < channels; j++) r->last_sample[j] = r->filt_len/2;
    return FL_OK;
 }
-/* speex_resampler_init(channels, in, out, 5) followed by skip_zeros(). */
-static int fl_resampler_init(fl_resampler *r, int channels, fl_u32 in_rate, fl_u32 out_rate) {
+/* speex_resampler_init(channels, in, out, 5) followed by skip_zeros(), with sin_fn as sin(). */
+static int fl_resampler_init_sin(fl_resampler *r, int channels, fl_u32 in_rate, fl_u32 out_rate, double (*sin_fn)(double)) {
    fl_u32 i;
    float cutoff;
    int j, ret;
@@ -289,8 +289,11 @@ static int fl_resampler_init(fl_resampler *r, int channels, fl_u32 in_rate, fl_u
    else cutoff = 0.940f;
    for (i = 0; i < r->den_rate; i++)
       for (j = 0; j < (int)r->filt_len; j++)
-         r->sinc_table[i*r->filt_len+j] = fl_rs_sinc(cutoff, ((j-(fl_i32)r->filt_len/2+1)-((float)i)/r->den_rate), r->filt_len);
+         r->sinc_table[i*r->filt_len+j] = fl_rs_sinc(cutoff, ((j-(fl_i32)r->filt_len/2+1)-((float)i)/r->den_rate), r->filt_len, sin_fn);
    return FL_OK;
+}
+static int fl_resampler_init(fl_resampler *r, int channels, fl_u32 in_rate, fl_u32 out_rate) {
+   return fl_resampler_init_sin(r, channels, in_rate, out_rate, sin);
 }
 static void fl_resampler_free(fl_resampler *r) {
    free(r->sinc_table);

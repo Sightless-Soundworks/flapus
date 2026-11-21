@@ -10,14 +10,11 @@ name: build
 # for byte, also on another machine (no timestamp, no paths, no compiler ident).
 # Rebuild locally in the devkit shell with:
 #
-#   gcc -O2 -ffp-contract=off -msse2 -mfpmath=sse -DFLAPUS_PORTABLE_MATH \
+#   gcc -O2 -ffp-contract=off -msse2 -mfpmath=sse \
 #       -fno-ident -s -Wl,--no-insert-timestamp -Wl,--gc-sections -o flapus.exe flapus_cli.c
 #
 # (x64: without -msse2 -mfpmath=sse) and compare with the SHA-256 that GitHub shows
 # next to each release asset.
-#
-# The encoder is built with FLAPUS_PORTABLE_MATH, so the output is the same on
-# every x86 CPU; see README.
 #
 # w64devkit is MinGW-w64 with the system msvcrt.dll, so the exes also run on older
 # Windows versions; a check below keeps it that way.
@@ -32,7 +29,7 @@ env:
   W64DEVKIT_VERSION: 2.11.0
   # --gc-sections drops unused sections of the MinGW runtime, among them the compiler
   # idents of its libraries, which -fno-ident does not reach.
-  CFLAGS: -O2 -ffp-contract=off -DFLAPUS_PORTABLE_MATH -fno-ident -s -Wl,--no-insert-timestamp -Wl,--gc-sections
+  CFLAGS: -O2 -ffp-contract=off -fno-ident -s -Wl,--no-insert-timestamp -Wl,--gc-sections
 
 jobs:
   build:
@@ -130,8 +127,8 @@ jobs:
         run: |
           $env:PATH = "C:\w64devkit\bin;$env:PATH"
           $arch = "${{ matrix.archflags }}".Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
-          foreach ($t in "bitreader", "portable_math", "rcp_tables") {
-            & gcc -O2 @arch -I. -o "t_$t.exe" "test/$t.c"
+          foreach ($t in "bitreader", "math") {
+            & gcc -O2 -ffp-contract=off @arch -I. -o "t_$t.exe" "test/$t.c"
             if ($LASTEXITCODE -ne 0) { throw "${t}: build failed" }
             & ".\t_$t.exe"
             if ($LASTEXITCODE -ne 0) { throw "$t failed" }
@@ -142,10 +139,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "api test failed" }
           Write-Host "api: ok"
 
-      # The same input must give the same Opus files from both builds - that is
-      # what FLAPUS_PORTABLE_MATH guarantees, and the compare job checks it with one
-      # digest of all Opus files per build. FLAC and WAV output still use libm's
-      # sin/cos/log, so they are only checked for errors.
+      # The same input must give the same Opus files from both builds; the compare
+      # job checks it with one digest of all Opus files per build.
       - name: Encode the test signals
         id: encode
         shell: pwsh
@@ -230,7 +225,7 @@ jobs:
             echo
             echo "- \`flapus-x86.exe\`: 32-bit Windows, \`flapus-x64.exe\`: 64-bit Windows. Single files, no DLLs beyond Windows' own."
             echo "- \`flapus.h\`: the single-file library, with the license texts at its end."
-            echo "- Built with w64devkit $W64DEVKIT_VERSION and \`FLAPUS_PORTABLE_MATH\`: the Opus output is the same on every x86 CPU."
+            echo "- Built with w64devkit $W64DEVKIT_VERSION: the Opus output is the same on every platform."
             echo "- Reproducible: the build flags are in .github/workflows/build.yml."
           } > notes.md
           cat notes.md

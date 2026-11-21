@@ -7,7 +7,7 @@ decoding.
 
 | Format | Encoder | Decoder |
 |--------|---------|---------|
-| Ogg Opus | based on libopus 1.6.1, made for the **best possible encoding** | based on libopus 1.6.1 and opusfile 0.12, made for the **best possible decoding** |
+| Ogg Opus | libopus 1.6.1 itself, built in, for the **best possible encoding** | based on libopus 1.6.1 and opusfile 0.12, made for the **best possible decoding** |
 | FLAC | own encoder built for the **smallest files** (0.6-1.9 % below `flac -8` within the FLAC subset, 2-7 % with `--lax`) | complete RFC 9639 decoder, byte-identical WAV output to `flac -d` |
 
 Any input converts to any output: WAV, FLAC, Ogg FLAC (input only) and Ogg Opus. That
@@ -21,28 +21,30 @@ Please Note: this tool has been created with the help of AI, so not everything m
 flapus.h           the single-file library (generated from src/ and LICENSE)
 flapus_cli.c       command line tool
 src/               library sources (see NOTES.md for the file map)
-tools/             amalgamate.py, comparison scripts, generators for tables and SILK code
+tools/             amalgamate.py, comparison scripts, generators for the tables and the Opus encoder
 test/              regression scripts and test signals
-NOTES.md           implementation notes (Opus precision, FLAC encoder design)
+NOTES.md           implementation notes (Opus encoder generation, FLAC encoder design)
 LICENSE            BSD license and upstream copyright notices
 ```
 
 ## Building
 
-GCC or Clang (tested with w64devkit GCC on Windows, 64- and 32-bit):
+Any C99 compiler: GCC, Clang or MSVC, on any CPU.
 
 ```bash
-gcc -O2 -ffp-contract=off -o flapus.exe flapus_cli.c
+gcc -O2 -o flapus flapus_cli.c -pthread -lm     # Linux, macOS (clang works the same)
+cl /O2 flapus_cli.c                              # MSVC
 ```
 
-- `-ffp-contract=off` is required: it disables fused multiply-add. Never use
-  `-ffast-math`. The header also sets this with a pragma.
-- On 32-bit x86, float arithmetic must use SSE2, which is the default of w64devkit 2.11
-  and later. With x87 arithmetic (`-mfpmath=387`, the default of older 32-bit
-  toolchains) the encoder rounds differently than designed and some files encode
-  differently, so the header stops with an error. Add `-msse2 -mfpmath=sse`, or define
-  `FLAPUS_NO_ENCODER` if you only need the decoders.
-- On Linux or macOS, add `-pthread -lm`.
+- Never use `-ffast-math`. Fused multiply-add is turned off by a pragma in the header
+  (GCC, Clang, MSVC); with another compiler, turn off floating point contraction
+  yourself.
+- The output is the same on every platform: same input and options, same bytes, from
+  Windows on x86 to macOS on Apple Silicon. On 32-bit x86 that needs SSE2 arithmetic
+  (`-msse2 -mfpmath=sse`, the default of w64devkit); with other float arithmetic the
+  files are just as good, but not byte for byte the same. This holds for Opus and FLAC
+  output; decoded WAV can differ in the last bit between C libraries (see Platforms).
+- On Windows, threads use the Win32 API; `-pthread` is only needed elsewhere.
 - After changing anything in `src/` or `LICENSE`, regenerate the header first:
 
 ```bash
@@ -59,10 +61,8 @@ file that needs no DLLs beyond Windows' own.
   by sha256.
 - **Compatibility:** the exes import only `KERNEL32.dll` and `msvcrt.dll`, so they
   also run on older Windows versions. The x86 build needs a CPU with SSE2.
-- **Encoder:** built with `FLAPUS_PORTABLE_MATH`, so the Opus output is the same on
-  every x86 CPU.
 - **Checks:** the workflow verifies that `flapus.h` matches `src/`, checks the imports
-  and the subsystem version of both exes, and runs the four tests. It encodes
+  and the subsystem version of both exes, and runs the tests. It encodes
   deterministic test signals (`tools/testsignal.py`) with both builds and fails if the
   Opus files differ.
 - **Release:** a push to `main` with a new version publishes both exes and `flapus.h`
@@ -75,13 +75,13 @@ byte, on any machine. To check a release, build it in the devkit shell and compa
 with the SHA-256 that GitHub shows next to each release asset:
 
 ```bash
-gcc -O2 -ffp-contract=off -msse2 -mfpmath=sse -DFLAPUS_PORTABLE_MATH \
+gcc -O2 -ffp-contract=off -msse2 -mfpmath=sse \
     -fno-ident -s -Wl,--no-insert-timestamp -Wl,--gc-sections -o flapus-x86.exe flapus_cli.c
 ```
 
 For x64, leave out `-msse2 -mfpmath=sse`. `flapus --version` shows the version,
-how the encoder was built and the target. The version is also `FLAPUS_VERSION` in
-`flapus.h`.
+whether the Opus encoder is built in, the target and the compiler. The version is also
+`FLAPUS_VERSION` in `flapus.h`.
 
 To release a new version, change `FLAPUS_VERSION_MAJOR`, `FLAPUS_VERSION_MINOR` or
 `FLAPUS_VERSION_PATCH` in `src/api.h` (1, 1, 0 is version 1.1), run
@@ -133,8 +133,8 @@ Decoding shows only the percentage and ends with `done`.
   error, as `flac` does.
 - `-s` or `--silent` turns the progress display off.
 - `-h` or `--help` shows the options.
-- `-V` or `--version` shows the version, how the Opus encoder was built (portable
-  math or not) and the target.
+- `-V` or `--version` shows the version, whether the Opus encoder is built in, and the
+  target and compiler.
 - `--delete-input-file` deletes the input file after a successful conversion. It is
   off by default, and nothing is deleted when an error occurs. It cannot be combined
   with stdin input, or with an output that is the input file itself.
@@ -184,54 +184,37 @@ Opus input)
 default random).
 
 With a fixed `--serial N`, the output depends only on the input and the options: same
-input, same bytes, on the same kind of CPU.
+input, same bytes, on every platform.
 
-**Not across CPU vendors.** The default encoder uses two kinds of instructions whose
-results are up to the CPU:
+**The encoder is libopus 1.6.1.** `src/enc_libopus.c` is generated from the libopus
+sources by `tools/gen_opus_enc.py`: the float encoder as it is, with only the plain C
+code paths (no SIMD intrinsics, no run-time CPU detection), every name prefixed and
+static, and what the multistream encoder does not use left out. Around it,
+`src/enc_front.c` does what opusenc and libopusenc 0.3 do: reading, downmix,
+resampling, LPC extension of the end, Ogg pages. It follows the current opus-tools
+(git, November 2026): the last release, 0.2, dates from 2018, and opusenc has changed
+since (frame sizes up to 120 ms, up to 750 kbit/s per channel, more than 8 channels
+downmixed to mono only, ReplayGain reference loudness in LUFS).
 
-- `rcpps` and `rsqrtps` in the CELT PVQ search (libopus's `op_pvq_search_sse2`).
-  They are approximations with 12 significant bits, and AMD's bits differ from
-  Intel's. These are what changed the output: the default build wrote different audio
-  packets on an AMD EPYC 7763 than on an Intel Core i7-13700K for 2982 of the 3179
-  files of a speech corpus.
-- The x87 transcendental instructions `fsin`, `fcos`, `fyl2x`, `fyl2xp1` and `f2xm1`
-  (through MinGW's libm). Only the basic operations and `fsqrt` are exact in IEEE
-  terms. A probe over 20000 fixed inputs gave different results for all five on the
-  two CPUs, but on that corpus it did not change a single packet.
+- libm's `log`, `log10`, `exp`, `pow`, `sin`, `cos` and `acos` are not exactly
+  specified, so their last bit differs between C libraries. flapus uses its own from
+  fdlibm (`src/math.c`, at most 1 ulp, log10 2), which are plain double arithmetic and
+  give the same results everywhere. `sqrt`, `floor`, `fabs` and `lrint` are exact in
+  every C library.
+- The output is byte-identical to opusenc built the same way (plain C, no fused
+  multiply-add, the same `src/math.c` functions); `tools/build_ref_opusenc.sh` builds
+  that opusenc from the opus, libopusenc, opus-tools and libogg sources. An opusenc
+  built with SIMD (or with another libm) writes slightly different packets of the same
+  quality, because its sums are added in another order.
 
-**`FLAPUS_PORTABLE_MATH`** makes the encoder the same on every x86 CPU. Define it before
-the implementation, and:
+Encoding speed for 3 minutes of 16-bit stereo music at 44.1 kHz (default bitrate,
+complexity 10, one core of an x86-64 server, GCC 13 `-O2`):
 
-- `rcpps`/`rsqrtps` come from Intel's values in two tables of 2048 entries
-  (`src/enc_rcp_tables.c`). On the Intel CPU, `rcpps` depends only on the top 11
-  mantissa bits of its input and `rsqrtps` on the top 10 plus the exponent parity.
-  `tools/gen_rcp.c` builds the tables there and checks the emulation against the
-  hardware for all 2^32 inputs of both instructions.
-- The x87 transcendentals (plus `fpatan` inside MinGW's `acosl`) are replaced by
-  functions that only use operations IEEE 754 defines exactly: +, -, *, / and `fsqrt`
-  on long double, and exact exponent manipulation. Measured against 50-digit
-  reference values, 4000 inputs per function:
-
-| Function | Portable, max error | x87 on Intel, max error |
-|----------|--------------------:|------------------------:|
-| ln       | 0.66 ulp | 0.76 ulp |
-| ln(1+x)  | 1.63 ulp | 0.81 ulp |
-| 2^x-1    | 2.36 ulp | 0.68 ulp |
-| sin (arguments up to ±400) | 1.60 ulp | 18794 ulp |
-| cos      | 1.76 ulp | 153 ulp |
-| acos     | 1.93 ulp | 152 ulp |
-
-(ulp of the 64-bit mantissa.) The results are rounded to double or float before the
-encoder uses them, so the difference rarely shows.
-
-On the 3179-file corpus the portable build wrote byte-identical files to the default
-build on Intel, and the same files on the AMD runner as on the Intel machine. The PVQ
-part is exact by construction; the x87 part is measured, so other material can in a
-rare frame take another decision than the default build. What is guaranteed is the
-same bytes on every CPU.
-
-Only the Opus encoder is covered. The Opus decoder and the FLAC encoder still call
-libm's `sin`, `cos` and `log`, so their output can still depend on the CPU.
+| Encoder | Time |
+|---------|-----:|
+| opusenc, libopus with SSE4.1/AVX2 | 1.98 s |
+| opusenc, libopus plain C | 2.29 s |
+| flapus | 2.27 s |
 
 ### FLAC compression
 
@@ -362,11 +345,13 @@ line.
   pthreads elsewhere. Define `FLAPUS_NO_THREADS` to build without threads. On x86 the
   FLAC encoder uses SSE2 when the compiler targets it (always on x86-64, with `-msse2` on
   32-bit); the output is the same either way.
-- **Opus encoder**: needs GCC or Clang on x86 or x86-64. It computes with 80-bit x87
-  extended precision, through `long double` and a few x87 instructions.
-  - On other compilers or CPUs (MSVC, ARM) the Opus encoder is left out automatically,
-    and `FLAPUS_HAVE_ENCODER` is not defined.
-  - Define `FLAPUS_NO_ENCODER` to leave it out deliberately.
+- **Opus encoder**: portable C99 as well (libopus 1.6.1, see above), on every compiler
+  and CPU. Define `FLAPUS_NO_ENCODER` to leave it out; `FLAPUS_HAVE_ENCODER` tells
+  whether it is there.
+- **Same bytes everywhere**: the Opus and FLAC encoders use the math functions of
+  `src/math.c` instead of libm, so their files do not depend on the platform. The
+  decoders follow opusdec and use libm's `sin`, `cos` and `exp2` for their tables, so
+  decoded audio can differ in the last bit between C libraries.
 
 ## Supported formats
 
@@ -421,21 +406,23 @@ line.
 ## Verification
 
 The checks in `test/` compare flapus with the established tools (opusenc, opusdec,
-flac). Run them from a shell in which opusenc works (on this machine it fails when the
-w64devkit `bin` folder comes first in `PATH`).
+flac). The opusenc to compare with is the one `tools/build_ref_opusenc.sh` builds (see
+the Opus output options); pass it in the `OPUSENC` variable.
 
 - The Opus test signals are not part of the repository. `grid.sh`, `make_ext.py` and
   `run_flac_opus.sh` need 20-second WAV clips in `test/`: `st44.wav` (16-bit stereo,
   44.1 kHz), `st48.wav` (48 kHz), and `mono44.wav`, `mono16.wav`, `mono8.wav` (mono at
   44.1, 16 and 8 kHz). Run `python make_ext.py` in `test/` first to build `ext/`.
   `run_flac.sh` generates its own inputs.
-- `grid.sh` (uses `run_cmp.sh`): 115 Opus encoder cases, compared with opusenc.
-  - Covers bitrates 6-256 kbit/s, all frame sizes, VBR/CVBR/CBR, complexity,
+- `grid.sh` (uses `run_cmp.sh`): 116 Opus encoder cases, compared with opusenc; all
+  give byte-identical audio packets.
+  - Covers bitrates 6-600 kbit/s, frame sizes 2.5-120 ms, VBR/CVBR/CBR, complexity,
     SILK/hybrid/CELT, mono/stereo, 8-96 kHz input, 8/24-bit input, all options, and
     3-12 channel surround.
   - `make_ext.py` builds the extra inputs. The `OPUSENC` variable selects the opusenc
     binary.
-- `run_flac_opus.sh`: FLAC → Opus, compared with opusenc reading the same FLAC file.
+- `run_flac_opus.sh`: FLAC → Opus, compared with opusenc reading the same FLAC file
+  (this needs an opusenc built with libFLAC).
   This covers flac- and flapus-made files, 8-24 bit, 3-8 channels, 96 kHz and the
   ReplayGain rules.
 - `run_flac.sh`: 38 edge cases (`make_flac_cases.py`) at levels 0, 3, 8 and `--lax`.
@@ -446,23 +433,20 @@ w64devkit `bin` folder comes first in `PATH`).
 - The FLAC decoder gives byte-identical WAV files to `flac -d` on 88 files encoded with
   different flac settings (`-0` to `-8ep`, `--lax -l 32 -b 16384`, block size 16 to
   65535). FFmpeg decodes flapus FLAC files exactly as well.
-- `run_ref.sh` / `run_dec.sh` re-encode and decode the Opus test files (`mand*.opus`,
-  `mand*.wav`), which must be in the folder above the project.
+- `run_dec.sh` decodes the Opus test files (`mand*.opus`) and compares with opusdec's
+  WAV files (`mand*.wav`), which must be in the folder above the project.
 - `test/api`: a two-file program using only the public API. It also checks that reading
   in pieces, after seeks, from memory and through callbacks gives the same samples as
   `fl_read_audio()`, that `fl_writer` and `fl_convert_io()` give the same files as the
   path functions, and that FLAC frames round-trip.
-- `test/rcp_tables.c`: the `rcpps`/`rsqrtps` tables of `FLAPUS_PORTABLE_MATH`, on any
-  CPU: both ends of every table block within Intel's bound (relative error at most
-  1.5*2^-12), plus hardware values and special cases. The full check against the
-  hardware, all 2^32 inputs, is in `tools/gen_rcp.c` and needs an Intel CPU.
-- `test/portable_math.c`: the `FLAPUS_PORTABLE_MATH` functions against exact values
-  (60-digit decimal arithmetic) at 20 points, limit 3 ulp. Passes at -O0, -O2 and -Oz;
-  cutting one series short makes it fail, as it should.
+- `test/math.c`: the `src/math.c` functions against libm's long double versions at
+  200000 arguments each, plus large arguments of `sin`/`cos` (up to 2^1024, among them
+  the double closest to a multiple of pi/2) and the special values of C99 Annex F.
 - `test/bitreader.c`: unary codes that end exactly on the last bit of a full 64-bit
   cache. Such a code used to shift the cache by 64 (undefined in C; on x86 the bit
   stayed put), which flipped a bit 64 positions later. A real FLAC file with a Rice
   parameter of 3 and quotients up to 76 decoded wrongly because of it, and its MD5
   check failed. libFLAC decodes the same file correctly. On a 3179-file speech
   corpus that one file was the only one affected.
-- The 32-bit build gives the same Opus packets and the same FLAC files.
+- The builds for x86 (32- and 64-bit) and ARM64, with GCC and Clang, give the same Opus
+  packets and the same FLAC files.

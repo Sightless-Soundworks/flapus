@@ -113,7 +113,7 @@ static int fl_pulses2bits(int band, int LM, int pulses) {
 static int fl_interp_bits2pulses(int start, int end, int skip_start, const int *bits1, const int *bits2,
       const int *thresh, const int *cap, fl_i32 total, fl_i32 *_balance, int skip_rsv, int *intensity,
       int intensity_rsv, int *dual_stereo, int dual_stereo_rsv, int *bits, int *ebits, int *fine_priority,
-      int C, int LM, ec_ctx *ec, int encode, int prev, int signalBandwidth) {
+      int C, int LM, ec_ctx *ec) {
    const fl_i16 *eb = fl_eband5ms;
    fl_i32 psum, left, percoeff, balance;
    int lo, hi, i, j, logM, stereo, codedBands = -1, alloc_floor, done;
@@ -162,16 +162,7 @@ static int fl_interp_bits2pulses(int start, int end, int skip_start, const int *
       band_width = eb[codedBands]-eb[j];
       band_bits = (int)(bits[j]+percoeff*band_width+rem);
       if (band_bits >= IMAX(thresh[j], alloc_floor+(1<<BITRES))) {
-         if (encode) {
-            int depth_threshold;
-            if (codedBands > 17) depth_threshold = j < prev ? 7 : 9;
-            else depth_threshold = 0;
-            if (codedBands <= start+2 || (band_bits > (depth_threshold*band_width<<LM<<BITRES)>>4 && j <= signalBandwidth)) {
-               ec_enc_bit_logp(ec, 1, 1);
-               break;
-            }
-            ec_enc_bit_logp(ec, 0, 1);
-         } else if (ec_dec_bit_logp(ec, 1)) break;
+         if (ec_dec_bit_logp(ec, 1)) break;
          psum += 1<<BITRES;
          band_bits -= 1<<BITRES;
       }
@@ -184,18 +175,14 @@ static int fl_interp_bits2pulses(int start, int end, int skip_start, const int *
       } else bits[j] = 0;
    }
    if (intensity_rsv > 0) {
-      if (encode) {
-         *intensity = IMIN(*intensity, codedBands);
-         ec_enc_uint(ec, *intensity-start, codedBands+1-start);
-      } else *intensity = start+ec_dec_uint(ec, codedBands+1-start);
+      *intensity = start+ec_dec_uint(ec, codedBands+1-start);
    } else *intensity = 0;
    if (*intensity <= start) {
       total += dual_stereo_rsv;
       dual_stereo_rsv = 0;
    }
    if (dual_stereo_rsv > 0) {
-      if (encode) ec_enc_bit_logp(ec, *dual_stereo, 1);
-      else *dual_stereo = ec_dec_bit_logp(ec, 1);
+      *dual_stereo = ec_dec_bit_logp(ec, 1);
    } else *dual_stereo = 0;
    left = total-psum;
    percoeff = (fl_i32)((fl_u32)left/(fl_u32)(eb[codedBands]-eb[start]));
@@ -255,7 +242,7 @@ static int fl_interp_bits2pulses(int start, int end, int skip_start, const int *
 
 static int fl_compute_allocation(int start, int end, const int *offsets, const int *cap, int alloc_trim,
       int *intensity, int *dual_stereo, fl_i32 total, fl_i32 *balance, int *pulses, int *ebits,
-      int *fine_priority, int C, int LM, ec_ctx *ec, int encode, int prev, int signalBandwidth) {
+      int *fine_priority, int C, int LM, ec_ctx *ec) {
    const fl_i16 *eb = fl_eband5ms;
    int lo, hi, len = CELT_NB_EBANDS, j, skip_start, skip_rsv, intensity_rsv, dual_stereo_rsv;
    int bits1[CELT_NB_EBANDS], bits2[CELT_NB_EBANDS], thresh[CELT_NB_EBANDS], trim_offset[CELT_NB_EBANDS];
@@ -310,8 +297,7 @@ static int fl_compute_allocation(int start, int end, const int *offsets, const i
       bits2[j] = bits2j;
    }
    return fl_interp_bits2pulses(start, end, skip_start, bits1, bits2, thresh, cap, total, balance, skip_rsv,
-         intensity, intensity_rsv, dual_stereo, dual_stereo_rsv, pulses, ebits, fine_priority, C, LM, ec,
-         encode, prev, signalBandwidth);
+         intensity, intensity_rsv, dual_stereo, dual_stereo_rsv, pulses, ebits, fine_priority, C, LM, ec);
 }
 
 /* Laplace coding of coarse energy */
@@ -320,35 +306,6 @@ static int fl_compute_allocation(int start, int end, const int *offsets, const i
 static unsigned fl_laplace_get_freq1(unsigned fs0, int decay) {
    unsigned ft = 32768-LAPLACE_MINP*(2*LAPLACE_NMIN)-fs0;
    return ft*(fl_i32)(16384-decay)>>15;
-}
-static void fl_laplace_encode(ec_ctx *enc, int *value, unsigned fs, int decay) {
-   unsigned fl = 0;
-   int val = *value;
-   if (val) {
-      int s, i;
-      s = -(val < 0);
-      val = (val+s)^s;
-      fl = fs;
-      fs = fl_laplace_get_freq1(fs, decay);
-      for (i = 1; fs > 0 && i < val; i++) {
-         fs *= 2;
-         fl += fs+2*LAPLACE_MINP;
-         fs = (fs*(fl_i32)decay)>>15;
-      }
-      if (!fs) {
-         int di, ndi_max;
-         ndi_max = (32768-fl+LAPLACE_MINP-1);
-         ndi_max = (ndi_max-s)>>1;
-         di = IMIN(val-i, ndi_max-1);
-         fl += (2*di+1+s)*LAPLACE_MINP;
-         fs = IMIN(LAPLACE_MINP, 32768-fl);
-         *value = (i+di+s)^s;
-      } else {
-         fs += LAPLACE_MINP;
-         fl += fs&~s;
-      }
-   }
-   ec_encode_bin(enc, fl, fl+fs, 15);
 }
 static int fl_laplace_decode(ec_ctx *dec, unsigned fs, int decay) {
    int val = 0;
@@ -378,24 +335,6 @@ static int fl_laplace_decode(ec_ctx *dec, unsigned fs, int decay) {
    return val;
 }
 
-/* PVQ codeword index <-> pulse vector */
-static fl_u32 fl_icwrs(int n, const int *y) {
-   fl_u32 i;
-   int j, k;
-   j = n-1;
-   i = y[j] < 0;
-   k = abs(y[j]);
-   do {
-      j--;
-      i += CELT_PVQ_U(n-j, k);
-      k += abs(y[j]);
-      if (y[j] < 0) i += CELT_PVQ_U(n-j, k+1);
-   } while (j > 0);
-   return i;
-}
-static void fl_encode_pulses(const int *y, int n, int k, ec_ctx *enc) {
-   ec_enc_uint(enc, fl_icwrs(n, y), CELT_PVQ_V(n, k));
-}
 /* Returns the squared norm of the decoded vector. */
 static float fl_cwrsi(int n, int k, fl_u32 i, int *y) {
    fl_u32 p;
