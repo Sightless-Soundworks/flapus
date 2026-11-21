@@ -670,16 +670,21 @@ static int fl_audio_info(const fl_audio *a, fl_info *info) {
 
 FLDEF int fl_write_audio(const char *path, const fl_audio *a, const fl_options *opt) {
    fl_info info;
+   fl_writer *w;
    int err;
    if ((err = fl_audio_info(a, &info)) != FL_OK) return err;
-   return fl_write_all(fl_writer_open(path, &info, opt, &err), a, err);
+   /* err is read after the open sets it (argument order is unspecified) */
+   w = fl_writer_open(path, &info, opt, &err);
+   return fl_write_all(w, a, err);
 }
 
 FLDEF int fl_write_audio_io(const fl_io *out, const fl_audio *a, const fl_options *opt) {
    fl_info info;
+   fl_writer *w;
    int err;
    if ((err = fl_audio_info(a, &info)) != FL_OK) return err;
-   return fl_write_all(fl_writer_open_io(out, &info, opt, &err), a, err);
+   w = fl_writer_open_io(out, &info, opt, &err);
+   return fl_write_all(w, a, err);
 }
 
 /* ---- Step-by-step reading ---- */
