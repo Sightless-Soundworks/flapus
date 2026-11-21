@@ -10794,19 +10794,17 @@ static int fl_rice_k0(fl_u64 s, fl_u32 n) {
    corr = n*(2^k-1)/2 rounded down; exact for k == 0. */
 static fl_u64 fl_rice_q(fl_u64 s, fl_u64 corr, int k) { return s > corr ? (s-corr)>>k : 0; }
 
-/* Best estimated cost of a partition (Rice parameter k0-1, k0, k0+1 or escape). An escape
-   stores at most 31 bits per sample. */
+/* Best estimated cost of a partition (Rice parameter k0 or k0+1, or escape). Without the
+   floor the cost n*(k+1)+(s-corr)/2^k is lowest at k0 or k0+1, and at k0+1 if
+   2s > n*(2^(k0+2)-1). An escape stores at most 31 bits per sample. */
 static fl_u64 fl_rice_part_est(fl_u64 s, fl_u32 n, fl_u32 umax, int kmax) {
-   fl_u64 nk, base, best, c;
+   fl_u64 best, c;
    int k, eb;
    if (n == 0) return 0;
    k = fl_rice_k0(s, n);
+   if (k < kmax && 2*s > ((fl_u64)n<<(k+2))-n) k++;
    if (k > kmax) k = kmax;
-   nk = (fl_u64)n<<k;
-   base = (fl_u64)n*(k+1);
-   best = base+fl_rice_q(s, (nk-n)>>1, k);
-   if (k > 0 && (c = base-n+fl_rice_q(s, ((nk>>1)-n)>>1, k-1)) < best) best = c;
-   if (k < kmax && (c = base+n+fl_rice_q(s, ((nk<<1)-n)>>1, k+1)) < best) best = c;
+   best = (fl_u64)n*(k+1)+fl_rice_q(s, (((fl_u64)n<<k)-n)>>1, k);
    if ((eb = fl_bitlen(umax)) > 31) return best;
    c = 5+(fl_u64)n*eb;
    return c < best ? c : best;
