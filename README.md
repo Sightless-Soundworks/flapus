@@ -444,7 +444,9 @@ line.
 
 The checks in `test/` compare flapus with the established tools (opusenc, opusdec,
 flac). The opusenc to compare with is the one `tools/build_ref_opusenc.sh` builds (see
-the Opus output options); pass it in the `OPUSENC` variable.
+the Opus output options); pass it in the `OPUSENC` variable. The scripts run
+`../flapus` (`FLAPUS` names another binary, such as `../flapus-windows-x64.exe`) and
+`python3` or `python` (`PYTHON` names another interpreter).
 
 - The Opus test signals are not part of the repository. `grid.sh`, `make_ext.py` and
   `run_flac_opus.sh` need 20-second WAV clips in `test/`: `st44.wav` (16-bit stereo,

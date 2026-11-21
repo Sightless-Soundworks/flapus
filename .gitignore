@@ -9,4 +9,5 @@ test/grid.log
 
 # build output
 flapus.exe
+/flapus
 tools/__pycache__/
