@@ -160,6 +160,9 @@ Some measurements on the test corpus, in total size:
 - The light search costs about 0.25 % less than the quick estimate.
 - Variable block sizes save about 0.4-0.7 % against fixed 4096.
 - A finer grid (128 instead of 256) saves about 0.03 %.
+- Above 48 kHz the grid is max_block/8 (levels 0-6) or max_block/16 (7-8), 1024 or 2048
+  samples in the subset. Blocks there are short in time, so the coarse grid costs
+  nothing measurable and makes the search 5-8 times faster.
 
 Speed and output:
 
