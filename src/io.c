@@ -1,5 +1,24 @@
 /* ---- Audio pipeline: stream format, sinks, tags, WAV input/output, MD5, base64 ---- */
 
+/* FL_OK if every option is in range, else FL_ERR_BAD_ARG. */
+static int fl_check_options(const fl_options *o) {
+   int fs = o->frame_ms_x10;
+   if (o->format < 0 || o->format > FL_FORMAT_OPUS) return FL_ERR_BAD_ARG;
+   if (o->rate != 0 && (o->rate < 8000 || o->rate > 192000)) return FL_ERR_BAD_ARG;
+   if ((o->dither|o->flac_lax|o->vbr|o->cvbr|o->no_phase_inv) & ~1) return FL_ERR_BAD_ARG;
+   if (o->flac_level < 0 || o->flac_level > 8 || o->threads < 0) return FL_ERR_BAD_ARG;
+   if (o->bitrate < 0 || (o->bitrate > 0 && o->bitrate < 500)) return FL_ERR_BAD_ARG;
+   if (o->complexity < 0 || o->complexity > 10) return FL_ERR_BAD_ARG;
+   if (fs != 25 && fs != 50 && fs != 100 && fs != 200 && fs != 400 && fs != 600 && fs != 800 && fs != 1000 && fs != 1200)
+      return FL_ERR_BAD_ARG;
+   if (o->quality != -1 && !(o->quality >= 0 && o->quality <= 10)) return FL_ERR_BAD_ARG;
+   if (o->quality >= 0 && o->bitrate > 0) return FL_ERR_BAD_ARG;
+   if (o->signal < 0 || o->signal > 2 || o->expect_loss < 0 || o->expect_loss > 100) return FL_ERR_BAD_ARG;
+   if (o->downmix < 0 || o->downmix > 2 || o->padding < 0 || o->padding > 65536) return FL_ERR_BAD_ARG;
+   if (o->serialno < -1 || o->serialno > 4294967295LL) return FL_ERR_BAD_ARG;
+   return FL_OK;
+}
+
 /* Buffered input that keeps at least the requested number of bytes in memory. The input
    is opened once, so stdin works as well: format detection looks at the buffer. */
 typedef struct {

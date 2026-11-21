@@ -23,7 +23,8 @@
    fl_convert_file() converts any input format to the format of the output extension,
    fl_read_audio() reads any input into memory, and fl_write_audio() writes it out.
    On error, the functions that return int give a negative value (an FL_ERR_* code for
-   the file functions), and the create functions return NULL and set *error.
+   the file functions), and the create functions return NULL and set *error. Options
+   outside the ranges below give FL_ERR_BAD_ARG.
    fl_error_text() describes an FL_ERR_* code.
    For single Opus packets see the packet decoder and encoder sections below.
 
@@ -7445,6 +7446,25 @@ FLDEF int fl_opus_ms_decode_float(fl_opus_ms_decoder *st, const unsigned char *d
 
 /* ======== io.c ======== */
 /* ---- Audio pipeline: stream format, sinks, tags, WAV input/output, MD5, base64 ---- */
+
+/* FL_OK if every option is in range, else FL_ERR_BAD_ARG. */
+static int fl_check_options(const fl_options *o) {
+   int fs = o->frame_ms_x10;
+   if (o->format < 0 || o->format > FL_FORMAT_OPUS) return FL_ERR_BAD_ARG;
+   if (o->rate != 0 && (o->rate < 8000 || o->rate > 192000)) return FL_ERR_BAD_ARG;
+   if ((o->dither|o->flac_lax|o->vbr|o->cvbr|o->no_phase_inv) & ~1) return FL_ERR_BAD_ARG;
+   if (o->flac_level < 0 || o->flac_level > 8 || o->threads < 0) return FL_ERR_BAD_ARG;
+   if (o->bitrate < 0 || (o->bitrate > 0 && o->bitrate < 500)) return FL_ERR_BAD_ARG;
+   if (o->complexity < 0 || o->complexity > 10) return FL_ERR_BAD_ARG;
+   if (fs != 25 && fs != 50 && fs != 100 && fs != 200 && fs != 400 && fs != 600 && fs != 800 && fs != 1000 && fs != 1200)
+      return FL_ERR_BAD_ARG;
+   if (o->quality != -1 && !(o->quality >= 0 && o->quality <= 10)) return FL_ERR_BAD_ARG;
+   if (o->quality >= 0 && o->bitrate > 0) return FL_ERR_BAD_ARG;
+   if (o->signal < 0 || o->signal > 2 || o->expect_loss < 0 || o->expect_loss > 100) return FL_ERR_BAD_ARG;
+   if (o->downmix < 0 || o->downmix > 2 || o->padding < 0 || o->padding > 65536) return FL_ERR_BAD_ARG;
+   if (o->serialno < -1 || o->serialno > 4294967295LL) return FL_ERR_BAD_ARG;
+   return FL_OK;
+}
 
 /* Buffered input that keeps at least the requested number of bytes in memory. The input
    is opened once, so stdin works as well: format detection looks at the buffer. */
@@ -16406,7 +16426,7 @@ FLDEF fl_opus_encoder *fl_opus_encoder_create(int channels, const fl_options *op
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
    if (error) *error = FL_ERR_BAD_ARG;
-   if (channels < 1 || channels > 255 || (opt.bitrate > 0 && opt.quality >= 0)) return NULL;
+   if (channels < 1 || channels > 255 || fl_check_options(&opt) != FL_OK) return NULL;
    enc = (fl_opus_encoder*)calloc(1, sizeof(*enc));
    if (!enc) {
       if (error) *error = FL_ERR_ALLOC;
@@ -23385,6 +23405,7 @@ FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_op
    int in_fmt, out_fmt, ret, err;
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
+   if ((ret = fl_check_options(&opt)) != FL_OK) return ret;
    if (strcmp(in_path, out_path) == 0 && !fl_is_std(in_path)) return FL_ERR_BAD_ARG;
    if ((ret = fl_inbuf_open(&in, in_path)) != FL_OK) return ret;
    in_fmt = ret = fl_detect_format(&in);
@@ -23417,6 +23438,7 @@ FLDEF int fl_read_audio(const char *path, const fl_options *opt_in, fl_audio *au
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
    memset(audio, 0, sizeof(*audio));
+   if ((ret = fl_check_options(&opt)) != FL_OK) return ret;
    if ((ret = fl_inbuf_open(&in, path)) != FL_OK) return ret;
    fmt = ret = fl_detect_format(&in);
    if (fmt >= 0) {
@@ -23441,6 +23463,7 @@ FLDEF int fl_write_audio(const char *path, const fl_audio *a, const fl_options *
    long long pos = 0;
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
+   if ((ret = fl_check_options(&opt)) != FL_OK) return ret;
    out_fmt = opt.format ? opt.format : fl_format_from_name(path);
    if (out_fmt < 0) return out_fmt;
    if (a->channels < 1 || a->bits < 1 || a->bits > 32 || a->rate < 1 || a->frames < 0) return FL_ERR_BAD_ARG;

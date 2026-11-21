@@ -6,10 +6,11 @@
 #include <string.h>
 #include <time.h>
 
-static void usage(void) {
-   fprintf(stderr,
+static void usage(FILE *f) {
+   fprintf(f,
       "flapus - Opus and FLAC encoder/decoder\n"
       "Usage: flapus [options] input output\n"
+      "       flapus --help | --version\n"
       "  The input format (WAV, FLAC, Ogg FLAC, Ogg Opus) is detected from the file.\n"
       "  The output format follows the extension: .wav, .flac or .opus.\n"
       "  Use - for stdin or stdout (stdout needs --format).\n"
@@ -102,118 +103,144 @@ static long long file_size(const char *path) {
    return n;
 }
 
+/* Parses a whole number in [lo, hi]. */
+static int get_int(const char *opt, const char *s, long lo, long hi, int *out) {
+   char *end;
+   long v = strtol(s, &end, 10);
+   if (end == s || *end || v < lo || v > hi) {
+      fprintf(stderr, "Error: invalid value for %s: %s (%ld to %ld)\n", opt, s, lo, hi);
+      return 0;
+   }
+   *out = (int)v;
+   return 1;
+}
+
+/* Parses a number in [lo, hi]. */
+static int get_num(const char *opt, const char *s, double lo, double hi, double *out) {
+   char *end;
+   double v = strtod(s, &end);
+   if (end == s || *end || !(v >= lo && v <= hi)) {
+      fprintf(stderr, "Error: invalid value for %s: %s (%.10g to %.10g)\n", opt, s, lo, hi);
+      return 0;
+   }
+   *out = v;
+   return 1;
+}
+
 int main(int argc, char **argv) {
    fl_options opt;
    static char opts[256];
    progress_state ps;
    int i, ret, last = argc-2, silent = 0, delete_input = 0, to_stdout;
+   double d;
    if (argc == 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)) {
       version();
       return 0;
    }
+   if (argc == 2 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
+      usage(stdout);
+      return 0;
+   }
    if (argc < 3) {
-      usage();
+      usage(stderr);
       return 1;
    }
    fl_options_init(&opt);
    opt.threads = 0;  /* the command line tool uses every CPU (the library default is 1) */
    for (i = 1; i < last; i++) {
       const char *a = argv[i], *v = i+1 < last ? argv[i+1] : NULL;
+      int ok = 1, takes = 1;
       if (strcmp(a, "-s") == 0 || strcmp(a, "--silent") == 0) {
          silent = 1;
+         takes = 0;
       } else if (strcmp(a, "--delete-input-file") == 0) {
          delete_input = 1;
-      } else if (strcmp(a, "--format") == 0 && v) {
-         if (strcmp(v, "wav") == 0) opt.format = FL_FORMAT_WAV;
-         else if (strcmp(v, "flac") == 0) opt.format = FL_FORMAT_FLAC;
-         else if (strcmp(v, "opus") == 0) opt.format = FL_FORMAT_OPUS;
-         else {
-            usage();
-            return 1;
-         }
-         i++;
-      } else if (strcmp(a, "--level") == 0 && v) {
-         opt.flac_level = atoi(v);
-         if (opt.flac_level < 0 || opt.flac_level > 8) {
-            usage();
-            return 1;
-         }
-         i++;
+         takes = 0;
       } else if (strcmp(a, "--lax") == 0) {
          opt.flac_lax = 1;
-      } else if (strcmp(a, "--threads") == 0 && v) {
-         opt.threads = atoi(v);
-         i++;
-      } else if (strcmp(a, "--rate") == 0 && v) {
-         opt.rate = atoi(v);
-         i++;
+         takes = 0;
       } else if (strcmp(a, "--no-dither") == 0) {
          opt.dither = 0;
-      } else if (strcmp(a, "--bitrate") == 0 && v) {
-         opt.bitrate = (int)(atof(v)*1000);
-         note(opts, sizeof(opts), a, v);
-         i++;
-      } else if (strcmp(a, "--comp") == 0 && v) {
-         opt.complexity = atoi(v);
-         note(opts, sizeof(opts), a, v);
-         i++;
-      } else if (strcmp(a, "--framesize") == 0 && v) {
-         opt.frame_ms_x10 = (int)(atof(v)*10+.5);
-         note(opts, sizeof(opts), a, v);
-         i++;
+         takes = 0;
       } else if (strcmp(a, "--vbr") == 0 || strcmp(a, "--cvbr") == 0 || strcmp(a, "--hard-cbr") == 0) {
          opt.vbr = a[2] != 'h';
          opt.cvbr = a[2] == 'c';
          note(opts, sizeof(opts), a, NULL);
-      } else if (strcmp(a, "--quality") == 0 && v) {
-         opt.quality = atof(v);
-         if (!(opt.quality >= 0) || opt.quality > 10) {
-            usage();
-            return 1;
-         }
-         note(opts, sizeof(opts), a, v);
-         i++;
-      } else if (strcmp(a, "--expect-loss") == 0 && v) {
-         opt.expect_loss = atoi(v);
-         if (opt.expect_loss < 0 || opt.expect_loss > 100) {
-            usage();
-            return 1;
-         }
-         note(opts, sizeof(opts), a, v);
-         i++;
+         takes = 0;
       } else if (strcmp(a, "--music") == 0 || strcmp(a, "--speech") == 0) {
          opt.signal = a[2] == 'm' ? 1 : 2;
          note(opts, sizeof(opts), a, NULL);
+         takes = 0;
       } else if (strcmp(a, "--no-phase-inv") == 0) {
          opt.no_phase_inv = 1;
          note(opts, sizeof(opts), a, NULL);
+         takes = 0;
       } else if (strcmp(a, "--downmix-mono") == 0 || strcmp(a, "--downmix-stereo") == 0) {
          opt.downmix = a[10] == 'm' ? 1 : 2;
          note(opts, sizeof(opts), a, NULL);
-      } else if (strcmp(a, "--padding") == 0 && v) {
-         char *end;
-         long n = strtol(v, &end, 10);
-         if (*end || n < 0 || n > 65536) {
-            usage();
-            return 1;
-         }
-         opt.padding = (int)n;
-         note(opts, sizeof(opts), a, v);
-         i++;
-      } else if (strcmp(a, "--serial") == 0 && v) {
-         char *end;
-         long long n = strtoll(v, &end, 10);
-         if (*end || n < 0 || n > 4294967295LL) {
-            usage();
-            return 1;
-         }
-         opt.serialno = n;
-         note(opts, sizeof(opts), a, v);
-         i++;
-      } else {
-         usage();
+         takes = 0;
+      } else if (strcmp(a, "--format") != 0 && strcmp(a, "--level") != 0 && strcmp(a, "--threads") != 0 &&
+                 strcmp(a, "--rate") != 0 && strcmp(a, "--bitrate") != 0 && strcmp(a, "--comp") != 0 &&
+                 strcmp(a, "--framesize") != 0 && strcmp(a, "--quality") != 0 && strcmp(a, "--expect-loss") != 0 &&
+                 strcmp(a, "--padding") != 0 && strcmp(a, "--serial") != 0) {
+         fprintf(stderr, "Error: unknown option %s (see flapus --help)\n", a);
          return 1;
+      } else if (!v) {
+         fprintf(stderr, "Error: %s needs a value\n", a);
+         return 1;
+      } else if (strcmp(a, "--format") == 0) {
+         if (strcmp(v, "wav") == 0) opt.format = FL_FORMAT_WAV;
+         else if (strcmp(v, "flac") == 0) opt.format = FL_FORMAT_FLAC;
+         else if (strcmp(v, "opus") == 0) opt.format = FL_FORMAT_OPUS;
+         else {
+            fprintf(stderr, "Error: invalid value for --format: %s (wav, flac or opus)\n", v);
+            ok = 0;
+         }
+      } else if (strcmp(a, "--level") == 0) {
+         ok = get_int(a, v, 0, 8, &opt.flac_level);
+      } else if (strcmp(a, "--threads") == 0) {
+         ok = get_int(a, v, 0, 1024, &opt.threads);
+      } else if (strcmp(a, "--rate") == 0) {
+         ok = get_int(a, v, 8000, 192000, &opt.rate);
+      } else if (strcmp(a, "--bitrate") == 0) {
+         if ((ok = get_num(a, v, 0.5, 255*1024, &d))) opt.bitrate = (int)(d*1000);
+      } else if (strcmp(a, "--comp") == 0) {
+         ok = get_int(a, v, 0, 10, &opt.complexity);
+      } else if (strcmp(a, "--framesize") == 0) {
+         static const double sizes[9] = {2.5, 5, 10, 20, 40, 60, 80, 100, 120};
+         int k;
+         if ((ok = get_num(a, v, 2.5, 120, &d))) {
+            for (k = 0; k < 9 && d != sizes[k]; k++);
+            if (k == 9) {
+               fprintf(stderr, "Error: --framesize must be 2.5, 5, 10, 20, 40, 60, 80, 100 or 120\n");
+               ok = 0;
+            }
+            opt.frame_ms_x10 = (int)(d*10+.5);
+         }
+      } else if (strcmp(a, "--quality") == 0) {
+         ok = get_num(a, v, 0, 10, &opt.quality);
+      } else if (strcmp(a, "--expect-loss") == 0) {
+         ok = get_int(a, v, 0, 100, &opt.expect_loss);
+      } else if (strcmp(a, "--padding") == 0) {
+         ok = get_int(a, v, 0, 65536, &opt.padding);
+      } else if (strcmp(a, "--serial") == 0) {
+         if ((ok = get_num(a, v, 0, 4294967295.0, &d)) && d != floor(d)) {
+            fprintf(stderr, "Error: --serial must be a whole number\n");
+            ok = 0;
+         }
+         opt.serialno = (long long)d;
       }
+      if (!ok) return 1;
+      if (takes) {
+         if (strcmp(a, "--level") != 0 && strcmp(a, "--threads") != 0 && strcmp(a, "--rate") != 0 &&
+             strcmp(a, "--format") != 0)
+            note(opts, sizeof(opts), a, v);
+         i++;
+      }
+   }
+   if (opt.bitrate > 0 && opt.quality >= 0) {
+      fprintf(stderr, "Error: --bitrate and --quality cannot be combined\n");
+      return 1;
    }
    to_stdout = strcmp(argv[argc-1], "-") == 0;
    if (to_stdout && !opt.format) {

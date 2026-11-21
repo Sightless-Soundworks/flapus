@@ -23,7 +23,8 @@
    fl_convert_file() converts any input format to the format of the output extension,
    fl_read_audio() reads any input into memory, and fl_write_audio() writes it out.
    On error, the functions that return int give a negative value (an FL_ERR_* code for
-   the file functions), and the create functions return NULL and set *error.
+   the file functions), and the create functions return NULL and set *error. Options
+   outside the ranges below give FL_ERR_BAD_ARG.
    fl_error_text() describes an FL_ERR_* code.
    For single Opus packets see the packet decoder and encoder sections below.
 

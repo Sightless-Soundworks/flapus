@@ -746,7 +746,7 @@ FLDEF fl_opus_encoder *fl_opus_encoder_create(int channels, const fl_options *op
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
    if (error) *error = FL_ERR_BAD_ARG;
-   if (channels < 1 || channels > 255 || (opt.bitrate > 0 && opt.quality >= 0)) return NULL;
+   if (channels < 1 || channels > 255 || fl_check_options(&opt) != FL_OK) return NULL;
    enc = (fl_opus_encoder*)calloc(1, sizeof(*enc));
    if (!enc) {
       if (error) *error = FL_ERR_ALLOC;

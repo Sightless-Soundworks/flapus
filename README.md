@@ -129,6 +129,7 @@ Decoding shows only the percentage and ends with `done`.
 - `--format wav|flac|opus` sets the output format instead of the extension (needed
   for stdout).
 - `-s` or `--silent` turns the progress display off.
+- `-h` or `--help` shows the options.
 - `-V` or `--version` shows the version, how the Opus encoder was built (portable
   math or not) and the target.
 - `--delete-input-file` deletes the input file after a successful conversion. It is
@@ -283,7 +284,8 @@ int got = fl_opus_ms_decode_float(dec, packet, len, out, 5760); /* len 0 = packe
 ```
 
 All functions return a negative `FL_ERR_*` code on error, and `fl_error_text()` gives a
-short description of it. See the comments in `src/api.h` (the top of `flapus.h`) for the
+short description of it. Options outside their documented range give `FL_ERR_BAD_ARG`.
+The command line tool checks every value and names the option that is wrong. See the comments in `src/api.h` (the top of `flapus.h`) for the
 full API.
 
 Paths are UTF-8 on Windows: a path that is valid UTF-8 is opened with `_wfopen`, so

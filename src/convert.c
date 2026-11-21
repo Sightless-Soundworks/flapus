@@ -152,6 +152,7 @@ FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_op
    int in_fmt, out_fmt, ret, err;
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
+   if ((ret = fl_check_options(&opt)) != FL_OK) return ret;
    if (strcmp(in_path, out_path) == 0 && !fl_is_std(in_path)) return FL_ERR_BAD_ARG;
    if ((ret = fl_inbuf_open(&in, in_path)) != FL_OK) return ret;
    in_fmt = ret = fl_detect_format(&in);
@@ -184,6 +185,7 @@ FLDEF int fl_read_audio(const char *path, const fl_options *opt_in, fl_audio *au
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
    memset(audio, 0, sizeof(*audio));
+   if ((ret = fl_check_options(&opt)) != FL_OK) return ret;
    if ((ret = fl_inbuf_open(&in, path)) != FL_OK) return ret;
    fmt = ret = fl_detect_format(&in);
    if (fmt >= 0) {
@@ -208,6 +210,7 @@ FLDEF int fl_write_audio(const char *path, const fl_audio *a, const fl_options *
    long long pos = 0;
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
+   if ((ret = fl_check_options(&opt)) != FL_OK) return ret;
    out_fmt = opt.format ? opt.format : fl_format_from_name(path);
    if (out_fmt < 0) return out_fmt;
    if (a->channels < 1 || a->bits < 1 || a->bits > 32 || a->rate < 1 || a->frames < 0) return FL_ERR_BAD_ARG;
