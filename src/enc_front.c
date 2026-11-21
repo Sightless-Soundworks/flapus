@@ -60,7 +60,7 @@ typedef struct {
    fl_u64 muxing_delay, curr_granule, last_granule;
    int is_eos;
    size_t pageno;
-   FILE *out;
+   fl_out *out;
    fl_i64 written;  /* bytes written (ftell does not work on pipes) */
    int error;
 } fl_oggp;
@@ -142,7 +142,7 @@ static void fl_oggp_write_pages(fl_oggp *o) {
       crc = fl_ogg_crc(crc, h, hs);
       crc = fl_ogg_crc(crc, o->buf+p->buf_pos, p->buf_size);
       fl_put_le32(h+22, crc);
-      if (fwrite(h, 1, hs, o->out) != hs || fwrite(o->buf+p->buf_pos, 1, p->buf_size, o->out) != p->buf_size) o->error = 1;
+      if (fl_out_write(o->out, h, hs) != hs || fl_out_write(o->out, o->buf+p->buf_pos, p->buf_size) != p->buf_size) o->error = 1;
       o->written += hs+p->buf_size;
    }
    o->pages_fill = 0;
@@ -501,7 +501,7 @@ static void fl_put_comment(unsigned char **tags, size_t *tlen, const char *c) {
    channel order, optional downmix, int to float scaling like opusenc's readers). */
 typedef struct {
    fl_sink base;
-   char *path;
+   fl_out *out;         /* until start() hands it to the Ogg writer */
    fl_options opt;
    fl_ope *e;
    float *input, *raw, dmx[2*255], scale;
@@ -562,7 +562,8 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
    fl_msenc_setup(e->st, opt, IMAX(8, IMIN(24, f->container_bits)));
    e->frame_size_request = fl_msenc_get_duration(e->st);
    e->frame_size = fl_frame_samples(e->frame_size_request);
-   e->ogg.out = fl_fopen(o->path, "wb");
+   e->ogg.out = o->out;
+   o->out = NULL;
    e->ogg.serialno = opt->serialno >= 0 ? (fl_i32)(fl_u32)opt->serialno : (fl_i32)fl_random32(e);
    e->ogg.muxing_delay = 48000;
    if (!e->ogg.out || !e->buffer || !e->packet || !e->st) {
@@ -680,7 +681,7 @@ static int fl_opus_finish(fl_sink *s) {
    fl_x87_leave(cw);
    o->base.out_bytes = o->e->ogg.written;  /* the drained pages count for the final ratio */
    ret = o->e->ogg.error ? FL_ERR_IO : FL_OK;
-   if (fl_fclose(o->e->ogg.out) != 0) ret = FL_ERR_IO;
+   if (fl_out_close(o->e->ogg.out) != FL_OK) ret = FL_ERR_IO;
    o->e->ogg.out = NULL;
    return ret;
 }
@@ -689,7 +690,7 @@ static void fl_opus_destroy(fl_sink *s) {
    fl_opus_sink *o = (fl_opus_sink*)s;
    fl_ope *e = o->e;
    if (e) {
-      if (e->ogg.out) fl_fclose(e->ogg.out);
+      fl_out_close(e->ogg.out);
       if (e->st) fl_msenc_destroy(e->st);
       if (e->have_re) fl_resampler_free(&e->re);
       free(e->buffer);
@@ -702,18 +703,17 @@ static void fl_opus_destroy(fl_sink *s) {
    }
    free(o->input);
    free(o->raw);
-   free(o->path);
+   fl_out_close(o->out);
    free(o);
 }
 
-static fl_sink *fl_opus_sink_create(const char *path, const fl_options *opt, int *err) {
+static fl_sink *fl_opus_sink_create(fl_out *out, const fl_options *opt, int *err) {
    fl_opus_sink *o = (fl_opus_sink*)calloc(1, sizeof(*o));
-   if (!o || !(o->path = (char*)malloc(strlen(path)+1))) {
-      free(o);
+   if (!o) {
       *err = FL_ERR_ALLOC;
       return NULL;
    }
-   strcpy(o->path, path);
+   o->out = out;
    o->opt = *opt;
    o->base.start = fl_opus_start;
    o->base.write = fl_opus_write;

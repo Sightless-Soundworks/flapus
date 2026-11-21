@@ -1441,7 +1441,7 @@ typedef struct {
 
 typedef struct {
    fl_sink base;
-   FILE *f;
+   fl_out *f;
    fl_flac_cfg cfg;
    fl_flac_cfg dcfg;    /* search used for block costs when cfg.dp_search > 0 */
    int level, lax, nthreads;
@@ -1466,7 +1466,7 @@ typedef struct {
    fl_prefix pf[8];
    fl_frame_job *jobs;
    int njobs, seg_len;
-   int padding, want_seek;
+   int padding, want_seek, frame_api;
    int nseek, seek_k, seek_fill;  /* seek points (one per 10 s), next target, points known */
    fl_u64 *seek;          /* per point: first sample, frame offset and samples of its frame */
    fl_u64 frame_bytes;    /* bytes of the frames so far */
@@ -1518,7 +1518,7 @@ static void fl_block_header(fl_flac_sink *s, int type, int last, fl_u32 len) {
    unsigned char h4[4];
    h4[0] = (unsigned char)(type|(last ? 0x80 : 0));
    fl_put_be24(h4+1, len);
-   fwrite(h4, 1, 4, s->f);
+   fl_out_write(s->f, h4, 4);
    s->base.out_bytes += 4+len;
 }
 
@@ -1555,7 +1555,7 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
          }
       }
    /* a seek point every 10 s, filled in at the end (needs the length and a seekable file) */
-   if (s->want_seek && s->f != stdout && f->frames > 0) {
+   if (s->want_seek && s->f->seekable && f->frames > 0) {
       fl_u64 every = (fl_u64)s->rate*10;
       fl_u64 n = ((fl_u64)f->frames-1)/every+1;
       s->nseek = (int)FL_MIN(n, (1<<24)/18-1);
@@ -1568,8 +1568,8 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
    hdr[4] = (unsigned char)(!s->nseek && !ntag && !npic && !nblk && !s->padding ? 0x80 : 0);
    fl_put_be24(hdr+5, 34);
    memset(zero, 0, 16);
-   fl_flac_streaminfo(s, hdr+8, s->f == stdout && fl_exact_frames(f) > 0 ? (fl_u64)f->frames : 0, zero);
-   if (fwrite(hdr, 1, sizeof(hdr), s->f) != sizeof(hdr)) {
+   fl_flac_streaminfo(s, hdr+8, !s->f->seekable && fl_exact_frames(f) > 0 ? (fl_u64)f->frames : 0, zero);
+   if (fl_out_write(s->f, hdr, sizeof(hdr)) != sizeof(hdr)) {
       ret = FL_ERR_IO;
       goto done;
    }
@@ -1582,7 +1582,7 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
       memset(pt, 0xFF, 8);
       fl_block_header(s, 3, !ntag && !npic && !nblk && !s->padding, (fl_u32)s->nseek*18);
       s->seek_pos = (long)s->base.out_bytes-s->nseek*18;
-      for (i = 0; i < s->nseek; i++) fwrite(pt, 1, 18, s->f);
+      for (i = 0; i < s->nseek; i++) fl_out_write(s->f, pt, 18);
    }
    if (ntag) {
       const char *vendor = "flapus";
@@ -1593,29 +1593,29 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
       if (mask_tag[0]) len += 4+(fl_u32)strlen(mask_tag);
       fl_block_header(s, 4, !npic && !nblk && !s->padding, len);
       fl_put_le32(n4, (fl_u32)strlen(vendor));
-      fwrite(n4, 1, 4, s->f);
-      fwrite(vendor, 1, strlen(vendor), s->f);
+      fl_out_write(s->f, n4, 4);
+      fl_out_write(s->f, vendor, strlen(vendor));
       fl_put_le32(n4, ntag);
-      fwrite(n4, 1, 4, s->f);
+      fl_out_write(s->f, n4, 4);
       for (i = 0; i < f->ntags; i++)
          if (fl_flac_tag_kind(f, f->tags[i]) == 1) {
             fl_put_le32(n4, (fl_u32)strlen(f->tags[i]));
-            fwrite(n4, 1, 4, s->f);
-            fwrite(f->tags[i], 1, strlen(f->tags[i]), s->f);
+            fl_out_write(s->f, n4, 4);
+            fl_out_write(s->f, f->tags[i], strlen(f->tags[i]));
          }
       if (mask_tag[0]) {
          fl_put_le32(n4, (fl_u32)strlen(mask_tag));
-         fwrite(n4, 1, 4, s->f);
-         fwrite(mask_tag, 1, strlen(mask_tag), s->f);
+         fl_out_write(s->f, n4, 4);
+         fl_out_write(s->f, mask_tag, strlen(mask_tag));
       }
    }
    for (i = 0; i < npic; i++) {
       fl_block_header(s, 6, i == npic-1 && !nblk && !s->padding, (fl_u32)plen[i]);
-      fwrite(pics[i], 1, plen[i], s->f);
+      fl_out_write(s->f, pics[i], plen[i]);
    }
    for (i = 0; i < nblk; i++) {
       fl_block_header(s, f->blocks[i].type, i == nblk-1 && !s->padding, (fl_u32)f->blocks[i].len);
-      fwrite(f->blocks[i].data, 1, f->blocks[i].len, s->f);
+      fl_out_write(s->f, f->blocks[i].data, f->blocks[i].len);
    }
    if (s->padding) {
       unsigned char z[256];
@@ -1623,11 +1623,11 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
       memset(z, 0, sizeof(z));
       fl_block_header(s, 1, 1, (fl_u32)s->padding);
       while (left > 0) {
-         fwrite(z, 1, FL_MIN(left, 256), s->f);
+         fl_out_write(s->f, z, FL_MIN(left, 256));
          left -= 256;
       }
    }
-   ret = ferror(s->f) ? FL_ERR_IO : FL_OK;
+   ret = s->f->err ? FL_ERR_IO : FL_OK;
 done:
    if (pics)
       for (i = 0; i < npic; i++) free(pics[i]);
@@ -1646,6 +1646,12 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
    s->rate = f->rate;
    s->stereo = s->C == 2;
    fl_flac_level(&s->cfg, s->level, s->lax, s->rate);
+   if (s->frame_api) {
+      /* fl_flac_frame_encode(): the caller's block sizes */
+      s->cfg.unit = 0;
+      s->cfg.dp_search = 0;
+      s->cfg.max_block = FL_FLAC_MAX_BLOCK;
+   }
    if (s->cfg.dp_search) {
       fl_flac_level(&s->dcfg, 0, s->lax, s->rate);
       s->dcfg.max_porder = s->cfg.max_porder;
@@ -1687,7 +1693,7 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
       if (fl_ws_alloc(&w->ws, s->cfg.max_block, s->cfg.max_porder) < 0 || fl_flac_dec_alloc(&w->dec, s->cfg.max_block) < 0)
          return FL_ERR_ALLOC;
    }
-   if (s->f == stdout) {
+   if (!s->f->seekable) {
       /* stdout cannot seek back: STREAMINFO is final now, with the block size limits
          and unknown frame sizes and MD5 (like flac) */
       s->min_block = s->cfg.unit ? s->cfg.unit : s->cfg.fixed_block;
@@ -1896,12 +1902,10 @@ static void fl_frame_job_run(void *ctx, int t, int nt) {
    }
 }
 
-/* Encodes the first 'len' buffered samples and shifts the rest down. */
-static int fl_flac_process(fl_flac_sink *s, int len) {
-   int ret = FL_OK, c, i, j, pos = 0;
-   if (len <= 0) return FL_OK;
+/* Side, mid and the fixed residuals of the first len buffered samples. */
+static void fl_flac_segment_prep(fl_flac_sink *s, int len) {
+   int c, i;
    s->seg_len = len;
-   s->njobs = 0;
    if (s->stereo) {
       const fl_i32 *l = s->buf[0], *r = s->buf[1];
       for (i = 0; i < len; i++) {
@@ -1918,6 +1922,14 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
          for (o = 0; o <= 4 && o < len; o++) fl_fixed_residual(src, len, o, s->bits+(s->stereo && c == 2), s->fres, s->fu[c][o]);
       }
    }
+}
+
+/* Encodes the first 'len' buffered samples and shifts the rest down. */
+static int fl_flac_process(fl_flac_sink *s, int len) {
+   int ret = FL_OK, c, i, j, pos = 0;
+   if (len <= 0) return FL_OK;
+   s->njobs = 0;
+   fl_flac_segment_prep(s, len);
    if (!s->cfg.unit) {
       for (pos = 0; pos < len; pos += s->cfg.fixed_block) {
          s->jobs[s->njobs].off = pos;
@@ -1984,7 +1996,7 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
          }
       }
       s->frame_bytes += flen;
-      if (fwrite(s->wk[job->worker].bw.buf+job->pos, 1, flen, s->f) != flen) ret = FL_ERR_IO;
+      if (fl_out_write(s->f, s->wk[job->worker].bw.buf+job->pos, flen) != flen) ret = FL_ERR_IO;
       s->base.out_bytes += flen;
       if (flen < s->min_frame) s->min_frame = flen;
       if (flen > s->max_frame) s->max_frame = flen;
@@ -2030,7 +2042,7 @@ static int fl_flacenc_finish(fl_sink *sk) {
    unsigned char info[34], md5[16];
    int ret = fl_flac_process(s, s->have);
    if (ret != FL_OK) return ret;
-   if (s->f == stdout) goto done;  /* STREAMINFO was written in start() */
+   if (!s->f->seekable) goto done;  /* STREAMINFO was written in start() */
    fl_md5_final(&s->md5, md5);
    if (s->frame_no == 0) s->min_frame = 0;
    if (!s->cfg.unit) {
@@ -2041,11 +2053,11 @@ static int fl_flacenc_finish(fl_sink *sk) {
       if (s->min_block < 16) s->min_block = 16;
    }
    fl_flac_streaminfo(s, info, s->sample_pos, md5);
-   if (fseek(s->f, s->info_pos, SEEK_SET) != 0 || fwrite(info, 1, 34, s->f) != 34) return FL_ERR_IO;
+   if (fl_out_seek(s->f, s->info_pos) != 0 || fl_out_write(s->f, info, 34) != 34) return FL_ERR_IO;
    if (s->nseek) {
       unsigned char pt[18];
       int i, k;
-      if (fseek(s->f, s->seek_pos, SEEK_SET) != 0) return FL_ERR_IO;
+      if (fl_out_seek(s->f, s->seek_pos) != 0) return FL_ERR_IO;
       for (i = 0; i < s->nseek; i++) {
          memset(pt, 0, 18);
          if (i < s->seek_fill) {
@@ -2056,11 +2068,11 @@ static int fl_flacenc_finish(fl_sink *sk) {
             pt[16] = (unsigned char)(s->seek[3*i+2]>>8);
             pt[17] = (unsigned char)s->seek[3*i+2];
          } else memset(pt, 0xFF, 8);
-         if (fwrite(pt, 1, 18, s->f) != 18) return FL_ERR_IO;
+         if (fl_out_write(s->f, pt, 18) != 18) return FL_ERR_IO;
       }
    }
 done:
-   ret = fl_fclose(s->f) != 0 ? FL_ERR_IO : FL_OK;
+   ret = fl_out_close(s->f);
    s->f = NULL;
    return ret;
 }
@@ -2068,7 +2080,7 @@ done:
 static void fl_flacenc_destroy(fl_sink *sk) {
    fl_flac_sink *s = (fl_flac_sink*)sk;
    int c;
-   if (s->f) fl_fclose(s->f);
+   fl_out_close(s->f);
    for (c = 0; c < 8; c++) {
       int o;
       free(s->buf[c]);
@@ -2095,7 +2107,7 @@ static void fl_flacenc_destroy(fl_sink *sk) {
    free(s);
 }
 
-static fl_sink *fl_flac_sink_create(const char *path, const fl_options *opt, int *err) {
+static fl_sink *fl_flac_sink_create(fl_out *out, const fl_options *opt, int *err) {
    fl_flac_sink *s = (fl_flac_sink*)calloc(1, sizeof(*s));
    if (!s) {
       *err = FL_ERR_ALLOC;
@@ -2113,10 +2125,107 @@ static fl_sink *fl_flac_sink_create(const char *path, const fl_options *opt, int
    s->base.write = fl_flacenc_write;
    s->base.finish = fl_flacenc_finish;
    s->base.destroy = fl_flacenc_destroy;
-   if (!(s->f = fl_fopen(path, "wb"))) {
-      free(s);
-      *err = FL_ERR_IO;
+   s->f = out;
+   return &s->base;
+}
+
+/* ---- Public FLAC frame encoder ---- */
+struct fl_flac_frame_encoder {
+   fl_flac_sink *s;
+   fl_md5 md5;
+   fl_u64 total;
+   fl_u32 min_frame, max_frame;
+   int min_block, max_block;
+};
+
+static size_t fl_null_write(void *user, const void *p, size_t n) {
+   (void)user;
+   (void)p;
+   return n;
+}
+
+FLDEF fl_flac_frame_encoder *fl_flac_frame_encoder_create(int channels, int rate, int bits, const fl_options *opt_in, int *error) {
+   static const fl_io null_io = {NULL, NULL, fl_null_write, NULL};
+   fl_flac_frame_encoder *e;
+   fl_options opt;
+   fl_format f;
+   fl_out *out;
+   int err = FL_ERR_BAD_ARG;
+   if (opt_in) opt = *opt_in;
+   else fl_options_init(&opt);
+   if (error) *error = FL_ERR_BAD_ARG;
+   if (fl_check_options(&opt) != FL_OK || channels < 1 || channels > 8 || bits < 4 || bits > 32 || rate < 1 || rate > FL_MAX_RATE)
+      return NULL;
+   opt.padding = 0;
+   opt.flac_seektable = 0;
+   if (!(e = (fl_flac_frame_encoder*)calloc(1, sizeof(*e))) || !(out = fl_out_from_io(&null_io))) {
+      free(e);
+      if (error) *error = FL_ERR_ALLOC;
       return NULL;
    }
-   return &s->base;
+   if (!(e->s = (fl_flac_sink*)fl_flac_sink_create(out, &opt, &err))) {
+      fl_out_close(out);
+      free(e);
+      if (error) *error = err;
+      return NULL;
+   }
+   e->s->frame_api = 1;
+   e->s->nthreads = 1;
+   fl_format_init(&f);
+   f.channels = channels;
+   f.rate = rate;
+   f.bits = f.container_bits = bits;
+   if ((err = e->s->base.start(&e->s->base, &f)) != FL_OK) {
+      fl_flac_frame_encoder_destroy(e);
+      if (error) *error = err;
+      return NULL;
+   }
+   e->s->variable = 1;  /* frames carry sample numbers */
+   fl_md5_init(&e->md5);
+   e->min_frame = 0xFFFFFF;
+   if (error) *error = FL_OK;
+   return e;
+}
+
+FLDEF int fl_flac_frame_encode(fl_flac_frame_encoder *e, const int *pcm, int frames, unsigned char *out, int max_bytes) {
+   fl_flac_sink *s = e->s;
+   fl_frame_job job;
+   int C = s->C, shift = 32-s->bits, c, i, ret;
+   if (frames < 1 || frames > FL_FLAC_MAX_BLOCK || !out) return FL_ERR_BAD_ARG;
+   for (i = 0; i < frames*C; i++)
+      if (shift && (fl_i32)((fl_u32)pcm[i]<<shift)>>shift != pcm[i]) return FL_ERR_BAD_ARG;  /* beyond bits */
+   for (c = 0; c < C; c++)
+      for (i = 0; i < frames; i++) s->buf[c][i] = pcm[i*C+c];
+   fl_flac_segment_prep(s, frames);
+   memset(&job, 0, sizeof(job));
+   job.len = frames;
+   s->wk[0].bw.len = 0;
+   if ((ret = fl_encode_frame(s, &s->wk[0], &job, e->total)) != FL_OK) return ret;
+   if (job.bytes > (size_t)max_bytes) return FL_ERR_BAD_ARG;
+   memcpy(out, s->wk[0].bw.buf+job.pos, job.bytes);
+   fl_md5_samples(&e->md5, pcm, (size_t)frames*C, s->bits);
+   e->total += frames;
+   if (job.bytes < e->min_frame) e->min_frame = (fl_u32)job.bytes;
+   if (job.bytes > e->max_frame) e->max_frame = (fl_u32)job.bytes;
+   if (!e->min_block || frames < e->min_block) e->min_block = frames;
+   if (frames > e->max_block) e->max_block = frames;
+   return (int)job.bytes;
+}
+
+FLDEF void fl_flac_frame_encoder_streaminfo(const fl_flac_frame_encoder *e, unsigned char info[34]) {
+   fl_flac_sink *s = e->s;
+   fl_md5 m = e->md5;
+   unsigned char md5[16];
+   fl_md5_final(&m, md5);
+   s->min_block = FL_MAX(16, e->min_block);
+   s->max_block = FL_MAX(16, e->max_block);
+   s->min_frame = e->total ? e->min_frame : 0;
+   s->max_frame = e->max_frame;
+   fl_flac_streaminfo(s, info, e->total, md5);
+}
+
+FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *e) {
+   if (!e) return;
+   if (e->s) e->s->base.destroy(&e->s->base);
+   free(e);
 }

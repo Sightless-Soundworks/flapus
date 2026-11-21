@@ -303,6 +303,36 @@ err = fl_write_audio("out.flac", &a, NULL);   /* format from the extension or op
 fl_audio_free(&a);
 ```
 
+Step by step, for players and long files: `fl_reader` decodes any input in pieces and
+can seek (exact for WAV and FLAC; Opus restarts 80 ms early, as opusfile does), and
+`fl_writer` writes WAV, FLAC or Opus in pieces:
+
+```c
+fl_reader *r = fl_reader_open("in.flac", NULL, &err);    /* or _open_memory, _open_io */
+fl_info info;
+fl_reader_info(r, &info);                               /* channels, rate, bits, frames */
+fl_reader_seek(r, 30*(long long)info.rate);              /* to 0:30 */
+int got = fl_reader_read(r, pcm, 4096);                  /* frames; 0 at the end */
+fl_reader_close(r);
+
+fl_writer *w = fl_writer_open("out.flac", &info, NULL, &err);
+fl_writer_write(w, pcm, got);
+err = fl_writer_close(w);                                /* finishes the file */
+```
+
+Every path function has an `_io` variant with read/write/seek callbacks (`fl_io`), for
+memory, archives or network streams.
+
+FLAC frames, with the block sizes up to the caller (for example for streaming):
+
+```c
+fl_flac_frame_encoder *fe = fl_flac_frame_encoder_create(2, 44100, 16, NULL, &err);
+int bytes = fl_flac_frame_encode(fe, pcm, 4096, frame, sizeof(frame));
+fl_flac_frame_encoder_streaminfo(fe, info34);            /* 34 bytes for STREAMINFO */
+fl_flac_frame_decoder *fd = fl_flac_frame_decoder_create(info34, &err);
+got = fl_flac_frame_decode(fd, frame, bytes, pcm, 65535, &used);
+```
+
 Opus packets (48 kHz interleaved float):
 
 ```c
@@ -318,8 +348,8 @@ int got = fl_opus_ms_decode_float(dec, packet, len, out, 5760); /* len 0 = packe
 
 All functions return a negative `FL_ERR_*` code on error, and `fl_error_text()` gives a
 short description of it. Options outside their documented range give `FL_ERR_BAD_ARG`.
-The command line tool checks every value and names the option that is wrong. See the comments in `src/api.h` (the top of `flapus.h`) for the
-full API.
+The command line tool checks every value and names the option that is wrong. See the
+comments in `src/api.h` (the top of `flapus.h`) for the full API.
 
 Paths are UTF-8 on Windows: a path that is valid UTF-8 is opened with `_wfopen`, so
 file names outside the ANSI code page work. Any other path, such as an ANSI `argv`
@@ -418,7 +448,10 @@ w64devkit `bin` folder comes first in `PATH`).
   65535). FFmpeg decodes flapus FLAC files exactly as well.
 - `run_ref.sh` / `run_dec.sh` re-encode and decode the Opus test files (`mand*.opus`,
   `mand*.wav`), which must be in the folder above the project.
-- `test/api`: a two-file program using only the public API.
+- `test/api`: a two-file program using only the public API. It also checks that reading
+  in pieces, after seeks, from memory and through callbacks gives the same samples as
+  `fl_read_audio()`, that `fl_writer` and `fl_convert_io()` give the same files as the
+  path functions, and that FLAC frames round-trip.
 - `test/rcp_tables.c`: the `rcpps`/`rsqrtps` tables of `FLAPUS_PORTABLE_MATH`, on any
   CPU: both ends of every table block within Intel's bound (relative error at most
   1.5*2^-12), plus hardware values and special cases. The full check against the

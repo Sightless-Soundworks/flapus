@@ -48,6 +48,7 @@
 */
 #ifndef FLAPUS_H
 #define FLAPUS_H
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -150,11 +151,93 @@ typedef struct {
    int *samples;
 } fl_audio;
 
-/* Reads any input file into memory (opt: Opus decoding options, may be NULL). */
+/* Reads any input file into memory (opt: rate, bits, dither and as_float, may be NULL). */
 FLDEF int fl_read_audio(const char *path, const fl_options *opt, fl_audio *audio);
 /* Writes audio to a WAV, FLAC or Opus file (format from opt->format or the extension). */
 FLDEF int fl_write_audio(const char *path, const fl_audio *audio, const fl_options *opt);
 FLDEF void fl_audio_free(fl_audio *audio);
+
+/* ---- Custom input and output ----
+   Instead of a path, every function above and below can take an fl_io. read returns the
+   bytes read (0 at the end), write the bytes written (fewer means an error), and seek
+   moves to an absolute offset and returns 0, or -1 on failure. seek may be NULL:
+   - input that cannot seek works for every format, but Ogg input is then held in memory
+     and fl_reader_seek() can only move forward;
+   - output that cannot seek is written like stdout (see fl_convert_file).
+   The WAV writer also reads back output when data above 4 GB arrives that was not known
+   in advance; without read it then stops with FL_ERR_IO. Output functions need
+   opt->format. */
+typedef struct {
+   void *user;
+   size_t (*read)(void *user, void *buf, size_t n);
+   size_t (*write)(void *user, const void *buf, size_t n);
+   int (*seek)(void *user, long long offset);
+} fl_io;
+
+FLDEF int fl_convert_io(const fl_io *in, const fl_io *out, const fl_options *opt);
+FLDEF int fl_read_audio_io(const fl_io *in, const fl_options *opt, fl_audio *audio);
+FLDEF int fl_write_audio_io(const fl_io *out, const fl_audio *audio, const fl_options *opt);
+
+/* ---- Step-by-step decoding of any input (WAV, FLAC, Ogg FLAC, Ogg Opus) ---- */
+typedef struct fl_reader fl_reader;
+
+/* Stream format; frames is -1 if unknown and approximate for Opus. */
+typedef struct {
+   int channels, rate, bits, is_float;
+   long long frames;
+} fl_info;
+
+/* opt: rate, bits, dither and as_float, may be NULL. The memory variant reads data in
+   place, so it must stay valid until fl_reader_close(). */
+FLDEF fl_reader *fl_reader_open(const char *path, const fl_options *opt, int *error);
+FLDEF fl_reader *fl_reader_open_io(const fl_io *in, const fl_options *opt, int *error);
+FLDEF fl_reader *fl_reader_open_memory(const void *data, size_t size, const fl_options *opt, int *error);
+FLDEF void fl_reader_info(const fl_reader *r, fl_info *info);
+/* Vorbis comments "NAME=value" (FLAC pictures as METADATA_BLOCK_PICTURE). */
+FLDEF int fl_reader_tag_count(const fl_reader *r);
+FLDEF const char *fl_reader_tag(const fl_reader *r, int index);
+/* Reads up to max_frames frames into pcm (interleaved, like fl_audio). Returns the frames
+   read, 0 at the end, or an FL_ERR_* code. FL_ERR_CHECKSUM comes at the end of a FLAC
+   file whose MD5 differs (only if it was read from the start without seeking). */
+FLDEF int fl_reader_read(fl_reader *r, int *pcm, int max_frames);
+/* Moves to frame (at the output rate). WAV and FLAC are exact. Opus restarts decoding
+   80 ms before the target, as opusfile does, so the samples can differ slightly from a
+   decoding from the start. Input that cannot seek can only move forward. */
+FLDEF int fl_reader_seek(fl_reader *r, long long frame);
+FLDEF void fl_reader_close(fl_reader *r);
+
+/* ---- Step-by-step writing of WAV, FLAC or Opus ----
+   info: the format of the samples (frames may be -1, then a FLAC file gets no seek
+   table). fl_writer_close() finishes the file and returns FL_OK or the first error. For
+   files the output is renamed into place on success, as in fl_convert_file(). */
+typedef struct fl_writer fl_writer;
+FLDEF fl_writer *fl_writer_open(const char *path, const fl_info *info, const fl_options *opt, int *error);
+FLDEF fl_writer *fl_writer_open_io(const fl_io *out, const fl_info *info, const fl_options *opt, int *error);
+FLDEF int fl_writer_write(fl_writer *w, const int *pcm, int frames);
+FLDEF int fl_writer_close(fl_writer *w);
+
+/* ---- FLAC frames ----
+   The frame encoder codes each block as one frame with the full subframe search of
+   opt->flac_level (the block sizes are the caller's). Frames carry sample numbers, so the
+   sizes may vary. fl_flac_frame_encoder_streaminfo() gives the 34-byte STREAMINFO
+   contents for the frames so far (block and frame sizes, total and MD5). */
+typedef struct fl_flac_frame_encoder fl_flac_frame_encoder;
+FLDEF fl_flac_frame_encoder *fl_flac_frame_encoder_create(int channels, int rate, int bits, const fl_options *opt, int *error);
+/* frames: 16..65535 (1 is allowed for the last frame). Returns the frame length in bytes,
+   or an FL_ERR_* code (FL_ERR_BAD_ARG if max_bytes is too small: frames*channels*4+64
+   is always enough). */
+FLDEF int fl_flac_frame_encode(fl_flac_frame_encoder *enc, const int *pcm, int frames, unsigned char *out, int max_bytes);
+FLDEF void fl_flac_frame_encoder_streaminfo(const fl_flac_frame_encoder *enc, unsigned char info[34]);
+FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *enc);
+
+/* The frame decoder takes the STREAMINFO contents (34 bytes). fl_flac_frame_decode()
+   decodes the frame at the start of data into pcm (interleaved; max_frames holds the
+   largest block) and returns its sample count, with the frame length in *used, or
+   FL_ERR_BAD_FILE. */
+typedef struct fl_flac_frame_decoder fl_flac_frame_decoder;
+FLDEF fl_flac_frame_decoder *fl_flac_frame_decoder_create(const unsigned char info[34], int *error);
+FLDEF int fl_flac_frame_decode(fl_flac_frame_decoder *dec, const unsigned char *data, int len, int *pcm, int max_frames, int *used);
+FLDEF void fl_flac_frame_decoder_destroy(fl_flac_frame_decoder *dec);
 
 /* ---- Opus packet decoder ---- */
 typedef struct fl_opus_decoder fl_opus_decoder;
