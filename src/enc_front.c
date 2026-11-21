@@ -576,7 +576,7 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
       size_t tlen = 0;
       const char *vendor = "flapus (libopus 1.6.1 compatible)";
       unsigned char n4[4];
-      int ncom = 1, padded, i;
+      int ncom = 1, padded, pad, i;
       e->global_granule_offset = fl_msenc_lookahead(e->st);
       memcpy(head, "OpusHead", 8);
       head[8] = 1;
@@ -612,7 +612,8 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
       if (r128[0]) fl_put_comment(&tags, &tlen, r128);
       /* opusenc --padding: reserve at least that many bytes and fill up the last
          Ogg segment; with 0 the tags are written without any padding */
-      padded = opt->padding > 0 ? (int)((tlen+(size_t)opt->padding+255)/255*255-1) : (int)tlen;
+      pad = opt->padding;
+      padded = pad > 0 ? (int)((tlen+(size_t)pad+255)/255*255-1) : (int)tlen;
       tags = (unsigned char*)realloc(tags, padded);
       memset(tags+tlen, 0, padded-tlen);
       fl_oggp_commit(&e->ogg, tags, padded, 0, 0);

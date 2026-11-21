@@ -9,7 +9,7 @@ FLDEF void fl_options_init(fl_options *opt) {
    opt->frame_ms_x10 = 200;
    opt->vbr = 1;
    opt->quality = -1;
-   opt->padding = 512;
+   opt->flac_seektable = 1;
    opt->serialno = -1;
 }
 

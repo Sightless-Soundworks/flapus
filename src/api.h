@@ -102,6 +102,7 @@ typedef struct {
    int flac_level;     /* 0 (fastest) .. 8 (smallest); default 5 */
    int flac_lax;       /* 1 = allow streams outside the FLAC subset (LPC order 32 etc.) */
    int threads;        /* FLAC encoder threads: 1 (default), 0 = one per CPU; the output does not depend on it */
+   int flac_seektable; /* 1 = a seek point every 10 s (default), 0 = none */
    /* Opus output */
    int bitrate;        /* bits per second (0 = automatic: 64 kbps per stream + 32 kbps per coupled pair) */
    int complexity;     /* 0..10, default 10 */
@@ -114,7 +115,8 @@ typedef struct {
    int no_phase_inv;   /* 1 = disable intensity stereo phase inversion */
    int downmix;        /* 0 = auto (surround is downmixed below 16 kbps per channel), 1 = mono, 2 = stereo */
    const char *comment_options; /* value of the ENCODER_OPTIONS tag (NULL = none) */
-   int padding;        /* free bytes reserved after the Opus tags: 512 (default), 0 = none */
+   int padding;        /* free bytes after the tags for later editing (Opus: after OpusTags, FLAC: a
+                          PADDING block), 0 (default) = none */
    long long serialno; /* Ogg serial number of Opus output, 0..4294967295; -1 (default) = random */
    /* Progress during fl_convert_file (NULL = none). done: 0..1 (-1 if the length is unknown),
       ratio: output size / input PCM size so far (-1 for WAV output). Called with done = 1

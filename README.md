@@ -150,6 +150,9 @@ to recompress a FLAC file in place.
 - `--lax` allows streams outside the FLAC subset: LPC order up to 32 and blocks up to
   16384 samples. The files are valid FLAC and decode with libFLAC and FFmpeg, but some
   hardware players only support the subset.
+- `--no-seektable` leaves out the seek table (a point every 10 seconds by default).
+- `--padding` reserves 8192 free bytes for later tag edits, `--padding N` N bytes. By
+  default there is no padding.
 - `--threads N` sets the number of encoder threads. The default is 0, one per CPU (in
   the library, `threads` defaults to 1). The output does not depend on it.
 
@@ -176,8 +179,9 @@ Opus input)
 `--bitrate N` (kbit/s, default automatic), `--quality N` (0-10, default 6), `--vbr`,
 `--cvbr`, `--hard-cbr`, `--music`, `--speech`, `--comp N`, `--framesize N` (2.5 to
 120 ms), `--expect-loss N`, `--downmix-mono`, `--downmix-stereo`, `--no-phase-inv`,
-`--padding N` (free bytes after the tags, default 512, 0 = none) and `--serial N` (Ogg
-serial number, default random).
+`--padding` (512 free bytes after the tags for later tag edits, as opusenc reserves;
+`--padding N` for N bytes; by default none) and `--serial N` (Ogg serial number,
+default random).
 
 With a fixed `--serial N`, the output depends only on the input and the options: same
 input, same bytes, on the same kind of CPU.
@@ -232,7 +236,7 @@ libm's `sin`, `cos` and `log`, so their output can still depend on the CPU.
 ### FLAC compression
 
 The table compares file sizes with `flac -8 --no-padding --no-seektable` (flac 1.5.0) on
-30-second excerpts of music and speech:
+30-second excerpts of music and speech, both without padding and seek table:
 
 | Material | level 4 | level 5 (default) | level 8 | level 8 `--lax` |
 |----------|--------:|------------------:|--------:|----------------:|
@@ -262,9 +266,11 @@ within the subset there), and searches the block sizes on a coarser grid. At lev
 384 kHz material from the IETF FLAC test files encoded 7.7 times faster than with the
 fine grid, with 0.06 % smaller files.
 
-flapus also omits padding and seek tables, and writes a `VORBIS_COMMENT` block only
-when there are tags. That makes the files smaller than `flac` defaults by about 8 KB
-more.
+Like `flac`, flapus writes a seek table with a point every 10 seconds
+(`--no-seektable` leaves it out). Padding is off by default, so the file holds nothing
+but audio and metadata; `--padding` adds 8192 bytes, so tags and pictures can be added
+later without rewriting the whole file. A `VORBIS_COMMENT` block is written only when
+there are tags.
 
 ## Library use
 

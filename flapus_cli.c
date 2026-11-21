@@ -16,6 +16,9 @@ static void usage(FILE *f) {
       "  Use - for stdin or stdout (stdout needs --format).\n"
       "General:\n"
       "      --format F       output format: wav, flac or opus (overrides the extension)\n"
+      "      --padding [N]    free bytes after the tags, so tags can be edited later:\n"
+      "                       N, or without N 8192 for FLAC and 512 for Opus\n"
+      "      --no-padding     no free bytes (the default)\n"
       "  -f, --force          overwrite an existing output file\n"
       "  -s, --silent         no progress display\n"
       "  -V, --version        show the version and how this build was made\n"
@@ -25,6 +28,7 @@ static void usage(FILE *f) {
       "      --lax            allow streams outside the FLAC subset (even smaller, but\n"
       "                       not every hardware player supports them)\n"
       "      --threads N      encoder threads (default 0 = one per CPU)\n"
+      "      --no-seektable   no seek table (default: a seek point every 10 s)\n"
       "Sample format (WAV and FLAC output, and Opus from Opus):\n"
       "      --bits N         16, 24 or 32 (default: 16 from Opus, else the input's)\n"
       "      --float          32-bit float samples (WAV, or Opus from Opus)\n"
@@ -46,7 +50,7 @@ static void usage(FILE *f) {
       "      --downmix-mono   downmix to mono\n"
       "      --downmix-stereo downmix to stereo (if more than 2 channels)\n"
       "      --no-phase-inv   disable phase inversion for intensity stereo\n"
-      "      --padding N      free bytes after the tags (default 512, 0 = none)\n"
+
       "      --serial N       Ogg serial number (default: random)\n"
 #endif
       );
@@ -174,7 +178,7 @@ int main(int argc, char **argv) {
    fl_options opt;
    static char opts[256];
    progress_state ps;
-   int i, ret, last = argc-2, silent = 0, force = 0, delete_input = 0, to_stdout;
+   int i, ret, last = argc-2, silent = 0, force = 0, delete_input = 0, padding_on = 0, to_stdout;
    double d;
    if (argc == 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)) {
       version();
@@ -204,6 +208,15 @@ int main(int argc, char **argv) {
          takes = 0;
       } else if (strcmp(a, "--lax") == 0) {
          opt.flac_lax = 1;
+         takes = 0;
+      } else if (strcmp(a, "--no-seektable") == 0) {
+         opt.flac_seektable = 0;
+         takes = 0;
+      } else if (strcmp(a, "--no-padding") == 0) {
+         opt.padding = 0;
+         takes = 0;
+      } else if (strcmp(a, "--padding") == 0 && (!v || !*v || strspn(v, "0123456789") != strlen(v))) {
+         padding_on = 1;  /* without a number: the standard size */
          takes = 0;
       } else if (strcmp(a, "--no-dither") == 0) {
          opt.dither = 0;
@@ -276,7 +289,7 @@ int main(int argc, char **argv) {
       } else if (strcmp(a, "--expect-loss") == 0) {
          ok = get_int(a, v, 0, 100, &opt.expect_loss);
       } else if (strcmp(a, "--padding") == 0) {
-         ok = get_int(a, v, 0, 65536, &opt.padding);
+         ok = get_int(a, v, 0, 0xFFFFFF, &opt.padding);
       } else if (strcmp(a, "--serial") == 0) {
          if ((ok = get_num(a, v, 0, 4294967295.0, &d)) && d != floor(d)) {
             fprintf(stderr, "Error: --serial must be a whole number\n");
@@ -296,6 +309,7 @@ int main(int argc, char **argv) {
       fprintf(stderr, "Error: --bitrate and --quality cannot be combined\n");
       return 1;
    }
+   if (padding_on) opt.padding = (opt.format ? opt.format : fl_format_from_name(argv[argc-1])) == FL_FORMAT_OPUS ? 512 : 8192;
    to_stdout = strcmp(argv[argc-1], "-") == 0;
    if (to_stdout && !opt.format) {
       fprintf(stderr, "Error: output to stdout needs --format\n");

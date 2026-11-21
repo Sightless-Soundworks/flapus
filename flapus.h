@@ -102,6 +102,7 @@ typedef struct {
    int flac_level;     /* 0 (fastest) .. 8 (smallest); default 5 */
    int flac_lax;       /* 1 = allow streams outside the FLAC subset (LPC order 32 etc.) */
    int threads;        /* FLAC encoder threads: 1 (default), 0 = one per CPU; the output does not depend on it */
+   int flac_seektable; /* 1 = a seek point every 10 s (default), 0 = none */
    /* Opus output */
    int bitrate;        /* bits per second (0 = automatic: 64 kbps per stream + 32 kbps per coupled pair) */
    int complexity;     /* 0..10, default 10 */
@@ -114,7 +115,8 @@ typedef struct {
    int no_phase_inv;   /* 1 = disable intensity stereo phase inversion */
    int downmix;        /* 0 = auto (surround is downmixed below 16 kbps per channel), 1 = mono, 2 = stereo */
    const char *comment_options; /* value of the ENCODER_OPTIONS tag (NULL = none) */
-   int padding;        /* free bytes reserved after the Opus tags: 512 (default), 0 = none */
+   int padding;        /* free bytes after the tags for later editing (Opus: after OpusTags, FLAC: a
+                          PADDING block), 0 (default) = none */
    long long serialno; /* Ogg serial number of Opus output, 0..4294967295; -1 (default) = random */
    /* Progress during fl_convert_file (NULL = none). done: 0..1 (-1 if the length is unknown),
       ratio: output size / input PCM size so far (-1 for WAV output). Called with done = 1
@@ -7526,7 +7528,8 @@ static int fl_check_options(const fl_options *o) {
    if (o->quality != -1 && !(o->quality >= 0 && o->quality <= 10)) return FL_ERR_BAD_ARG;
    if (o->quality >= 0 && o->bitrate > 0) return FL_ERR_BAD_ARG;
    if (o->signal < 0 || o->signal > 2 || o->expect_loss < 0 || o->expect_loss > 100) return FL_ERR_BAD_ARG;
-   if (o->downmix < 0 || o->downmix > 2 || o->padding < 0 || o->padding > 65536) return FL_ERR_BAD_ARG;
+   if (o->downmix < 0 || o->downmix > 2 || o->padding < 0 || o->padding > 0xFFFFFF) return FL_ERR_BAD_ARG;
+   if (o->flac_seektable & ~1) return FL_ERR_BAD_ARG;
    if (o->serialno < -1 || o->serialno > 4294967295LL) return FL_ERR_BAD_ARG;
    return FL_OK;
 }
@@ -10834,6 +10837,11 @@ typedef struct {
    fl_prefix pf[8];
    fl_frame_job *jobs;
    int njobs, seg_len;
+   int padding, want_seek;
+   int nseek, seek_k, seek_fill;  /* seek points (one per 10 s), next target, points known */
+   fl_u64 *seek;          /* per point: first sample, frame offset and samples of its frame */
+   fl_u64 frame_bytes;    /* bytes of the frames so far */
+   long seek_pos;         /* file offset of the SEEKTABLE points */
 } fl_flac_sink;
 
 static void fl_flac_streaminfo(fl_flac_sink *s, unsigned char *p, fl_u64 total, const unsigned char *md5) {
@@ -10876,27 +10884,77 @@ static int fl_flac_tag_kind(const fl_format *f, const char *t) {
 
 /* Writes the metadata blocks: STREAMINFO (patched at the end), VORBIS_COMMENT (only if
    there are tags), PICTURE and other kept blocks. */
+/* Writes a metadata block header. */
+static void fl_block_header(fl_flac_sink *s, int type, int last, fl_u32 len) {
+   unsigned char h4[4];
+   h4[0] = (unsigned char)(type|(last ? 0x80 : 0));
+   fl_put_be24(h4+1, len);
+   fwrite(h4, 1, 4, s->f);
+   s->base.out_bytes += 4+len;
+}
+
+/* Metadata: STREAMINFO, SEEKTABLE, VORBIS_COMMENT, PICTURE, kept APPLICATION/CUESHEET
+   blocks, PADDING. */
 static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
-   unsigned char hdr[4+4+34], zero[16];
-   int i, npic = 0, ntag = 0, nblk = f->nblocks, last;
+   unsigned char hdr[4+4+34], zero[16], **pics = NULL;
+   int i, npic = 0, ntag = 0, nblk = f->nblocks, *plen = NULL, ret = FL_OK;
    char mask_tag[64];
    mask_tag[0] = 0;
    if (f->channel_mask) sprintf(mask_tag, "WAVEFORMATEXTENSIBLE_CHANNEL_MASK=0x%04X", (unsigned)f->channel_mask);
-   for (i = 0; i < f->ntags; i++) {
-      int k = fl_flac_tag_kind(f, f->tags[i]);
-      npic += k == 2;
-      ntag += k == 1;
-   }
+   for (i = 0; i < f->ntags; i++) ntag += fl_flac_tag_kind(f, f->tags[i]) == 1;
    if (mask_tag[0]) ntag++;
+   /* pictures that decode to a valid block */
+   pics = (unsigned char**)calloc(f->ntags+1, sizeof(*pics));
+   plen = (int*)calloc(f->ntags+1, sizeof(int));
+   if (!pics || !plen) {
+      ret = FL_ERR_ALLOC;
+      goto done;
+   }
+   for (i = 0; i < f->ntags; i++)
+      if (strncmp(f->tags[i], "METADATA_BLOCK_PICTURE=", 23) == 0) {
+         const char *b64 = f->tags[i]+23;
+         int l = (int)strlen(b64), got;
+         if (!(pics[npic] = (unsigned char*)malloc(l/4*3+3))) {
+            ret = FL_ERR_ALLOC;
+            goto done;
+         }
+         got = fl_base64_decode(b64, l, pics[npic]);
+         if (got > 0 && got < (1<<24)) plen[npic++] = got;
+         else {
+            free(pics[npic]);
+            pics[npic] = NULL;
+         }
+      }
+   /* a seek point every 10 s, filled in at the end (needs the length and a seekable file) */
+   if (s->want_seek && s->f != stdout && f->frames > 0) {
+      fl_u64 every = (fl_u64)s->rate*10;
+      fl_u64 n = ((fl_u64)f->frames-1)/every+1;
+      s->nseek = (int)FL_MIN(n, (1<<24)/18-1);
+      if (!(s->seek = (fl_u64*)calloc((size_t)s->nseek*3, sizeof(fl_u64)))) {
+         ret = FL_ERR_ALLOC;
+         goto done;
+      }
+   }
    memcpy(hdr, "fLaC", 4);
-   last = !ntag && !npic && !nblk;
-   hdr[4] = (unsigned char)(last ? 0x80 : 0);
+   hdr[4] = (unsigned char)(!s->nseek && !ntag && !npic && !nblk && !s->padding ? 0x80 : 0);
    fl_put_be24(hdr+5, 34);
    memset(zero, 0, 16);
    fl_flac_streaminfo(s, hdr+8, s->f == stdout && fl_exact_frames(f) > 0 ? (fl_u64)f->frames : 0, zero);
-   if (fwrite(hdr, 1, sizeof(hdr), s->f) != sizeof(hdr)) return FL_ERR_IO;
+   if (fwrite(hdr, 1, sizeof(hdr), s->f) != sizeof(hdr)) {
+      ret = FL_ERR_IO;
+      goto done;
+   }
    s->info_pos = 8;
    s->base.out_bytes = sizeof(hdr);
+   if (s->nseek) {
+      /* placeholders for now */
+      unsigned char pt[18];
+      memset(pt, 0, 18);
+      memset(pt, 0xFF, 8);
+      fl_block_header(s, 3, !ntag && !npic && !nblk && !s->padding, (fl_u32)s->nseek*18);
+      s->seek_pos = (long)s->base.out_bytes-s->nseek*18;
+      for (i = 0; i < s->nseek; i++) fwrite(pt, 1, 18, s->f);
+   }
    if (ntag) {
       const char *vendor = "flapus";
       unsigned char n4[4];
@@ -10904,11 +10962,7 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
       for (i = 0; i < f->ntags; i++)
          if (fl_flac_tag_kind(f, f->tags[i]) == 1) len += 4+(fl_u32)strlen(f->tags[i]);
       if (mask_tag[0]) len += 4+(fl_u32)strlen(mask_tag);
-      last = !npic && !nblk;
-      n4[0] = (unsigned char)(4|(last ? 0x80 : 0));
-      fl_put_be24(n4+1, len);
-      s->base.out_bytes += 4+len;
-      fwrite(n4, 1, 4, s->f);
+      fl_block_header(s, 4, !npic && !nblk && !s->padding, len);
       fl_put_le32(n4, (fl_u32)strlen(vendor));
       fwrite(n4, 1, 4, s->f);
       fwrite(vendor, 1, strlen(vendor), s->f);
@@ -10926,32 +10980,31 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
          fwrite(mask_tag, 1, strlen(mask_tag), s->f);
       }
    }
-   for (i = 0; i < f->ntags; i++)
-      if (strncmp(f->tags[i], "METADATA_BLOCK_PICTURE=", 23) == 0) {
-         const char *b64 = f->tags[i]+23;
-         int l = (int)strlen(b64), got;
-         unsigned char *pic = (unsigned char*)malloc(l/4*3+3), h4[4];
-         if (!pic) return FL_ERR_ALLOC;
-         got = fl_base64_decode(b64, l, pic);
-         npic--;
-         if (got > 0 && got < (1<<24)) {
-            h4[0] = (unsigned char)(6|(!npic && !nblk ? 0x80 : 0));
-            fl_put_be24(h4+1, (fl_u32)got);
-            fwrite(h4, 1, 4, s->f);
-            fwrite(pic, 1, got, s->f);
-            s->base.out_bytes += 4+got;
-         }
-         free(pic);
-      }
-   for (i = 0; i < nblk; i++) {
-      unsigned char h4[4];
-      h4[0] = (unsigned char)(f->blocks[i].type|(i == nblk-1 ? 0x80 : 0));
-      fl_put_be24(h4+1, (fl_u32)f->blocks[i].len);
-      fwrite(h4, 1, 4, s->f);
-      fwrite(f->blocks[i].data, 1, f->blocks[i].len, s->f);
-      s->base.out_bytes += 4+f->blocks[i].len;
+   for (i = 0; i < npic; i++) {
+      fl_block_header(s, 6, i == npic-1 && !nblk && !s->padding, (fl_u32)plen[i]);
+      fwrite(pics[i], 1, plen[i], s->f);
    }
-   return ferror(s->f) ? FL_ERR_IO : FL_OK;
+   for (i = 0; i < nblk; i++) {
+      fl_block_header(s, f->blocks[i].type, i == nblk-1 && !s->padding, (fl_u32)f->blocks[i].len);
+      fwrite(f->blocks[i].data, 1, f->blocks[i].len, s->f);
+   }
+   if (s->padding) {
+      unsigned char z[256];
+      int left = s->padding;
+      memset(z, 0, sizeof(z));
+      fl_block_header(s, 1, 1, (fl_u32)s->padding);
+      while (left > 0) {
+         fwrite(z, 1, FL_MIN(left, 256), s->f);
+         left -= 256;
+      }
+   }
+   ret = ferror(s->f) ? FL_ERR_IO : FL_OK;
+done:
+   if (pics)
+      for (i = 0; i < npic; i++) free(pics[i]);
+   free(pics);
+   free(plen);
+   return ret;
 }
 
 static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
@@ -11289,6 +11342,19 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
       fl_frame_job *job = &s->jobs[j];
       fl_u32 flen = (fl_u32)job->bytes;
       if ((ret = job->err) != FL_OK) break;
+      if (s->seek_k < s->nseek) {
+         /* the frame holding the next target (every 10 s) becomes a seek point; further
+            targets in the same frame leave placeholders at the end of the table */
+         fl_u64 first = s->sample_pos+job->off, every = (fl_u64)s->rate*10;
+         if ((fl_u64)s->seek_k*every < first+job->len) {
+            fl_u64 *pt = s->seek+3*s->seek_fill++;
+            pt[0] = first;
+            pt[1] = s->frame_bytes;
+            pt[2] = (fl_u64)job->len;
+            while (s->seek_k < s->nseek && (fl_u64)s->seek_k*every < first+job->len) s->seek_k++;
+         }
+      }
+      s->frame_bytes += flen;
       if (fwrite(s->wk[job->worker].bw.buf+job->pos, 1, flen, s->f) != flen) ret = FL_ERR_IO;
       s->base.out_bytes += flen;
       if (flen < s->min_frame) s->min_frame = flen;
@@ -11347,6 +11413,23 @@ static int fl_flacenc_finish(fl_sink *sk) {
    }
    fl_flac_streaminfo(s, info, s->sample_pos, md5);
    if (fseek(s->f, s->info_pos, SEEK_SET) != 0 || fwrite(info, 1, 34, s->f) != 34) return FL_ERR_IO;
+   if (s->nseek) {
+      unsigned char pt[18];
+      int i, k;
+      if (fseek(s->f, s->seek_pos, SEEK_SET) != 0) return FL_ERR_IO;
+      for (i = 0; i < s->nseek; i++) {
+         memset(pt, 0, 18);
+         if (i < s->seek_fill) {
+            for (k = 0; k < 8; k++) {
+               pt[k] = (unsigned char)(s->seek[3*i]>>(56-8*k));
+               pt[8+k] = (unsigned char)(s->seek[3*i+1]>>(56-8*k));
+            }
+            pt[16] = (unsigned char)(s->seek[3*i+2]>>8);
+            pt[17] = (unsigned char)s->seek[3*i+2];
+         } else memset(pt, 0xFF, 8);
+         if (fwrite(pt, 1, 18, s->f) != 18) return FL_ERR_IO;
+      }
+   }
 done:
    ret = fl_fclose(s->f) != 0 ? FL_ERR_IO : FL_OK;
    s->f = NULL;
@@ -11366,6 +11449,7 @@ static void fl_flacenc_destroy(fl_sink *sk) {
    free(s->fres);
    free(s->side);
    free(s->side_bad);
+   free(s->seek);
    free(s->mid);
    free(s->cost);
    free(s->dp_cost);
@@ -11391,6 +11475,8 @@ static fl_sink *fl_flac_sink_create(const char *path, const fl_options *opt, int
    /* the configuration is completed in start(), when the rate is known */
    s->level = opt->flac_level;
    s->lax = opt->flac_lax;
+   s->padding = opt->padding;
+   s->want_seek = opt->flac_seektable;
    s->nthreads = opt->threads > 0 ? opt->threads : opt->threads == 0 ? fl_cpu_count() : 1;
    if (s->nthreads > FL_MAX_THREADS) s->nthreads = FL_MAX_THREADS;
    if (s->nthreads < 1) s->nthreads = 1;
@@ -16373,7 +16459,7 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
       size_t tlen = 0;
       const char *vendor = "flapus (libopus 1.6.1 compatible)";
       unsigned char n4[4];
-      int ncom = 1, padded, i;
+      int ncom = 1, padded, pad, i;
       e->global_granule_offset = fl_msenc_lookahead(e->st);
       memcpy(head, "OpusHead", 8);
       head[8] = 1;
@@ -16409,7 +16495,8 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
       if (r128[0]) fl_put_comment(&tags, &tlen, r128);
       /* opusenc --padding: reserve at least that many bytes and fill up the last
          Ogg segment; with 0 the tags are written without any padding */
-      padded = opt->padding > 0 ? (int)((tlen+(size_t)opt->padding+255)/255*255-1) : (int)tlen;
+      pad = opt->padding;
+      padded = pad > 0 ? (int)((tlen+(size_t)pad+255)/255*255-1) : (int)tlen;
       tags = (unsigned char*)realloc(tags, padded);
       memset(tags+tlen, 0, padded-tlen);
       fl_oggp_commit(&e->ogg, tags, padded, 0, 0);
@@ -23368,7 +23455,7 @@ FLDEF void fl_options_init(fl_options *opt) {
    opt->frame_ms_x10 = 200;
    opt->vbr = 1;
    opt->quality = -1;
-   opt->padding = 512;
+   opt->flac_seektable = 1;
    opt->serialno = -1;
 }
 

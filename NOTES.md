@@ -184,9 +184,11 @@ Speed and output:
 
 ### File layout
 
-- Metadata blocks: STREAMINFO (patched at the end with sizes, total and MD5), then
-  VORBIS_COMMENT if there are tags, then PICTURE, then kept APPLICATION/CUESHEET blocks.
-- No padding and no seek table.
+- Metadata blocks: STREAMINFO (patched at the end with sizes, total and MD5), SEEKTABLE,
+  VORBIS_COMMENT if there are tags, PICTURE, kept APPLICATION/CUESHEET blocks, PADDING.
+- The seek table needs the length in advance and a seekable output. It has one
+  placeholder per 10 s; when a frame is written that holds the next target, it becomes a
+  seek point. Targets that fall into an earlier point's frame stay placeholders.
 - Frame headers use the sample number (variable blocking) and explicit rate and bit
   depth codes (subset).
 
