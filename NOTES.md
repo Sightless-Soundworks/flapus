@@ -163,7 +163,9 @@ lengths up to the maximum) was 99 % of the encoding time, so the search has two 
 
 - First a sparse set: blocks of 2^a units from every 2^(a-1)-th unit, blocks of 3*2^a
   units from every 2^a-th unit, and the longest blocks. That is about 5 blocks per unit
-  instead of 18, and the long ones, which cost the most, are the rarest.
+  instead of 18, and the long ones, which cost the most, are the rarest. With a
+  refinement to follow, the longest blocks (18 units at 4608 samples) start only at
+  every sixth unit: 4-5 % faster at level 5, 0.005 % larger files.
 - Then, with `refine` r, every block whose start and end both lie within r units of a
   boundary of the first result, and the dynamic programming once more.
 

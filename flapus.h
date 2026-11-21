@@ -13019,10 +13019,12 @@ static fl_u64 fl_block_cost(fl_flac_sink *s, fl_worker *wk, int off, int bs) {
 }
 
 /* Blocks of the first search: k = 2^a units from every k/2-th unit, k = 3*2^a units from
-   every 2^a-th unit, and the longest blocks (K units) from every (K&-K)-th unit. */
-static int fl_dp_first(int K, int i, int k) {
+   every 2^a-th unit, and the longest blocks (K units) from every (K&-K)-th unit. With a
+   refinement to follow and 3 dividing K, every K/3-th is enough (they still chain). */
+static int fl_dp_first(int K, int i, int k, int refine) {
    int low = k&-k;
    if (k != K && k != low && k != 3*low) return 0;
+   if (k == K && refine && K%3 == 0) return i%(K/3) == 0;
    return i%(k == low && k > 1 ? k/2 : low) == 0;
 }
 
@@ -13124,7 +13126,7 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
          for (k = 1; k <= K && i+k <= M; k++) {
             int x = i*K+k-1;
             s->cost[x] = ~(fl_u64)0;
-            if (fl_dp_first(K, i, k) || i+k == M) s->cand[s->ncand++] = x;
+            if (fl_dp_first(K, i, k, r) || i+k == M) s->cand[s->ncand++] = x;
          }
       fl_parallel(fl_cost_job, s, FL_MIN(s->nthreads, s->ncand));
       fl_dp_path(s, M, K);
