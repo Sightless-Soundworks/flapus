@@ -239,7 +239,8 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *enc);
 /* The frame decoder takes the STREAMINFO contents (34 bytes). fl_flac_frame_decode()
    decodes the frame at the start of data into pcm (interleaved; max_frames holds the
    largest block) and returns its sample count, with the frame length in *used, or
-   FL_ERR_BAD_FILE. */
+   FL_ERR_BAD_FILE (FL_ERR_UNSUPPORTED for a frame with another channel count, bit depth
+   or rate than the STREAMINFO). */
 typedef struct fl_flac_frame_decoder fl_flac_frame_decoder;
 FLDEF fl_flac_frame_decoder *fl_flac_frame_decoder_create(const unsigned char info[34], int *error);
 FLDEF int fl_flac_frame_decode(fl_flac_frame_decoder *dec, const unsigned char *data, int len, int *pcm, int max_frames, int *used);

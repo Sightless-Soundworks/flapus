@@ -381,7 +381,9 @@ line.
 - **FLAC**: any bit depth from 4 to 32 bits, 1-8 channels, fixed or variable block
   size. Ogg FLAC and leading ID3v2 tags are accepted. The MD5 is checked, and a
   mismatch is reported as `FL_ERR_CHECKSUM`. A file that ends before the length in its
-  STREAMINFO is reported as damaged (`FL_ERR_BAD_FILE`), also without an MD5.
+  STREAMINFO is reported as damaged (`FL_ERR_BAD_FILE`), also without an MD5. Streams
+  whose channel count, bit depth or sample rate changes between frames are not
+  supported (`FL_ERR_UNSUPPORTED`).
 - **Ogg Opus**: channel mapping families 0, 1, 2 and 255, chained and multiplexed
   files.
 - Ogg files are read page by page, so memory use does not grow with the file size (from

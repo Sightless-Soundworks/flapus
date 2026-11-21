@@ -239,7 +239,8 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *enc);
 /* The frame decoder takes the STREAMINFO contents (34 bytes). fl_flac_frame_decode()
    decodes the frame at the start of data into pcm (interleaved; max_frames holds the
    largest block) and returns its sample count, with the frame length in *used, or
-   FL_ERR_BAD_FILE. */
+   FL_ERR_BAD_FILE (FL_ERR_UNSUPPORTED for a frame with another channel count, bit depth
+   or rate than the STREAMINFO). */
 typedef struct fl_flac_frame_decoder fl_flac_frame_decoder;
 FLDEF fl_flac_frame_decoder *fl_flac_frame_decoder_create(const unsigned char info[34], int *error);
 FLDEF int fl_flac_frame_decode(fl_flac_frame_decoder *dec, const unsigned char *data, int len, int *pcm, int max_frames, int *used);
@@ -9784,7 +9785,8 @@ typedef struct {
    fl_u64 number;
 } fl_frame_hdr;
 
-/* Parses a frame header at p. Returns its length, 0 if it is not a valid header. */
+/* Parses a frame header at p. Returns its length, 0 if it is not a valid header, -1 if it
+   is valid but has another channel count, bit depth or rate than STREAMINFO. */
 static int fl_flac_frame_header(const unsigned char *p, size_t avail, const fl_streaminfo *si, fl_frame_hdr *h) {
    static const int rates[12] = {0, 88200, 176400, 192000, 8000, 16000, 22050, 24000, 32000, 44100, 48000, 96000};
    static const int sizes[8] = {0, 8, 12, 0, 16, 20, 24, 32};
@@ -9828,7 +9830,7 @@ static int fl_flac_frame_header(const unsigned char *p, size_t avail, const fl_s
    h->channels = ch < 8 ? ch+1 : 2;
    h->bits = ss ? sizes[ss] : si->bits;
    if (fl_crc8(p, pos) != p[pos]) return 0;
-   if (h->channels != si->channels || h->bits != si->bits) return 0;
+   if (h->channels != si->channels || h->bits != si->bits || h->rate != si->rate) return -1;
    return pos+1;
 }
 
@@ -9923,6 +9925,7 @@ typedef struct {
    fl_i64 *ch[8];
    fl_i32 *out;
    fl_u64 first;  /* first sample of the last decoded frame */
+   int changed;   /* the last frame tried changes the stream format (not supported) */
 } fl_flac_dec;
 
 static void fl_flac_dec_free(fl_flac_dec *d) {
@@ -9945,9 +9948,11 @@ static int fl_flac_dec_alloc(fl_flac_dec *d, int cap) {
 static size_t fl_flac_decode_frame(fl_flac_dec *d, const unsigned char *p, size_t avail, int *n) {
    fl_frame_hdr h;
    fl_br b;
-   int hl = fl_flac_frame_header(p, avail, &d->si, &h), c, i, C = h.channels, bs;
+   int hl = fl_flac_frame_header(p, avail, &d->si, &h), c, i, C, bs;
    size_t len;
-   if (hl == 0 || h.blocksize > d->cap) return 0;
+   d->changed = hl < 0;
+   if (hl <= 0 || h.blocksize > d->cap) return 0;
+   C = h.channels;
    bs = h.blocksize;
    fl_br_init(&b, p+hl, avail-hl);
    for (c = 0; c < C; c++) {
@@ -10075,6 +10080,7 @@ static int fl_flac_step(fl_source *src, fl_sink *sink) {
       return 0;
    }
    used = fl_flac_decode_frame(&s->d, in->buf+in->pos, in->len-in->pos, &n);
+   if (used == 0 && s->d.changed) return FL_ERR_UNSUPPORTED;
    if (used == 0) {
       /* not a frame: trailing junk (tags) is ignored, a valid frame later means damage */
       size_t k;
@@ -10181,7 +10187,7 @@ static int fl_oggflac_step(fl_source *src, fl_sink *sink) {
          if ((ret = fl_flac_metadata(&s->base.fmt, &s->d.si, p[0]&127, p+4, len-4)) != FL_OK) return ret;
          continue;
       }
-      if (fl_flac_decode_frame(&s->d, p, len, &n) == 0) return FL_ERR_BAD_FILE;
+      if (fl_flac_decode_frame(&s->d, p, len, &n) == 0) return s->d.changed ? FL_ERR_UNSUPPORTED : FL_ERR_BAD_FILE;
       if ((ret = fl_flac_frame_out(s, sink, n)) != FL_OK) return ret;
    }
    fl_ogg_compact(q);
@@ -10311,7 +10317,7 @@ FLDEF int fl_flac_frame_decode(fl_flac_frame_decoder *dec, const unsigned char *
    int n;
    size_t k;
    if (!data || len <= 0 || !pcm) return FL_ERR_BAD_ARG;
-   if (!(k = fl_flac_decode_frame(&dec->d, data, (size_t)len, &n))) return FL_ERR_BAD_FILE;
+   if (!(k = fl_flac_decode_frame(&dec->d, data, (size_t)len, &n))) return dec->d.changed ? FL_ERR_UNSUPPORTED : FL_ERR_BAD_FILE;
    if (n > max_frames) return FL_ERR_BAD_ARG;
    memcpy(pcm, dec->d.out, sizeof(fl_i32)*n*dec->d.si.channels);
    if (used) *used = (int)k;
