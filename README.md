@@ -226,34 +226,40 @@ complexity 10, one core of an x86-64 server, GCC 13 `-O2`):
 
 ### FLAC compression
 
-The table compares file sizes with `flac -8 --no-padding --no-seektable` (flac 1.5.0) on
-30-second excerpts of music and speech, both without padding and seek table:
+The table compares file sizes with `flac -8 --no-padding --no-seektable` (flac 1.4.3),
+both without padding and seek table. "CD music" is 100 seconds of 16-bit stereo music;
+"test corpus" is 190 seconds of music and test signals, 8-24 bits, mono to 6 channels,
+44.1-96 kHz.
 
 | Material | level 4 | level 5 (default) | level 8 | level 8 `--lax` |
 |----------|--------:|------------------:|--------:|----------------:|
-| music, 24-bit | -1.31 % | -1.42 % | -1.48 % | -3.13 % |
-| music, 16-bit | -0.79 % | -0.83 % | -0.87 % | -3.60 % |
-| music, 16-bit | -0.54 % | -0.57 % | -0.59 % | -2.15 % |
-| drums, 24-bit | -1.27 % | -1.29 % | -1.33 % | -3.01 % |
-| vocals, 16-bit | -1.40 % | -1.45 % | -1.51 % | -3.41 % |
-| speech, 16-bit | -1.63 % | -1.85 % | -1.91 % | -7.10 % |
+| CD music | -0.45 % | -0.45 % | -0.50 % | -3.49 % |
+| test corpus | -2.54 % | -2.59 % | -2.71 % | -5.31 % |
 
-The table below shows encoding speed for 16-bit stereo music, as multiples of real time,
-on a 2-core Xeon at 2.1 GHz. The command line tool uses every CPU by default.
+The table below shows encoding speed for the CD music, as multiples of real time, on a
+2-core Xeon at 2.1 GHz. The command line tool uses every CPU by default. flac 1.4.3
+encodes the same music at 214x (`-8`) and 507x (`-5`) with one thread.
 
 | Level | 1 thread (`--threads 1`) | 2 threads |
 |-------|-------------------------:|----------:|
-| 3 | 11.6x | 19.7x |
-| 4 | 5.5x | 8.4x |
-| 5 (default) | 2.0x | 3.7x |
-| 8 | 0.56x | 1.0x |
+| 0 | 131x | 186x |
+| 2 | 55x | 62x |
+| 3 | 25x | 35x |
+| 5 (default) | 19x | 29x |
+| 8 | 3.8x | 7.3x |
 
-From level 5 to 8 the files shrink by only about 0.05 %, at less than a third of the speed.
-Use `--level 8` when the last bytes matter more than time.
+Level 2 is already 0.26 % smaller than `flac -8` on the CD music. From level 5 to 8 the
+files shrink by about 0.1 %, at a fifth of the speed. Use `--level 8` when the last
+bytes matter more than time.
+
+flapus is slower than flac mainly because it searches more: variable block sizes (each
+stretch of audio is costed in several block lengths before it is encoded) and every
+coefficient precision for the best predictor. The block size search alone gives about
+0.4-1 %.
 
 Above 48 kHz the encoder uses LPC orders up to 32 and blocks up to 16384 samples (both
 within the subset there), and searches the block sizes on a coarser grid. At level 5 a
-96 kHz 24-bit stereo file then encodes at about 0.8x real time with one thread; 96 to
+96 kHz 24-bit stereo file then encodes at about 2.4x real time with one thread; 96 to
 384 kHz material from the IETF FLAC test files encoded 7.7 times faster than with the
 fine grid, with 0.06 % smaller files.
 

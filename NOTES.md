@@ -106,8 +106,13 @@ frame again before it is written, and any mismatch aborts with `FL_ERR_INTERNAL`
 Candidates:
 
 - constant, verbatim, wasted bits, and fixed predictors of order 0-4;
-- LPC from windowed autocorrelation and Levinson-Durbin, using libFLAC's tukey(0.5),
-  partial_tukey(2) and punchout_tukey(3) shapes, plus welch and other tukeys;
+- LPC from windowed autocorrelation and Levinson-Durbin. Level 0 uses tukey(0.5); the
+  other levels use the windows of flac's subdivide_tukey(N) (N = 2-5): tukey(0.5/N) over
+  the block, each half, and for each d = 3..N each d-th of the block with the same tapers,
+  plus the block without that d-th. As in libFLAC, "without" costs nothing: its
+  autocorrelation is the whole block's minus the part's. So the 17 windows of N = 4 cost
+  about four autocorrelations of the block. Each window gives the order (or the 3 orders)
+  with the lowest estimate from the prediction error;
 - LPC from the covariance method (exact least squares; all orders are solved from one
   matrix built with the shift recursion).
 
@@ -115,7 +120,8 @@ Refinements, applied to the best candidate:
 
 - **Precision search**: all coefficient precisions within libFLAC's 32-bit decoding
   rule `prec <= 32-bps-log2(order)` for 17 bits or less. Quantization uses libFLAC's
-  error feedback.
+  error feedback. The default precision is libFLAC's: by block size, and 13-15 above
+  17 bits.
 - **IRLS**: the weights are `1/(|e|*mean|e| of the neighbourhood)`. For Laplacian
   residuals within Rice partitions this approximates minimizing the Rice cost.
 - **Hill climb**: ±1 on each quantized coefficient, evaluated incrementally (O(n) per
@@ -138,24 +144,58 @@ Arithmetic:
 
 ### Stereo
 
-All four channel assignments are searched: left/right, left/side, side/right,
-mid/side. With 32-bit audio the side channel has 33 bits; the samples are kept in 32
-bits, so blocks where the side does not fit there are coded as left/right.
+All four channel assignments are searched: left/right, left/side, side/right, mid/side
+(levels 1-7: only the one the quick estimate picks, see below). With 32-bit audio the
+side channel has 33 bits; the samples are kept in 32 bits, so blocks where the side does
+not fit there are coded as left/right.
 
 ### Block sizes (`fl_flac_process`)
 
 The input is processed in segments of 65536 samples. Within a segment, dynamic
 programming over a grid of `unit` samples finds the cheapest sequence of blocks, which
-gives a variable block size stream. The block cost is either:
+gives a variable block size stream. Costing every block on the grid (all starts, all
+lengths up to the maximum) was 99 % of the encoding time, so the search has two passes:
 
-- level 3: rectangular autocorrelation from prefix sums plus one LPC trial; or
-- levels 4-8: a light subframe search with estimated sizes.
+- First a sparse set: blocks of 2^a units from every 2^(a-1)-th unit, blocks of 3*2^a
+  units from every 2^a-th unit, and the longest blocks. That is about 5 blocks per unit
+  instead of 18, and the long ones, which cost the most, are the rarest.
+- Then, with `refine` r, every block whose start and end both lie within r units of a
+  boundary of the first result, and the dynamic programming once more.
 
-Some measurements on the test corpus, in total size:
+With the quick estimate the size stayed within 0.01 % of the full set; with the light
+search it grew by 0.07 %, and the search was 3 times faster.
 
-- The light search costs about 0.25 % less than the quick estimate.
-- Variable block sizes save about 0.4-0.7 % against fixed 4096.
-- A finer grid (128 instead of 256) saves about 0.03 %.
+The block cost is either:
+
+- the quick estimate (levels 2-8): least-squares LPC (covariance method) from prefix
+  sums of the autocorrelation products, one order, one quantization, plus the order 2
+  fixed residual from prefix sums of its Rice values; or
+- a light subframe search with estimated sizes (`--lax` and above 48 kHz),
+  whose fixed residuals also come from prefix sums.
+
+The quick estimate first used the autocorrelation method on the rectangular prefix sums.
+Without a window, its coefficients were poor on music with a steep spectrum, and the
+estimates were up to 30 % above the real sizes; least squares fixed most of that. It
+also needs the wasted bits, or blocks with more wasted bits look as expensive as the
+others. Above
+48 kHz (orders up to 32) and with `--lax` (blocks up to 16384) it still misjudges blocks,
+so those use the light search at every level.
+
+Stereo with `one_mode` (levels 1-7): the quick estimate picks one of the four channel
+assignments and only its two channels get the full search. The full search of all four
+was half the time of a frame; the files grow by about 0.02 %.
+
+Some measurements on the test corpus (190 s), in total size and one thread:
+
+- Level 5: 0.04 % smaller than the previous level 5 (all blocks, light search, 3
+  windows), 10 times faster. Level 8: 0.16 % smaller than the previous level 5, 2 times
+  faster.
+- The subdivide_tukey windows: 0.15-0.3 % smaller files than tukey(0.5) with
+  partial_tukey(2), at about the same time.
+- With these windows the light search no longer beats the quick estimate.
+- Variable block sizes save about 0.4-1 % against fixed 4096.
+- IRLS gives most of what the coefficient refinements give (about 0.1 %); the hill climb
+  adds little after it.
 - Above 48 kHz the grid is max_block/8 (levels 0-6) or max_block/16 (7-8), 1024 or 2048
   samples in the subset. Blocks there are short in time, so the coarse grid costs
   nothing measurable and makes the search 5-8 times faster.
