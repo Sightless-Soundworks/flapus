@@ -10162,6 +10162,7 @@ typedef struct {
    fl_flac_dec d;
    fl_md5 md5;
    int check;            /* read from the start, so the MD5 and the length are checked */
+   int framed;           /* a frame has been decoded */
    fl_u64 decoded;       /* samples decoded so far (with check) */
    fl_i64 frames_off;    /* native: offset of the first frame */
    int ogg, ogg_stop;
@@ -10170,6 +10171,7 @@ typedef struct {
 } fl_flac_src;
 
 static int fl_flac_frame_out(fl_flac_src *s, fl_sink *sink, int n) {
+   s->framed = 1;
    if (s->check) {
       fl_md5_samples(&s->md5, s->d.out, (size_t)n*s->d.si.channels, s->d.si.bits);
       s->decoded += (fl_u64)n;
@@ -10202,7 +10204,8 @@ static int fl_flac_step(fl_source *src, fl_sink *sink) {
       fl_flac_end(s);
       return 0;
    }
-   if (used == 0 && s->d.changed) return FL_ERR_UNSUPPORTED;
+   /* a format change, or (at the first frame) a wrong STREAMINFO */
+   if (used == 0 && s->d.changed) return s->framed ? FL_ERR_UNSUPPORTED : FL_ERR_BAD_FILE;
    if (used == 0) {
       /* not a frame: trailing junk (tags) is ignored, a valid frame later means damage */
       size_t k;
@@ -10309,7 +10312,7 @@ static int fl_oggflac_step(fl_source *src, fl_sink *sink) {
          if ((ret = fl_flac_metadata(&s->base.fmt, &s->d.si, p[0]&127, p+4, len-4)) != FL_OK) return ret;
          continue;
       }
-      if (fl_flac_decode_frame(&s->d, p, len, &n) == 0) return s->d.changed ? FL_ERR_UNSUPPORTED : FL_ERR_BAD_FILE;
+      if (fl_flac_decode_frame(&s->d, p, len, &n) == 0) return s->d.changed && s->framed ? FL_ERR_UNSUPPORTED : FL_ERR_BAD_FILE;
       if ((ret = fl_flac_frame_out(s, sink, n)) != FL_OK) return ret;
    }
    fl_ogg_compact(q);
