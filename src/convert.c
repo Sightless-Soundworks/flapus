@@ -324,9 +324,16 @@ static int fl_source_open(int format, fl_inbuf *in, const fl_options *opt, fl_so
 /* Decodes the whole input into sink: start, write, finish. */
 static int fl_run_source(int format, fl_inbuf *in, const fl_options *opt, fl_sink *sink) {
    fl_source *src;
+   fl_format f;
    int ret = fl_source_open(format, in, opt, &src);
    if (ret != FL_OK) return ret;
-   ret = sink->start(sink, &src->fmt);
+   f = src->fmt;
+   if (opt->remove_tags) {
+      /* the sink sees no tags (the source still frees them) */
+      f.tags = NULL;
+      f.ntags = 0;
+   }
+   ret = sink->start(sink, &f);
    while (ret == FL_OK && (ret = src->step(src, sink)) > 0) ret = FL_OK;
    if (ret == FL_OK) ret = sink->finish(sink);
    if (ret == FL_OK) ret = src->end_status;

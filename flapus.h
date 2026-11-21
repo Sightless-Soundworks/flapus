@@ -123,6 +123,8 @@ typedef struct {
    const char *comment_options; /* value of the ENCODER_OPTIONS tag (NULL = none) */
    int padding;        /* free bytes after the tags for later editing (Opus: after OpusTags, FLAC: a
                           PADDING block), 0 (default) = none */
+   int remove_tags;    /* FLAC and Opus output: 1 = leave out the input's tags and pictures (also
+                          ReplayGain), 0 (default) = keep them */
    long long serialno; /* Ogg serial number of Opus output, 0..4294967295; -1 (default) = random */
    int keep_time;      /* fl_convert_file: 1 = the output gets the input's modification time, and
                           from FLAC to FLAC or Opus to Opus also its creation time; 0 (default) = not */
@@ -7947,7 +7949,7 @@ static int fl_check_options(const fl_options *o) {
    if (o->quality >= 0 && o->bitrate > 0) return FL_ERR_BAD_ARG;
    if (o->signal < 0 || o->signal > 2 || o->expect_loss < 0 || o->expect_loss > 100) return FL_ERR_BAD_ARG;
    if (o->downmix < 0 || o->downmix > 2 || o->padding < 0 || o->padding > 0xFFFFFF) return FL_ERR_BAD_ARG;
-   if ((o->flac_seektable|o->flac_verify|o->keep_time) & ~1) return FL_ERR_BAD_ARG;
+   if ((o->flac_seektable|o->flac_verify|o->keep_time|o->remove_tags) & ~1) return FL_ERR_BAD_ARG;
    if (o->serialno < -1 || o->serialno > 4294967295LL) return FL_ERR_BAD_ARG;
    return FL_OK;
 }
@@ -41017,9 +41019,16 @@ static int fl_source_open(int format, fl_inbuf *in, const fl_options *opt, fl_so
 /* Decodes the whole input into sink: start, write, finish. */
 static int fl_run_source(int format, fl_inbuf *in, const fl_options *opt, fl_sink *sink) {
    fl_source *src;
+   fl_format f;
    int ret = fl_source_open(format, in, opt, &src);
    if (ret != FL_OK) return ret;
-   ret = sink->start(sink, &src->fmt);
+   f = src->fmt;
+   if (opt->remove_tags) {
+      /* the sink sees no tags (the source still frees them) */
+      f.tags = NULL;
+      f.ntags = 0;
+   }
+   ret = sink->start(sink, &f);
    while (ret == FL_OK && (ret = src->step(src, sink)) > 0) ret = FL_OK;
    if (ret == FL_OK) ret = sink->finish(sink);
    if (ret == FL_OK) ret = src->end_status;

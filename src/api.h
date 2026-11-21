@@ -123,6 +123,8 @@ typedef struct {
    const char *comment_options; /* value of the ENCODER_OPTIONS tag (NULL = none) */
    int padding;        /* free bytes after the tags for later editing (Opus: after OpusTags, FLAC: a
                           PADDING block), 0 (default) = none */
+   int remove_tags;    /* FLAC and Opus output: 1 = leave out the input's tags and pictures (also
+                          ReplayGain), 0 (default) = keep them */
    long long serialno; /* Ogg serial number of Opus output, 0..4294967295; -1 (default) = random */
    int keep_time;      /* fl_convert_file: 1 = the output gets the input's modification time, and
                           from FLAC to FLAC or Opus to Opus also its creation time; 0 (default) = not */

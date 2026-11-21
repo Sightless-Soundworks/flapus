@@ -21,6 +21,7 @@ static void usage(FILE *f) {
       "      --padding [N]    free bytes after the tags, so tags can be edited later:\n"
       "                       N, or without N 8192 for FLAC and 512 for Opus\n"
       "                       (default: none)\n"
+      "      --remove-tags    leave out the input's tags and pictures\n"
       "      --no-timestamp   do not give the output the input's modification time (and,\n"
       "                       FLAC to FLAC or Opus to Opus, its creation time)\n"
       "  -f, --force          overwrite an existing output file\n"
@@ -123,9 +124,9 @@ static void progress(void *user, double done, double ratio) {
 
 /* Options without a value, and with one (--padding takes one only if it is a number). */
 static const char *const flag_opts[] = {"-s", "--silent", "-f", "--force", "--delete-input-file", "--lax", "--no-seektable",
-                                        "-V", "--verify", "--no-timestamp", "--no-dither", "--float", "--vbr", "--cvbr",
-                                        "--hard-cbr", "--music", "--speech", "--no-phase-inv", "--downmix-mono",
-                                        "--downmix-stereo", NULL};
+                                        "-V", "--verify", "--remove-tags", "--no-timestamp", "--no-dither", "--float",
+                                        "--vbr", "--cvbr", "--hard-cbr", "--music", "--speech", "--no-phase-inv",
+                                        "--downmix-mono", "--downmix-stereo", NULL};
 static const char *const value_opts[] = {"--format", "--level", "--threads", "--rate", "--bits", "--bitrate", "--comp",
                                          "--framesize", "--quality", "--expect-loss", "--padding", "--serial", NULL};
 
@@ -234,6 +235,9 @@ int main(int argc, char **argv) {
          takes = 0;
       } else if (strcmp(a, "--no-timestamp") == 0) {
          opt.keep_time = 0;
+         takes = 0;
+      } else if (strcmp(a, "--remove-tags") == 0) {
+         opt.remove_tags = 1;
          takes = 0;
       } else if (strcmp(a, "--padding") == 0 && (!v || !*v || strspn(v, "0123456789") != strlen(v))) {
          padding_on = 1;  /* without a number: the standard size */
@@ -392,6 +396,7 @@ int main(int argc, char **argv) {
    }
    if (ret != FL_OK) {
       fprintf(stderr, "Error: %s%s\n", fl_error_text(ret),
+              ret == FL_ERR_TOO_LARGE ? "; --remove-tags leaves them out" :
               ret != FL_ERR_CHECKSUM ? "" : in_place ? " (the input file was left unchanged)" : " (output written anyway)");
       return 1;
    }

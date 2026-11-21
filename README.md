@@ -149,6 +149,9 @@ as with stdin). Decoding shows only the percentage and ends with `done`.
 - `--delete-input-file` deletes the input file after a successful conversion. It is
   off by default, and nothing is deleted when an error occurs. It cannot be combined
   with stdin input, or with an output that is the input file itself.
+- `--remove-tags` leaves the input's tags and pictures out of FLAC and Opus output,
+  also the ReplayGain tags (so Opus output gets no gain from them). The tags flapus
+  writes itself (the Opus encoder tags, a WAV channel mask) stay.
 - `--no-timestamp` leaves the output's times alone. By default the output gets the
   input's modification and access times, as with `flac`, and from FLAC to FLAC or Opus
   to Opus also its creation time (on Windows and macOS; Linux cannot set it).
@@ -414,6 +417,7 @@ line.
   - On FLAC → FLAC, `APPLICATION` and `CUESHEET` blocks are also kept.
   - A FLAC metadata block holds at most 16 MB: tags or a picture that do not fit stop
     the conversion with an error (`FL_ERR_TOO_LARGE`) instead of being dropped.
+    `--remove-tags` leaves them out.
 
 **Opus output**
 
