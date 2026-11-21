@@ -25,9 +25,12 @@ static void usage(FILE *f) {
       "      --lax            allow streams outside the FLAC subset (even smaller, but\n"
       "                       not every hardware player supports them)\n"
       "      --threads N      encoder threads (default 0 = one per CPU)\n"
+      "Sample format (WAV and FLAC output, and Opus from Opus):\n"
+      "      --bits N         16, 24 or 32 (default: 16 from Opus, else the input's)\n"
+      "      --float          32-bit float samples (WAV, or Opus from Opus)\n"
+      "      --no-dither      plain rounding instead of shaped dither to 16 bits\n"
       "Opus input:\n"
       "      --rate N         output sample rate (default: original input rate)\n"
-      "      --no-dither      plain rounding instead of shaped dither\n"
 #ifdef FLAPUS_HAVE_ENCODER
       "Opus output:\n"
       "      --bitrate N      target bitrate in kbit/s (default: automatic)\n"
@@ -205,6 +208,9 @@ int main(int argc, char **argv) {
       } else if (strcmp(a, "--no-dither") == 0) {
          opt.dither = 0;
          takes = 0;
+      } else if (strcmp(a, "--float") == 0) {
+         opt.as_float = 1;
+         takes = 0;
       } else if (strcmp(a, "--vbr") == 0 || strcmp(a, "--cvbr") == 0 || strcmp(a, "--hard-cbr") == 0) {
          opt.vbr = a[2] != 'h';
          opt.cvbr = a[2] == 'c';
@@ -223,7 +229,7 @@ int main(int argc, char **argv) {
          note(opts, sizeof(opts), a, NULL);
          takes = 0;
       } else if (strcmp(a, "--format") != 0 && strcmp(a, "--level") != 0 && strcmp(a, "--threads") != 0 &&
-                 strcmp(a, "--rate") != 0 && strcmp(a, "--bitrate") != 0 && strcmp(a, "--comp") != 0 &&
+                 strcmp(a, "--rate") != 0 && strcmp(a, "--bits") != 0 && strcmp(a, "--bitrate") != 0 && strcmp(a, "--comp") != 0 &&
                  strcmp(a, "--framesize") != 0 && strcmp(a, "--quality") != 0 && strcmp(a, "--expect-loss") != 0 &&
                  strcmp(a, "--padding") != 0 && strcmp(a, "--serial") != 0) {
          fprintf(stderr, "Error: unknown option %s (see flapus --help)\n", a);
@@ -245,6 +251,11 @@ int main(int argc, char **argv) {
          ok = get_int(a, v, 0, 1024, &opt.threads);
       } else if (strcmp(a, "--rate") == 0) {
          ok = get_int(a, v, 8000, 192000, &opt.rate);
+      } else if (strcmp(a, "--bits") == 0) {
+         if ((ok = get_int(a, v, 16, 32, &opt.bits)) && opt.bits != 16 && opt.bits != 24 && opt.bits != 32) {
+            fprintf(stderr, "Error: --bits must be 16, 24 or 32\n");
+            ok = 0;
+         }
       } else if (strcmp(a, "--bitrate") == 0) {
          if ((ok = get_num(a, v, 0.5, 255*1024, &d))) opt.bitrate = (int)(d*1000);
       } else if (strcmp(a, "--comp") == 0) {
@@ -276,7 +287,7 @@ int main(int argc, char **argv) {
       if (!ok) return 1;
       if (takes) {
          if (strcmp(a, "--level") != 0 && strcmp(a, "--threads") != 0 && strcmp(a, "--rate") != 0 &&
-             strcmp(a, "--format") != 0)
+             strcmp(a, "--bits") != 0 && strcmp(a, "--format") != 0)
             note(opts, sizeof(opts), a, v);
          i++;
       }

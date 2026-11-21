@@ -5,6 +5,7 @@ static int fl_check_options(const fl_options *o) {
    int fs = o->frame_ms_x10;
    if (o->format < 0 || o->format > FL_FORMAT_OPUS) return FL_ERR_BAD_ARG;
    if (o->rate != 0 && (o->rate < 8000 || o->rate > 192000)) return FL_ERR_BAD_ARG;
+   if ((o->bits && o->bits != 16 && o->bits != 24 && o->bits != 32) || (o->as_float & ~1)) return FL_ERR_BAD_ARG;
    if ((o->dither|o->flac_lax|o->vbr|o->cvbr|o->no_phase_inv) & ~1) return FL_ERR_BAD_ARG;
    if (o->flac_level < 0 || o->flac_level > 8 || o->threads < 0) return FL_ERR_BAD_ARG;
    if (o->bitrate < 0 || (o->bitrate > 0 && o->bitrate < 500)) return FL_ERR_BAD_ARG;
@@ -508,8 +509,10 @@ static int fl_wav_start(fl_sink *s, const fl_format *f) {
    }
    w->container = (f->bits+7)/8*8;
    if (f->opus_family >= 0) {
-      w->ext = f->opus_family == 1 && w->C >= 3 && w->C <= 8;
-      w->mask = w->ext ? opus_masks[w->C-1] : 0;
+      /* opusdec's header for 16 bits; above 16 bits always extensible */
+      int surround = f->opus_family == 1 && w->C >= 3 && w->C <= 8;
+      w->ext = surround || w->bits > 16;
+      w->mask = surround ? opus_masks[w->C-1] : w->ext ? fl_default_mask(w->C) : 0;
    } else {
       w->ext = w->C > 2 || w->bits > 16 || w->bits != w->container;
       w->mask = f->channel_mask ? f->channel_mask : fl_default_mask(w->C);

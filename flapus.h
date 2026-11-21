@@ -94,7 +94,10 @@ typedef struct {
    int format;         /* output format, FL_FORMAT_* */
    /* Opus input */
    int rate;           /* output rate, 0 = original input rate */
-   int dither;         /* 1 = shaped dither (default), 0 = plain rounding */
+   /* Sample format of WAV and FLAC output (and fl_read_audio), from any input */
+   int bits;           /* 16, 24 or 32; 0 (default) = 16 for Opus input, else the input's */
+   int dither;         /* reducing to 16 bits: 1 = shaped dither (default), 0 = plain rounding */
+   int as_float;       /* 1 = 32-bit float samples (WAV output), Opus as decoded without clipping */
    /* FLAC output */
    int flac_level;     /* 0 (fastest) .. 8 (smallest); default 5 */
    int flac_lax;       /* 1 = allow streams outside the FLAC subset (LPC order 32 etc.) */
@@ -124,7 +127,8 @@ typedef struct {
 FLDEF void fl_options_init(fl_options *opt);
 
 /* Converts between any of the formats. The input format is detected from the content.
-   Opus input is decoded to 16-bit at the original rate, FLAC output is lossless.
+   Opus input is decoded to 16-bit at the original rate unless the Opus input options
+   below say otherwise; FLAC output is lossless.
    opt may be NULL.
    Paths: on Windows a path that is valid UTF-8 is opened with _wfopen, so file names
    outside the ANSI code page work. Any other path goes to fopen unchanged. The path "-"
@@ -7512,6 +7516,7 @@ static int fl_check_options(const fl_options *o) {
    int fs = o->frame_ms_x10;
    if (o->format < 0 || o->format > FL_FORMAT_OPUS) return FL_ERR_BAD_ARG;
    if (o->rate != 0 && (o->rate < 8000 || o->rate > 192000)) return FL_ERR_BAD_ARG;
+   if ((o->bits && o->bits != 16 && o->bits != 24 && o->bits != 32) || (o->as_float & ~1)) return FL_ERR_BAD_ARG;
    if ((o->dither|o->flac_lax|o->vbr|o->cvbr|o->no_phase_inv) & ~1) return FL_ERR_BAD_ARG;
    if (o->flac_level < 0 || o->flac_level > 8 || o->threads < 0) return FL_ERR_BAD_ARG;
    if (o->bitrate < 0 || (o->bitrate > 0 && o->bitrate < 500)) return FL_ERR_BAD_ARG;
@@ -8015,8 +8020,10 @@ static int fl_wav_start(fl_sink *s, const fl_format *f) {
    }
    w->container = (f->bits+7)/8*8;
    if (f->opus_family >= 0) {
-      w->ext = f->opus_family == 1 && w->C >= 3 && w->C <= 8;
-      w->mask = w->ext ? opus_masks[w->C-1] : 0;
+      /* opusdec's header for 16 bits; above 16 bits always extensible */
+      int surround = f->opus_family == 1 && w->C >= 3 && w->C <= 8;
+      w->ext = surround || w->bits > 16;
+      w->mask = surround ? opus_masks[w->C-1] : w->ext ? fl_default_mask(w->C) : 0;
    } else {
       w->ext = w->C > 2 || w->bits > 16 || w->bits != w->container;
       w->mask = f->channel_mask ? f->channel_mask : fl_default_mask(w->C);
@@ -8489,12 +8496,14 @@ static void fl_shape_dither_toshort(fl_shapestate *ss, short *o, const float *in
    ss->mute = FL_MIN(mute, 960);
 }
 
-/* Converts one chunk to 16-bit (soft clip + dither as in opusdec) and passes it on. */
-static int fl_emit_chunk(fl_sink *sink, float *pcm, int n, int C, float *clipmem, fl_shapestate *ss, int dither, fl_i64 *written) {
+/* Converts one chunk and passes it on: 16-bit with soft clip and dither as in opusdec,
+   24/32-bit with soft clip and rounding, or float as decoded (opusdec --float). */
+static int fl_emit_chunk(fl_sink *sink, float *pcm, int n, int C, float *clipmem, fl_shapestate *ss, int dither,
+                         int bits, fl_i64 *written) {
    short *out;
    fl_i32 *v;
    int i, ret;
-   if (n > 0) fl_pcm_soft_clip(pcm, n, C, clipmem);
+   if (n > 0 && bits) fl_pcm_soft_clip(pcm, n, C, clipmem);
    out = (short*)malloc(sizeof(short)*(n > 0 ? n*C : 1));
    v = (fl_i32*)malloc(sizeof(fl_i32)*(n > 0 ? n*C : 1));
    if (!out || !v) {
@@ -8502,9 +8511,15 @@ static int fl_emit_chunk(fl_sink *sink, float *pcm, int n, int C, float *clipmem
       free(v);
       return FL_ERR_ALLOC;
    }
-   if (dither) fl_shape_dither_toshort(ss, out, pcm, n, C);
-   else for (i = 0; i < n*C; i++) out[i] = (short)fl_float2int(FL_MAX(-32768, FL_MIN(pcm[i]*32768.f, 32767)));
-   for (i = 0; i < n*C; i++) v[i] = out[i];
+   if (bits == 0) memcpy(v, pcm, sizeof(float)*n*C);
+   else if (bits > 16) {
+      double scale = bits == 32 ? 2147483648.0 : 8388608.0;
+      for (i = 0; i < n*C; i++) v[i] = (fl_i32)lrint(FL_MAX(-scale, FL_MIN(pcm[i]*scale, scale-1)));
+   } else {
+      if (dither) fl_shape_dither_toshort(ss, out, pcm, n, C);
+      else for (i = 0; i < n*C; i++) out[i] = (short)fl_float2int(FL_MAX(-32768, FL_MIN(pcm[i]*32768.f, 32767)));
+      for (i = 0; i < n*C; i++) v[i] = out[i];
+   }
    ret = n > 0 ? sink->write(sink, v, n) : FL_OK;
    free(out);
    free(v);
@@ -8516,7 +8531,7 @@ static int fl_emit_chunk(fl_sink *sink, float *pcm, int n, int C, float *clipmem
 /* opusdec audio_write(): resample (if needed), soft clip, dither and write one decoded chunk. */
 typedef struct {
    fl_sink *sink;
-   int C, rate, dither;
+   int C, rate, dither, bits;  /* bits: 16, 24, 32, or 0 for float */
    fl_resampler rs;
    int have_rs;
    float clipmem[8];
@@ -8547,13 +8562,13 @@ static int fl_audio_write(fl_writer *w, float *pcm, int frame_size) {
       }
       if (maxout > 0) {
          fl_i64 before = w->written;
-         int r = fl_emit_chunk(w->sink, output, out_len, C, w->clipmem, &w->ss, w->dither, &w->written);
+         int r = fl_emit_chunk(w->sink, output, out_len, C, w->clipmem, &w->ss, w->dither, w->bits, &w->written);
          if (r != FL_OK) return r;
          w->link_out += w->written-before;
          maxout -= w->written-before;
       } else {
          /* dither state is still updated for empty chunks */
-         if (w->dither) {
+         if (w->dither && w->bits == 16) {
             short dummy[1];
             fl_shape_dither_toshort(&w->ss, dummy, output, 0, C);
          }
@@ -8609,9 +8624,9 @@ static void fl_downmix_stereo(float *pcm, int n, int C) {
    }
 }
 
-/* Decodes an Ogg Opus file (all chained links) to 16-bit PCM like opusdec and passes it
-   to sink. rate=0 keeps the original rate. */
-static int fl_run_opus(fl_inbuf *in, int rate, int dither, fl_sink *sink) {
+/* Decodes an Ogg Opus file (all chained links) like opusdec and passes it to sink:
+   opt->rate (0 = the original rate), opt->dither, opt->bits and opt->as_float. */
+static int fl_run_opus(fl_inbuf *in, const fl_options *opt, fl_sink *sink) {
    static const int wav_permute[8][8] = {
       {0}, {0, 1}, {0, 2, 1}, {0, 1, 2, 3}, {0, 2, 1, 3, 4}, {0, 2, 1, 4, 5, 3},
       {0, 2, 1, 5, 6, 4, 3}, {0, 2, 1, 6, 7, 4, 5, 3}};
@@ -8625,6 +8640,7 @@ static int fl_run_opus(fl_inbuf *in, int rate, int dither, fl_sink *sink) {
    float *pcm = NULL, *tmp = NULL;
    unsigned char channel_map[8];
    fl_format fmt;
+   int rate = opt->rate;
    fl_format_init(&fmt);
    if (!file) return FL_ERR_ALLOC;
    if (fl_ogg_parse(file, size, "OpusHead", &links, &nlinks) < 0) {
@@ -8674,13 +8690,15 @@ static int fl_run_opus(fl_inbuf *in, int rate, int dither, fl_sink *sink) {
    w->sink = sink;
    w->C = C;
    w->rate = rate;
-   w->dither = dither;
+   w->dither = opt->dither;
+   w->bits = opt->as_float ? 0 : opt->bits ? opt->bits : 16;
    w->ss.fs = rate;
    w->ss.mute = 960;
    w->ss.rngseed = 22222;
    fmt.channels = C;
    fmt.rate = rate;
-   fmt.bits = fmt.container_bits = 16;
+   fmt.bits = fmt.container_bits = opt->as_float ? 32 : opt->bits ? opt->bits : 16;
+   fmt.is_float = opt->as_float;
    fmt.opus_family = force_stereo ? 0 : heads[0].mapping_family;
    {
       /* approximate length (for progress): last granule minus pre-skip of every link */
@@ -23480,10 +23498,147 @@ static fl_sink *fl_progress_wrap(fl_sink *inner, const fl_options *opt, int *err
    return &p->base;
 }
 
+/* Sink wrapper that gives WAV and FLAC input the sample format of opt->bits and
+   opt->as_float, converted the way Opus output is (fl_emit_chunk). */
+typedef struct {
+   fl_sink base;
+   fl_sink *inner;
+   int borrowed;                /* the caller destroys inner */
+   int bits, as_float, dither;  /* requested format */
+   int in_bits, in_float, C;    /* source format; in_bits 0: passed on unchanged */
+   float *clipmem, *f, *g;
+   fl_shapestate *ss;           /* one per 8 channels */
+   fl_i32 *v;
+   short *s;
+   int cap;
+} fl_format_sink;
+
+static int fl_format_start(fl_sink *s, const fl_format *f) {
+   fl_format_sink *p = (fl_format_sink*)s;
+   fl_format g = *f;
+   int i, groups = (f->channels+7)/8;
+   if (p->as_float ? !f->is_float : p->bits && (f->is_float || p->bits != f->bits)) {
+      p->in_bits = f->bits;
+      p->in_float = f->is_float;
+      p->C = f->channels;
+      g.bits = g.container_bits = p->as_float ? 32 : p->bits;
+      g.is_float = p->as_float;
+      p->clipmem = (float*)calloc(f->channels, sizeof(float));
+      p->ss = (fl_shapestate*)calloc(groups, sizeof(fl_shapestate));
+      if (!p->clipmem || !p->ss) return FL_ERR_ALLOC;
+      for (i = 0; i < groups; i++) p->ss[i].fs = f->rate;
+   }
+   return p->inner->start(p->inner, &g);
+}
+
+static int fl_format_write(fl_sink *s, const fl_i32 *pcm, int n) {
+   fl_format_sink *p = (fl_format_sink*)s;
+   int i, c, k, C = p->C, N = n*C;
+   if (!p->in_bits) return p->inner->write(p->inner, pcm, n);
+   if (N > p->cap) {
+      free(p->f);
+      free(p->g);
+      free(p->v);
+      free(p->s);
+      p->f = (float*)malloc(sizeof(float)*N);
+      p->g = (float*)malloc(sizeof(float)*N);
+      p->v = (fl_i32*)malloc(sizeof(fl_i32)*N);
+      p->s = (short*)malloc(sizeof(short)*N);
+      p->cap = p->f && p->g && p->v && p->s ? N : 0;
+      if (!p->cap) return FL_ERR_ALLOC;
+   }
+   if (!p->in_float && !p->as_float && p->bits < p->in_bits && p->bits == 16 && p->dither) {
+      /* no dither where the dropped bits are zero (16-bit audio in a wider file) */
+      fl_i32 any = 0, mask = (fl_i32)(((fl_i64)1<<(p->in_bits-16))-1);
+      for (i = 0; i < N; i++) any |= pcm[i]&mask;
+      if (!any) {
+         for (i = 0; i < N; i++) p->v[i] = (fl_i32)((fl_i64)pcm[i]>>(p->in_bits-16));
+         return p->inner->write(p->inner, p->v, n);
+      }
+   }
+   if (!p->in_float && !p->as_float && (p->bits > p->in_bits || p->bits > 16 || !p->dither)) {
+      /* integer to integer: exact shift up, or rounding (ties to even) and clipping */
+      int d = p->in_bits-p->bits;
+      fl_i64 hi = ((fl_i64)1<<(p->bits-1))-1;
+      for (i = 0; i < N; i++) {
+         fl_i64 x = pcm[i];
+         if (d <= 0) x *= (fl_i64)1<<-d;
+         else {
+            fl_i64 q = x>>d, r = x-q*((fl_i64)1<<d), half = (fl_i64)1<<(d-1);
+            x = q+(r > half || (r == half && (q&1)));
+         }
+         p->v[i] = (fl_i32)FL_MIN(x, hi);
+      }
+      return p->inner->write(p->inner, p->v, n);
+   }
+   if (p->in_float) memcpy(p->f, pcm, sizeof(float)*N);
+   else {
+      float scale = 1.0f/(float)((fl_i64)1<<(p->in_bits-1));
+      for (i = 0; i < N; i++) p->f[i] = (float)pcm[i]*scale;
+   }
+   if (p->as_float) return p->inner->write(p->inner, (const fl_i32*)p->f, n);
+   fl_pcm_soft_clip(p->f, n, C, p->clipmem);
+   if (p->bits > 16) {
+      double scale = p->bits == 32 ? 2147483648.0 : 8388608.0;
+      for (i = 0; i < N; i++) p->v[i] = (fl_i32)lrint(FL_MAX(-scale, FL_MIN(p->f[i]*scale, scale-1)));
+   } else if (!p->dither) {
+      for (i = 0; i < N; i++) p->v[i] = fl_float2int(FL_MAX(-32768, FL_MIN(p->f[i]*32768.f, 32767)));
+   } else {
+      /* opusdec's shaped dither, 8 channels at a time */
+      for (c = 0; c < C; c += 8) {
+         int m = FL_MIN(8, C-c);
+         for (i = 0; i < n; i++)
+            for (k = 0; k < m; k++) p->g[i*m+k] = p->f[i*C+c+k];
+         fl_shape_dither_toshort(&p->ss[c/8], p->s, p->g, n, m);
+         for (i = 0; i < n; i++)
+            for (k = 0; k < m; k++) p->v[i*C+c+k] = p->s[i*m+k];
+      }
+   }
+   return p->inner->write(p->inner, p->v, n);
+}
+
+static int fl_format_finish(fl_sink *s) {
+   fl_format_sink *p = (fl_format_sink*)s;
+   return p->inner->finish(p->inner);
+}
+
+static void fl_format_destroy(fl_sink *s) {
+   fl_format_sink *p = (fl_format_sink*)s;
+   if (!p->borrowed) p->inner->destroy(p->inner);
+   free(p->clipmem);
+   free(p->ss);
+   free(p->f);
+   free(p->g);
+   free(p->v);
+   free(p->s);
+   free(p);
+}
+
+/* Wraps inner when opt asks for a sample format (WAV and FLAC input only). */
+static fl_sink *fl_format_wrap(fl_sink *inner, const fl_options *opt, int borrowed, int *err) {
+   fl_format_sink *p;
+   if (!opt->bits && !opt->as_float) return inner;
+   if (!(p = (fl_format_sink*)calloc(1, sizeof(*p)))) {
+      if (!borrowed) inner->destroy(inner);
+      *err = FL_ERR_ALLOC;
+      return NULL;
+   }
+   p->inner = inner;
+   p->borrowed = borrowed;
+   p->bits = opt->bits;
+   p->as_float = opt->as_float;
+   p->dither = opt->dither;
+   p->base.start = fl_format_start;
+   p->base.write = fl_format_write;
+   p->base.finish = fl_format_finish;
+   p->base.destroy = fl_format_destroy;
+   return &p->base;
+}
+
 static int fl_run_source(int format, fl_inbuf *in, const fl_options *opt, fl_sink *sink) {
    if (format == FL_FORMAT_WAV) return fl_run_wav(in, sink);
    if (format == FL_FORMAT_FLAC) return fl_run_flac(in, sink);
-   return fl_run_opus(in, opt->rate, opt->dither, sink);
+   return fl_run_opus(in, opt, sink);
 }
 
 /* Output goes to a temporary file next to out_path, which replaces out_path only when
@@ -23516,6 +23671,7 @@ FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_op
       goto done;
    }
    if (!(sink = fl_create_sink(out_fmt, tmp ? tmp : out_path, &opt, &err)) ||
+       (in_fmt != FL_FORMAT_OPUS && out_fmt != FL_FORMAT_OPUS && !(sink = fl_format_wrap(sink, &opt, 0, &err))) ||
        !(sink = fl_progress_wrap(sink, &opt, &err))) {
       ret = err;
       goto done;
@@ -23534,6 +23690,7 @@ done:
 FLDEF int fl_read_audio(const char *path, const fl_options *opt_in, fl_audio *audio) {
    fl_options opt;
    fl_mem_sink m;
+   fl_sink *sink;
    fl_inbuf in;
    int fmt, ret;
    if (opt_in) opt = *opt_in;
@@ -23549,7 +23706,9 @@ FLDEF int fl_read_audio(const char *path, const fl_options *opt_in, fl_audio *au
       m.base.finish = fl_mem_finish;
       m.base.destroy = fl_mem_destroy;
       m.a = audio;
-      ret = fl_run_source(fmt, &in, &opt, &m.base);
+      sink = fmt == FL_FORMAT_OPUS ? &m.base : fl_format_wrap(&m.base, &opt, 1, &ret);
+      if (sink) ret = fl_run_source(fmt, &in, &opt, sink);
+      if (sink && sink != &m.base) sink->destroy(sink);
       if (ret != FL_OK && ret != FL_ERR_CHECKSUM) fl_audio_free(audio);
    }
    fl_inbuf_close(&in);
@@ -23570,7 +23729,8 @@ FLDEF int fl_write_audio(const char *path, const fl_audio *a, const fl_options *
    if (out_fmt < 0) return out_fmt;
    if (a->channels < 1 || a->bits < 1 || a->bits > 32 || a->rate < 1 || a->frames < 0) return FL_ERR_BAD_ARG;
    if (!fl_is_std(path) && !(tmp = fl_temp_path(path))) return FL_ERR_IO;
-   if (!(sink = fl_create_sink(out_fmt, tmp ? tmp : path, &opt, &err))) {
+   if (!(sink = fl_create_sink(out_fmt, tmp ? tmp : path, &opt, &err)) ||
+       (out_fmt != FL_FORMAT_OPUS && !(sink = fl_format_wrap(sink, &opt, 0, &err)))) {
       if (tmp) fl_remove(tmp);
       free(tmp);
       return err;

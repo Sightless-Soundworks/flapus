@@ -153,10 +153,23 @@ to recompress a FLAC file in place.
 - `--threads N` sets the number of encoder threads. The default is 0, one per CPU (in
   the library, `threads` defaults to 1). The output does not depend on it.
 
+**Sample format options** (WAV and FLAC output from any input, and Opus output from
+Opus input)
+
+- `--bits N` sets the output bits: 16, 24 or 32. The default is 16 from Opus and the
+  input's bit depth otherwise.
+  - More bits than the input has are exact.
+  - Fewer bits are rounded. To 16 bits, opusdec's shaped dither is added, except where
+    the dropped bits are all zero (16-bit audio in a 24-bit file comes back exactly).
+  - From Opus, the decoded samples are soft-clipped first, as in opusdec. Above 16 bits
+    they are rounded without dither; the rounding error is then far below audibility.
+- `--float` writes 32-bit float samples (WAV only, or Opus again): from Opus exactly as
+  decoded, without clipping; from integer input exact up to 24 bits.
+- `--no-dither` uses plain rounding instead of shaped dither.
+
 **Opus input options**
 
 - `--rate N` sets the output rate. The default is the original input rate.
-- `--no-dither` uses plain rounding instead of shaped dither.
 
 **Opus output options**
 
@@ -333,8 +346,9 @@ line.
 
 **FLAC output**
 
-- FLAC takes integer PCM only, from 4 to 32 bits and 1-8 channels. 32-bit audio gets
-  LPC and stereo decorrelation (33-bit side channel) like any other bit depth.
+- FLAC takes integer PCM only, from 4 to 32 bits and 1-8 channels; float WAV input needs
+  `--bits`. 32-bit audio gets LPC and stereo decorrelation (33-bit side channel) like
+  any other bit depth.
 - Tags and pictures carry over between FLAC and Opus:
   - FLAC pictures become `METADATA_BLOCK_PICTURE` comments in Opus, and back.
   - On Opus → FLAC the Opus encoder tags are dropped.
@@ -350,10 +364,10 @@ line.
 
 **WAV output**
 
-- From Opus: 16-bit at the original rate, `WAVE_FORMAT_EXTENSIBLE` for 3-8 channel
-  surround.
-- From FLAC: the original bit depth, with flac's header (`WAVE_FORMAT_EXTENSIBLE` above
-  2 channels or 16 bits).
+- From Opus: 16-bit at the original rate (`--bits`, `--float` and `--rate` change that),
+  `WAVE_FORMAT_EXTENSIBLE` for 3-8 channel surround and above 16 bits.
+- From FLAC: the original bit depth (`--bits` and `--float` change that), with flac's
+  header (`WAVE_FORMAT_EXTENSIBLE` above 2 channels or 16 bits).
 
 **Not supported**
 

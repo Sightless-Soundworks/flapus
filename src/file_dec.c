@@ -363,12 +363,14 @@ static void fl_shape_dither_toshort(fl_shapestate *ss, short *o, const float *in
    ss->mute = FL_MIN(mute, 960);
 }
 
-/* Converts one chunk to 16-bit (soft clip + dither as in opusdec) and passes it on. */
-static int fl_emit_chunk(fl_sink *sink, float *pcm, int n, int C, float *clipmem, fl_shapestate *ss, int dither, fl_i64 *written) {
+/* Converts one chunk and passes it on: 16-bit with soft clip and dither as in opusdec,
+   24/32-bit with soft clip and rounding, or float as decoded (opusdec --float). */
+static int fl_emit_chunk(fl_sink *sink, float *pcm, int n, int C, float *clipmem, fl_shapestate *ss, int dither,
+                         int bits, fl_i64 *written) {
    short *out;
    fl_i32 *v;
    int i, ret;
-   if (n > 0) fl_pcm_soft_clip(pcm, n, C, clipmem);
+   if (n > 0 && bits) fl_pcm_soft_clip(pcm, n, C, clipmem);
    out = (short*)malloc(sizeof(short)*(n > 0 ? n*C : 1));
    v = (fl_i32*)malloc(sizeof(fl_i32)*(n > 0 ? n*C : 1));
    if (!out || !v) {
@@ -376,9 +378,15 @@ static int fl_emit_chunk(fl_sink *sink, float *pcm, int n, int C, float *clipmem
       free(v);
       return FL_ERR_ALLOC;
    }
-   if (dither) fl_shape_dither_toshort(ss, out, pcm, n, C);
-   else for (i = 0; i < n*C; i++) out[i] = (short)fl_float2int(FL_MAX(-32768, FL_MIN(pcm[i]*32768.f, 32767)));
-   for (i = 0; i < n*C; i++) v[i] = out[i];
+   if (bits == 0) memcpy(v, pcm, sizeof(float)*n*C);
+   else if (bits > 16) {
+      double scale = bits == 32 ? 2147483648.0 : 8388608.0;
+      for (i = 0; i < n*C; i++) v[i] = (fl_i32)lrint(FL_MAX(-scale, FL_MIN(pcm[i]*scale, scale-1)));
+   } else {
+      if (dither) fl_shape_dither_toshort(ss, out, pcm, n, C);
+      else for (i = 0; i < n*C; i++) out[i] = (short)fl_float2int(FL_MAX(-32768, FL_MIN(pcm[i]*32768.f, 32767)));
+      for (i = 0; i < n*C; i++) v[i] = out[i];
+   }
    ret = n > 0 ? sink->write(sink, v, n) : FL_OK;
    free(out);
    free(v);
@@ -390,7 +398,7 @@ static int fl_emit_chunk(fl_sink *sink, float *pcm, int n, int C, float *clipmem
 /* opusdec audio_write(): resample (if needed), soft clip, dither and write one decoded chunk. */
 typedef struct {
    fl_sink *sink;
-   int C, rate, dither;
+   int C, rate, dither, bits;  /* bits: 16, 24, 32, or 0 for float */
    fl_resampler rs;
    int have_rs;
    float clipmem[8];
@@ -421,13 +429,13 @@ static int fl_audio_write(fl_writer *w, float *pcm, int frame_size) {
       }
       if (maxout > 0) {
          fl_i64 before = w->written;
-         int r = fl_emit_chunk(w->sink, output, out_len, C, w->clipmem, &w->ss, w->dither, &w->written);
+         int r = fl_emit_chunk(w->sink, output, out_len, C, w->clipmem, &w->ss, w->dither, w->bits, &w->written);
          if (r != FL_OK) return r;
          w->link_out += w->written-before;
          maxout -= w->written-before;
       } else {
          /* dither state is still updated for empty chunks */
-         if (w->dither) {
+         if (w->dither && w->bits == 16) {
             short dummy[1];
             fl_shape_dither_toshort(&w->ss, dummy, output, 0, C);
          }
@@ -483,9 +491,9 @@ static void fl_downmix_stereo(float *pcm, int n, int C) {
    }
 }
 
-/* Decodes an Ogg Opus file (all chained links) to 16-bit PCM like opusdec and passes it
-   to sink. rate=0 keeps the original rate. */
-static int fl_run_opus(fl_inbuf *in, int rate, int dither, fl_sink *sink) {
+/* Decodes an Ogg Opus file (all chained links) like opusdec and passes it to sink:
+   opt->rate (0 = the original rate), opt->dither, opt->bits and opt->as_float. */
+static int fl_run_opus(fl_inbuf *in, const fl_options *opt, fl_sink *sink) {
    static const int wav_permute[8][8] = {
       {0}, {0, 1}, {0, 2, 1}, {0, 1, 2, 3}, {0, 2, 1, 3, 4}, {0, 2, 1, 4, 5, 3},
       {0, 2, 1, 5, 6, 4, 3}, {0, 2, 1, 6, 7, 4, 5, 3}};
@@ -499,6 +507,7 @@ static int fl_run_opus(fl_inbuf *in, int rate, int dither, fl_sink *sink) {
    float *pcm = NULL, *tmp = NULL;
    unsigned char channel_map[8];
    fl_format fmt;
+   int rate = opt->rate;
    fl_format_init(&fmt);
    if (!file) return FL_ERR_ALLOC;
    if (fl_ogg_parse(file, size, "OpusHead", &links, &nlinks) < 0) {
@@ -548,13 +557,15 @@ static int fl_run_opus(fl_inbuf *in, int rate, int dither, fl_sink *sink) {
    w->sink = sink;
    w->C = C;
    w->rate = rate;
-   w->dither = dither;
+   w->dither = opt->dither;
+   w->bits = opt->as_float ? 0 : opt->bits ? opt->bits : 16;
    w->ss.fs = rate;
    w->ss.mute = 960;
    w->ss.rngseed = 22222;
    fmt.channels = C;
    fmt.rate = rate;
-   fmt.bits = fmt.container_bits = 16;
+   fmt.bits = fmt.container_bits = opt->as_float ? 32 : opt->bits ? opt->bits : 16;
+   fmt.is_float = opt->as_float;
    fmt.opus_family = force_stereo ? 0 : heads[0].mapping_family;
    {
       /* approximate length (for progress): last granule minus pre-skip of every link */

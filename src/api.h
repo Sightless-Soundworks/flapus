@@ -94,7 +94,10 @@ typedef struct {
    int format;         /* output format, FL_FORMAT_* */
    /* Opus input */
    int rate;           /* output rate, 0 = original input rate */
-   int dither;         /* 1 = shaped dither (default), 0 = plain rounding */
+   /* Sample format of WAV and FLAC output (and fl_read_audio), from any input */
+   int bits;           /* 16, 24 or 32; 0 (default) = 16 for Opus input, else the input's */
+   int dither;         /* reducing to 16 bits: 1 = shaped dither (default), 0 = plain rounding */
+   int as_float;       /* 1 = 32-bit float samples (WAV output), Opus as decoded without clipping */
    /* FLAC output */
    int flac_level;     /* 0 (fastest) .. 8 (smallest); default 5 */
    int flac_lax;       /* 1 = allow streams outside the FLAC subset (LPC order 32 etc.) */
@@ -124,7 +127,8 @@ typedef struct {
 FLDEF void fl_options_init(fl_options *opt);
 
 /* Converts between any of the formats. The input format is detected from the content.
-   Opus input is decoded to 16-bit at the original rate, FLAC output is lossless.
+   Opus input is decoded to 16-bit at the original rate unless the Opus input options
+   below say otherwise; FLAC output is lossless.
    opt may be NULL.
    Paths: on Windows a path that is valid UTF-8 is opened with _wfopen, so file names
    outside the ANSI code page work. Any other path goes to fopen unchanged. The path "-"
