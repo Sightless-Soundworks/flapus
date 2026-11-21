@@ -144,8 +144,8 @@ as with stdin). Decoding shows only the percentage and ends with `done`.
   error, as `flac` does.
 - `-s` or `--silent` turns the progress display off.
 - `-h` or `--help` shows the options.
-- `--version` shows the version, whether the Opus encoder is built in, and the
-  target and compiler.
+- `-v` or `--version` shows the version, whether the Opus encoder is built in, and
+  the target and compiler.
 - `--delete-input-file` deletes the input file after a successful conversion. It is
   off by default, and nothing is deleted when an error occurs. It cannot be combined
   with stdin input, or with an output that is the input file itself.

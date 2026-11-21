@@ -25,7 +25,7 @@ static void usage(FILE *f) {
       "                       FLAC to FLAC or Opus to Opus, its creation time)\n"
       "  -f, --force          overwrite an existing output file\n"
       "  -s, --silent         no progress display\n"
-      "      --version        show the version and how this build was made\n"
+      "  -v, --version        show the version and how this build was made\n"
       "      --delete-input-file  delete the input file after a successful conversion\n"
       "FLAC output:\n"
       "      --level N        0 (fastest) .. 8 (smallest), default 5\n"
@@ -192,7 +192,7 @@ int main(int argc, char **argv) {
    int i, ret, paths, last, silent = 0, force = 0, delete_input = 0, padding_on = 0, to_stdout, in_place;
    const char *in_path, *out_path;
    double d;
-   if (argc == 2 && strcmp(argv[1], "--version") == 0) {
+   if (argc == 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
       version();
       return 0;
    }
