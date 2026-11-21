@@ -785,15 +785,32 @@ static void fl_lpc_sums(const fl_i32 *x, const double *xd, const fl_i16 *x16, co
          for (k = 0; k < 256; k++) acc[i+k] = (fl_i32)t[k];
       }
    } else if (mode == 1) {
-      double t[256];
-      for (i = order; i < n; i += 256) {
-         for (k = 0; k < 256; k++) t[k] = 0;
+      /* 8 sums at a time in registers, the taps in the inner loop */
+      for (i = order; i < n; i += 8) {
+#ifdef FL_FLAC_SSE2
+         __m128d a0 = _mm_setzero_pd(), a1 = a0, a2 = a0, a3 = a0;
+         double t[8];
+         for (j = 0; j < order; j++) {
+            const double *h = xd+i-1-j;
+            __m128d cj = _mm_set1_pd((double)c[j]);
+            a0 = _mm_add_pd(a0, _mm_mul_pd(cj, _mm_loadu_pd(h)));
+            a1 = _mm_add_pd(a1, _mm_mul_pd(cj, _mm_loadu_pd(h+2)));
+            a2 = _mm_add_pd(a2, _mm_mul_pd(cj, _mm_loadu_pd(h+4)));
+            a3 = _mm_add_pd(a3, _mm_mul_pd(cj, _mm_loadu_pd(h+6)));
+         }
+         _mm_storeu_pd(t, a0);
+         _mm_storeu_pd(t+2, a1);
+         _mm_storeu_pd(t+4, a2);
+         _mm_storeu_pd(t+6, a3);
+#else
+         double t[8] = {0, 0, 0, 0, 0, 0, 0, 0};
          for (j = 0; j < order; j++) {
             const double *h = xd+i-1-j;
             double cj = c[j];
-            for (k = 0; k < 256; k++) t[k] += cj*h[k];
+            for (k = 0; k < 8; k++) t[k] += cj*h[k];
          }
-         for (k = 0; k < 256; k++) acc[i+k] = (fl_i64)t[k];
+#endif
+         for (k = 0; k < 8; k++) acc[i+k] = (fl_i64)t[k];
       }
    } else {
       for (i = order; i < n; i++) {
