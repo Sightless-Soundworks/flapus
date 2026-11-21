@@ -211,7 +211,9 @@ static fl_u32 fl_gcd(fl_u32 a, fl_u32 b) {
    }
    return a;
 }
-/* fl_resampler_init() without the sinc table, which the caller fills. */
+/* fl_resampler_init() without the sinc table, which the caller fills. Returns FL_OK,
+   FL_ERR_ALLOC, or FL_ERR_UNSUPPORTED if the table would exceed 2^24 entries (rates
+   with a small common divisor, such as 1048573 to 48000 Hz). */
 static int fl_resampler_alloc(fl_resampler *r, int channels, fl_u32 in_rate, fl_u32 out_rate) {
    fl_u32 fact = fl_gcd(in_rate, out_rate);
    int j;
@@ -227,25 +229,26 @@ static int fl_resampler_alloc(fl_resampler *r, int channels, fl_u32 in_rate, fl_
       r->filt_len = remain*r->num_rate/r->den_rate+major*r->num_rate;
       r->filt_len = ((r->filt_len-1)&(~0x7))+8;
    }
+   if ((fl_u64)r->filt_len*r->den_rate > (1<<24)) return FL_ERR_UNSUPPORTED;
    r->sinc_table = (float*)malloc(sizeof(float)*r->filt_len*r->den_rate);
    r->mem_alloc_size = r->filt_len-1+160;
    r->mem = (float*)calloc((size_t)channels*r->mem_alloc_size, sizeof(float));
-   if (!r->sinc_table || !r->mem) return -1;
+   if (!r->sinc_table || !r->mem) return FL_ERR_ALLOC;
    for (j = 0; j < channels; j++) r->last_sample[j] = r->filt_len/2;
-   return 0;
+   return FL_OK;
 }
 /* speex_resampler_init(channels, in, out, 5) followed by skip_zeros(). */
 static int fl_resampler_init(fl_resampler *r, int channels, fl_u32 in_rate, fl_u32 out_rate) {
    fl_u32 i;
    float cutoff;
-   int j;
-   if (fl_resampler_alloc(r, channels, in_rate, out_rate) < 0) return -1;
+   int j, ret;
+   if ((ret = fl_resampler_alloc(r, channels, in_rate, out_rate)) != FL_OK) return ret;
    if (r->num_rate > r->den_rate) cutoff = 0.922f*r->den_rate/r->num_rate;
    else cutoff = 0.940f;
    for (i = 0; i < r->den_rate; i++)
       for (j = 0; j < (int)r->filt_len; j++)
          r->sinc_table[i*r->filt_len+j] = fl_rs_sinc(cutoff, ((j-(fl_i32)r->filt_len/2+1)-((float)i)/r->den_rate), r->filt_len);
-   return 0;
+   return FL_OK;
 }
 static void fl_resampler_free(fl_resampler *r) {
    free(r->sinc_table);
@@ -636,10 +639,7 @@ static int fl_run_opus(fl_inbuf *in, int rate, int dither, fl_sink *sink) {
                }
                w->link_read = w->link_out = 0;
                if (rate != 48000) {
-                  if (fl_resampler_init(&w->rs, C, 48000, rate) < 0) {
-                     ret = FL_ERR_ALLOC;
-                     goto done;
-                  }
+                  if ((ret = fl_resampler_init(&w->rs, C, 48000, rate)) != FL_OK) goto done;
                   w->have_rs = 1;
                }
                started = 1;

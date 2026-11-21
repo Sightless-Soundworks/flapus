@@ -32,6 +32,7 @@ typedef struct { float r, i; } fl_cpx;
 
 #define FL_MIN(a,b) ((a) < (b) ? (a) : (b))
 #define FL_MAX(a,b) ((a) > (b) ? (a) : (b))
+#define FL_MAX_RATE 1048575  /* highest sample rate (FLAC STREAMINFO limit) */
 #define IMIN(a,b) ((a) < (b) ? (a) : (b))
 #define IMAX(a,b) ((a) > (b) ? (a) : (b))
 #define FL_FRAC_MUL16(a,b) ((16384+((fl_i32)(fl_i16)(a)*(fl_i16)(b)))>>15)

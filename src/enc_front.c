@@ -47,14 +47,14 @@ static float fl_ope_sinc(float cutoff, int i, fl_u32 den, int jterm, int N) {
 static int fl_ope_rs_init(fl_resampler *r, int channels, fl_u32 in_rate, fl_u32 out_rate) {
    fl_u32 i;
    float cutoff;
-   int j;
-   if (fl_resampler_alloc(r, channels, in_rate, out_rate) < 0) return -1;
+   int j, ret;
+   if ((ret = fl_resampler_alloc(r, channels, in_rate, out_rate)) != FL_OK) return ret;
    if (r->num_rate > r->den_rate) cutoff = (float)(XF(0.922f)*XF((double)r->den_rate)/XF((double)r->num_rate));
    else cutoff = 0.940f;
    for (i = 0; i < r->den_rate; i++)
       for (j = 0; j < (int)r->filt_len; j++)
          r->sinc_table[i*r->filt_len+j] = fl_ope_sinc(cutoff, (int)i, r->den_rate, j-(fl_i32)r->filt_len/2+1, r->filt_len);
-   return 0;
+   return FL_OK;
 }
 
 /* ---- Ogg page packer (libopusenc ogg_packer.c) ---- */
@@ -533,7 +533,8 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
    char r128[40];
    unsigned short cw;
    IC = C = f->channels;
-   if (C < 1 || C > 255 || f->rate <= 0) return FL_ERR_UNSUPPORTED;
+   /* below 1000 Hz the resampler drain would not fit in the buffer */
+   if (C < 1 || C > 255 || f->rate < 1000 || f->rate > FL_MAX_RATE) return FL_ERR_UNSUPPORTED;
    if (opt->bitrate > 0 && opt->quality >= 0) return FL_ERR_BAD_ARG;
    o->is_float = f->is_float;
    o->scale = f->is_float ? 1.0f : (float)ldexp(1.0, 1-f->bits);
@@ -567,8 +568,12 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
    e->st = fl_msenc_create(C, family, &err);
    if (f->rate != 48000) {
       e->have_re = 1;
-      fl_ope_rs_init(&e->re, C, f->rate, 48000);
+      if ((ret = fl_ope_rs_init(&e->re, C, f->rate, 48000)) != FL_OK) goto done;
       e->lpc_buffer = (float*)calloc((OPE_LPC_INPUT+OPE_LPC_PADDING)*C, sizeof(float));
+      if (!e->lpc_buffer) {
+         ret = FL_ERR_ALLOC;
+         goto done;
+      }
    }
    fl_msenc_setup(e->st, opt, IMAX(8, IMIN(24, f->container_bits)));
    e->frame_size_request = fl_msenc_get_duration(e->st);

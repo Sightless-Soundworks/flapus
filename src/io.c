@@ -400,7 +400,7 @@ static int fl_run_wav(fl_inbuf *in, fl_sink *sink) {
          fl_inbuf_skip(in, len+(len&1));
       }
    }
-   if (C < 1 || C > 255 || f.rate <= 0) {
+   if (C < 1 || C > 255 || f.rate <= 0 || f.rate > FL_MAX_RATE) {
       ret = FL_ERR_UNSUPPORTED;
       goto done;
    }

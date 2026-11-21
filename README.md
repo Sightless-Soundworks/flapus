@@ -310,7 +310,7 @@ line.
 **Input**
 
 - **WAV**: 8/16/24/32-bit PCM or 32-bit float, `WAVE_FORMAT_EXTENSIBLE` with
-  valid-bits.
+  valid-bits, sample rates up to 1048575 Hz (the FLAC limit).
 - **FLAC**: any bit depth from 4 to 32 bits, 1-8 channels, fixed or variable block
   size. Ogg FLAC and leading ID3v2 tags are accepted. The MD5 is checked, and a
   mismatch is reported as `FL_ERR_CHECKSUM`.
@@ -327,7 +327,9 @@ line.
 
 **Opus output**
 
-- Every input can be encoded, including FLAC.
+- Every input can be encoded, including FLAC, at sample rates from 1000 Hz up. Unusual
+  rates above about 200 kHz that would need a resampling table of more than 2^24 entries
+  (64 MB) are refused.
 - FLAC ReplayGain tags become the OpusHead output gain and `R128_TRACK_GAIN`.
 - Surround: family 1 is used for 3-8 channels, family 255 above that.
 

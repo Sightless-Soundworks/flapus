@@ -1577,7 +1577,7 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
    fl_flac_sink *s = (fl_flac_sink*)sk;
    int c, t, slen;
    if (f->is_float) return FL_ERR_UNSUPPORTED;  /* FLAC is integer PCM only */
-   if (f->channels < 1 || f->channels > 8 || f->bits < 4 || f->bits > 32 || f->rate < 1 || f->rate > 1048575) return FL_ERR_UNSUPPORTED;
+   if (f->channels < 1 || f->channels > 8 || f->bits < 4 || f->bits > 32 || f->rate < 1 || f->rate > FL_MAX_RATE) return FL_ERR_UNSUPPORTED;
    s->C = f->channels;
    s->bits = f->bits;
    s->rate = f->rate;
