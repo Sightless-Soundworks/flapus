@@ -143,6 +143,9 @@ Decoding shows only the percentage and ends with `done`.
 - `--delete-input-file` deletes the input file after a successful conversion. It is
   off by default, and nothing is deleted when an error occurs. It cannot be combined
   with stdin input, or with an output that is the input file itself.
+- `--no-timestamp` leaves the output's times alone. By default the output gets the
+  input's modification and access times, as with `flac`, and from FLAC to FLAC or Opus
+  to Opus also its creation time (on Windows and macOS; Linux cannot set it).
 
 The output is written to a temporary file next to it (`name.1a2b3c4d.tmp`), which
 replaces the output file only when the conversion has succeeded. A failed conversion

@@ -118,6 +118,8 @@ typedef struct {
    int padding;        /* free bytes after the tags for later editing (Opus: after OpusTags, FLAC: a
                           PADDING block), 0 (default) = none */
    long long serialno; /* Ogg serial number of Opus output, 0..4294967295; -1 (default) = random */
+   int keep_time;      /* fl_convert_file: 1 = the output gets the input's modification time, and
+                          from FLAC to FLAC or Opus to Opus also its creation time; 0 (default) = not */
    /* Progress during fl_convert_file (NULL = none). done: 0..1 (-1 if the length is unknown),
       ratio: output size / input PCM size so far (-1 for WAV output). Called with done = 1
       when the conversion has finished. */

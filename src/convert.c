@@ -323,8 +323,101 @@ static int fl_finish_output(const char *tmp, const char *out_path, int ret) {
    return ret == FL_OK || ret == FL_ERR_CHECKSUM ? FL_ERR_IO : ret;
 }
 
-/* Converts in into a sink for out_path or (out_path NULL) out_io. */
-static int fl_convert(fl_inbuf *in, const char *out_path, const fl_io *out_io, const fl_options *opt_in) {
+/* Times of a file, for fl_options.keep_time. */
+typedef struct {
+#ifdef _WIN32
+   FILETIME created, accessed, modified;
+#elif defined(__unix__) || defined(__APPLE__)
+   struct stat st;
+#endif
+   int ok;
+} fl_times;
+
+#ifdef _WIN32
+static HANDLE fl_open_handle(const char *path, DWORD access) {
+   wchar_t *w = fl_widen(path);
+   DWORD share = FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE;
+   HANDLE h;
+   if (w) {
+      h = CreateFileW(w, access, share, NULL, OPEN_EXISTING, 0, NULL);
+      free(w);
+   } else h = CreateFileA(path, access, share, NULL, OPEN_EXISTING, 0, NULL);
+   return h;
+}
+#endif
+
+static void fl_get_times(const char *path, fl_times *t) {
+   memset(t, 0, sizeof(*t));
+#ifdef _WIN32
+   {
+      HANDLE h = fl_open_handle(path, FILE_READ_ATTRIBUTES);
+      if (h == INVALID_HANDLE_VALUE) return;
+      t->ok = GetFileTime(h, &t->created, &t->accessed, &t->modified) != 0;
+      CloseHandle(h);
+   }
+#elif defined(__unix__) || defined(__APPLE__)
+   t->ok = stat(path, &t->st) == 0 && S_ISREG(t->st.st_mode);
+#else
+   (void)path;
+#endif
+}
+
+/* Gives path the access and modification times of t, and with created also its
+   creation time (Windows and macOS; Linux cannot set it). */
+static void fl_set_times(const char *path, const fl_times *t, int created) {
+   if (!t->ok) return;
+#ifdef _WIN32
+   {
+      HANDLE h = fl_open_handle(path, FILE_WRITE_ATTRIBUTES);
+      if (h == INVALID_HANDLE_VALUE) return;
+      SetFileTime(h, created ? &t->created : NULL, &t->accessed, &t->modified);
+      CloseHandle(h);
+   }
+#elif defined(__unix__) || defined(__APPLE__)
+#if defined(UTIME_OMIT) && defined(__APPLE__)
+   {
+      struct timespec ts[2];
+      ts[0] = t->st.st_atimespec;
+      ts[1] = t->st.st_mtimespec;
+      utimensat(AT_FDCWD, path, ts, 0);
+   }
+#elif defined(UTIME_OMIT)
+   {
+      struct timespec ts[2];
+      ts[0] = t->st.st_atim;
+      ts[1] = t->st.st_mtim;
+      utimensat(AT_FDCWD, path, ts, 0);
+   }
+#else
+   {
+      /* without nanosecond support: whole seconds */
+      struct utimbuf u;
+      u.actime = t->st.st_atime;
+      u.modtime = t->st.st_mtime;
+      utime(path, &u);
+   }
+#endif
+#ifdef __APPLE__
+   if (created) {
+      struct attrlist al;
+      struct timespec ts = t->st.st_birthtimespec;
+      memset(&al, 0, sizeof(al));
+      al.bitmapcount = ATTR_BIT_MAP_COUNT;
+      al.commonattr = ATTR_CMN_CRTIME;
+      setattrlist(path, &al, &ts, sizeof(ts), 0);
+   }
+#else
+   (void)created;
+#endif
+#else
+   (void)path;
+   (void)created;
+#endif
+}
+
+/* Converts in into a sink for out_path or (out_path NULL) out_io.
+   same: set to 1 when input and output are the same format (FLAC or Opus). */
+static int fl_convert(fl_inbuf *in, const char *out_path, const fl_io *out_io, const fl_options *opt_in, int *same) {
    fl_options opt;
    fl_sink *sink;
    char *tmp = NULL;
@@ -334,6 +427,7 @@ static int fl_convert(fl_inbuf *in, const char *out_path, const fl_io *out_io, c
    if ((ret = fl_check_options(&opt)) != FL_OK || (ret = in_fmt = fl_detect_format(in)) < 0) goto done;
    out_fmt = ret = opt.format ? opt.format : out_path ? fl_format_from_name(out_path) : FL_ERR_BAD_ARG;
    if (ret < 0) goto done;
+   if (same) *same = in_fmt == out_fmt && in_fmt != FL_FORMAT_WAV;
    if (out_path && !fl_is_std(out_path) && !(tmp = fl_temp_path(out_path))) {
       ret = FL_ERR_IO;
       goto done;
@@ -357,17 +451,23 @@ done:
 
 FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_options *opt) {
    fl_inbuf in;
-   int ret;
+   fl_times t;
+   int ret, same = 0;
    if (opt && (ret = fl_check_options(opt)) != FL_OK) return ret;
+   /* before the conversion, which may replace the input */
+   memset(&t, 0, sizeof(t));
+   if (opt && opt->keep_time && !fl_is_std(in_path) && !fl_is_std(out_path)) fl_get_times(in_path, &t);
    if ((ret = fl_inbuf_open(&in, in_path)) != FL_OK) return ret;
-   return fl_convert(&in, out_path, NULL, opt);
+   ret = fl_convert(&in, out_path, NULL, opt, &same);
+   if (ret == FL_OK || ret == FL_ERR_CHECKSUM) fl_set_times(out_path, &t, same);
+   return ret;
 }
 
 FLDEF int fl_convert_io(const fl_io *in_io, const fl_io *out_io, const fl_options *opt) {
    fl_inbuf in;
    if (!in_io || !out_io || !opt || !opt->format) return FL_ERR_BAD_ARG;
    fl_inbuf_open_io(&in, in_io);
-   return fl_convert(&in, NULL, out_io, opt);
+   return fl_convert(&in, NULL, out_io, opt, NULL);
 }
 
 static int fl_read_all(fl_inbuf *in, const fl_options *opt_in, fl_audio *audio) {

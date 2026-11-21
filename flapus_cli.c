@@ -19,6 +19,8 @@ static void usage(FILE *f) {
       "      --padding [N]    free bytes after the tags, so tags can be edited later:\n"
       "                       N, or without N 8192 for FLAC and 512 for Opus\n"
       "      --no-padding     no free bytes (the default)\n"
+      "      --no-timestamp   do not give the output the input's modification time (and,\n"
+      "                       FLAC to FLAC or Opus to Opus, its creation time)\n"
       "  -f, --force          overwrite an existing output file\n"
       "  -s, --silent         no progress display\n"
       "  -V, --version        show the version and how this build was made\n"
@@ -209,6 +211,7 @@ int main(int argc, char **argv) {
       return 1;
    }
    fl_options_init(&opt);
+   opt.keep_time = 1;  /* like flac */
    opt.threads = 0;  /* the command line tool uses every CPU (the library default is 1) */
    for (i = 1; i < last; i++) {
       const char *a = argv[i], *v = i+1 < last ? argv[i+1] : NULL;
@@ -227,6 +230,9 @@ int main(int argc, char **argv) {
          takes = 0;
       } else if (strcmp(a, "--no-seektable") == 0) {
          opt.flac_seektable = 0;
+         takes = 0;
+      } else if (strcmp(a, "--no-timestamp") == 0) {
+         opt.keep_time = 0;
          takes = 0;
       } else if (strcmp(a, "--no-padding") == 0) {
          opt.padding = 0;

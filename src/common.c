@@ -17,8 +17,13 @@
 #include <process.h>
 #elif defined(__unix__) || defined(__APPLE__)
 #include <unistd.h>
+#include <fcntl.h>
+#include <utime.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#ifdef __APPLE__
+#include <sys/attr.h>
+#endif
 #endif
 #include <time.h>
 

@@ -106,10 +106,11 @@ jobs:
           $env:PATH = "C:\w64devkit\bin;$env:PATH"
           $allowed = @("CloseHandle", "CreateFileA", "CreateFileW", "CreateThread",
             "DeleteCriticalSection", "EnterCriticalSection", "GetCPInfo", "GetFileInformationByHandle",
-            "GetLastError", "GetModuleHandleA", "GetProcAddress", "GetSystemInfo", "GetSystemTime",
-            "InitializeCriticalSection", "LeaveCriticalSection", "MoveFileExA", "MoveFileExW",
-            "MultiByteToWideChar", "SetUnhandledExceptionFilter", "Sleep", "SystemTimeToFileTime",
-            "TlsGetValue", "VirtualProtect", "VirtualQuery", "WaitForSingleObject", "WideCharToMultiByte")
+            "GetFileTime", "GetLastError", "GetModuleHandleA", "GetProcAddress", "GetSystemInfo",
+            "GetSystemTime", "InitializeCriticalSection", "LeaveCriticalSection", "MoveFileExA",
+            "MoveFileExW", "MultiByteToWideChar", "SetFileTime", "SetUnhandledExceptionFilter", "Sleep",
+            "SystemTimeToFileTime", "TlsGetValue", "VirtualProtect", "VirtualQuery",
+            "WaitForSingleObject", "WideCharToMultiByte")
           $crt = @("abort", "_amsg_exit", "atexit", "atof", "atoi", "calloc", "ceil", "_cexit", "clock",
             "_errno", "exit", "fclose", "ferror", "fflush", "fgetpos", "_fileno", "fopen", "fprintf",
             "fputc", "fread", "free", "fseek", "fsetpos", "ftell", "fwrite", "__getmainargs", "_getpid",
