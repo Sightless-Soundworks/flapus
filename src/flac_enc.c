@@ -157,8 +157,8 @@ typedef struct {
    int fixed_block;   /* block size when unit == 0 */
    int subdiv;        /* LPC windows: 1 = tukey(0.5), else as flac's subdivide_tukey(subdiv) */
    int picks;         /* LPC orders tried per window: the best by prediction error */
-   int prec_range;    /* coefficient precisions tried around the default (99 = all, 98 = outward
-                         while they help) */
+   int prec_range;    /* coefficient precisions tried around the default (99 = outward while they
+                         help) */
    int ls;            /* covariance method candidates */
    int irls;          /* IRLS iterations */
    int climb;         /* hill climbing passes */
@@ -174,9 +174,9 @@ static void fl_flac_level(fl_flac_cfg *c, int level, int lax, int rate) {
       {8, 6, 4608, 0, 4096, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0},
       {12, 8, 4608, 0, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 1, 0},
       {12, 8, 4608, 1024, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 512, 4096, 3, 1, 98, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 256, 4096, 3, 1, 98, 0, 0, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 4, 1, 98, 0, 0, 0, 0, 1, 1, 0},
+      {12, 8, 4608, 512, 4096, 3, 1, 99, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 256, 4096, 3, 1, 99, 0, 0, 0, 0, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 4, 1, 99, 0, 0, 0, 0, 1, 1, 0},
       {12, 8, 4608, 256, 4096, 5, 1, 99, 0, 4, 0, 0, 1, 1, 0},
       {12, 8, 4608, 256, 4096, 5, 3, 99, 0, 4, 0, 0, 1, 1, 0},
       {12, 8, 4608, 256, 4096, 5, 3, 99, 1, 8, 8, 0, 1, 0, 0}};
@@ -1566,15 +1566,14 @@ static int fl_try_lpc_prec(fl_search *s, const double *lp, int order, int prec, 
    return 1;
 }
 
-/* Quantizes at the default precision and nearby ones and evaluates. range 99: every
-   precision; 98: outward from the default, each way until two in a row bring nothing. */
+/* Quantizes at the default precision and nearby ones and evaluates. range 99: outward
+   from the default, each way until two precisions in a row bring nothing. */
 static fl_u64 fl_try_lpc_float(fl_search *s, const double *lp, int order, int range) {
    int p0 = FL_MIN(fl_default_prec(s->n, s->bps), fl_max_prec(s->bps, order)), prec, miss;
    fl_u64 best = ~(fl_u64)0;
    int pmax = fl_max_prec(s->bps, order);
-   if (range != 98) {
-      for (prec = range >= 99 ? 5 : FL_MAX(5, p0-range); prec <= (range >= 99 ? pmax : FL_MIN(pmax, p0+range)); prec++)
-         fl_try_lpc_prec(s, lp, order, prec, &best);
+   if (range < 99) {
+      for (prec = FL_MAX(5, p0-range); prec <= FL_MIN(pmax, p0+range); prec++) fl_try_lpc_prec(s, lp, order, prec, &best);
       return best;
    }
    for (prec = p0, miss = 0; prec <= pmax && miss < 2; prec++) miss = fl_try_lpc_prec(s, lp, order, prec, &best) ? 0 : miss+1;
