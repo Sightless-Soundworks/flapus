@@ -121,6 +121,8 @@ Refinements, applied to the best candidate:
 
 - **Precision search**: all coefficient precisions within libFLAC's 32-bit decoding
   rule `prec <= 32-bps-log2(order)` for 17 bits or less (levels 1-2: the default ±1).
+  Levels 3-5 go outward from the default and stop each way after two precisions that
+  bring nothing: 3-4 % faster, 0.004 % larger files (at levels 6-8 it cost 0.013 %).
   Quantization uses libFLAC's error feedback. The default precision is libFLAC's: by
   block size, and 13-15 above 17 bits. The window candidates themselves are tried at
   the default precision only; ±1 for each of them was 14 % of the time at level 5 for
