@@ -24,6 +24,7 @@ FLDEF const char *fl_error_text(int err) {
    case FL_ERR_CHECKSUM: return "MD5 mismatch: the FLAC input is damaged";
    case FL_ERR_INTERNAL: return "internal FLAC encoder check failed";
    case FL_ERR_NOT_SUBSET: return "bit depth or sample rate outside the FLAC subset (needs --lax)";
+   case FL_ERR_TOO_LARGE: return "tags or picture too large for a FLAC metadata block (16 MB)";
    default: return "unknown error";
    }
 }

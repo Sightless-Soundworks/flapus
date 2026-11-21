@@ -405,6 +405,8 @@ line.
   - FLAC pictures become `METADATA_BLOCK_PICTURE` comments in Opus, and back.
   - On Opus → FLAC the Opus encoder tags are dropped.
   - On FLAC → FLAC, `APPLICATION` and `CUESHEET` blocks are also kept.
+  - A FLAC metadata block holds at most 16 MB: tags or a picture that do not fit stop
+    the conversion with an error (`FL_ERR_TOO_LARGE`) instead of being dropped.
 
 **Opus output**
 

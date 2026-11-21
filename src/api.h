@@ -81,6 +81,7 @@ extern "C" {
 #define FL_ERR_CHECKSUM -6  /* decoded FLAC audio does not match the MD5 in its header */
 #define FL_ERR_INTERNAL -7  /* encoder self-check failed (please report) */
 #define FL_ERR_NOT_SUBSET -8  /* FLAC bit depth or rate outside the subset (needs flac_lax) */
+#define FL_ERR_TOO_LARGE -9  /* tags or a picture too large for a FLAC metadata block (16 MB) */
 
 /* Short English description of FL_OK or an FL_ERR_* code ("unknown error" for other values). */
 FLDEF const char *fl_error_text(int err);

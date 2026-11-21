@@ -81,6 +81,7 @@ extern "C" {
 #define FL_ERR_CHECKSUM -6  /* decoded FLAC audio does not match the MD5 in its header */
 #define FL_ERR_INTERNAL -7  /* encoder self-check failed (please report) */
 #define FL_ERR_NOT_SUBSET -8  /* FLAC bit depth or rate outside the subset (needs flac_lax) */
+#define FL_ERR_TOO_LARGE -9  /* tags or a picture too large for a FLAC metadata block (16 MB) */
 
 /* Short English description of FL_OK or an FL_ERR_* code ("unknown error" for other values). */
 FLDEF const char *fl_error_text(int err);
@@ -12441,11 +12442,22 @@ static void fl_block_header(fl_flac_sink *s, int type, int last, fl_u32 len) {
 static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
    unsigned char hdr[4+4+34], zero[16], **pics = NULL;
    int i, npic = 0, ntag = 0, nblk = f->nblocks, *plen = NULL, ret = FL_OK;
+   const char *vendor = "flapus";
+   fl_u64 clen = 4+strlen(vendor)+4;  /* VORBIS_COMMENT length */
    char mask_tag[64];
    mask_tag[0] = 0;
    if (f->channel_mask) sprintf(mask_tag, "WAVEFORMATEXTENSIBLE_CHANNEL_MASK=0x%04X", (unsigned)f->channel_mask);
-   for (i = 0; i < f->ntags; i++) ntag += fl_flac_tag_kind(f, f->tags[i]) == 1;
-   if (mask_tag[0]) ntag++;
+   for (i = 0; i < f->ntags; i++)
+      if (fl_flac_tag_kind(f, f->tags[i]) == 1) {
+         ntag++;
+         clen += 4+strlen(f->tags[i]);
+      }
+   if (mask_tag[0]) {
+      ntag++;
+      clen += 4+strlen(mask_tag);
+   }
+   /* a block length has 24 bits: refuse what does not fit rather than lose it */
+   if (ntag && clen > 0xFFFFFF) return FL_ERR_TOO_LARGE;
    /* pictures that decode to a valid block */
    pics = (unsigned char**)calloc(f->ntags+1, sizeof(*pics));
    plen = (int*)calloc(f->ntags+1, sizeof(int));
@@ -12462,7 +12474,12 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
             goto done;
          }
          got = fl_base64_decode(b64, l, pics[npic]);
-         if (got > 0 && got < (1<<24)) plen[npic++] = got;
+         if (got > 0xFFFFFF) {
+            ret = FL_ERR_TOO_LARGE;
+            npic++;
+            goto done;
+         }
+         if (got > 0) plen[npic++] = got;
          else {
             free(pics[npic]);
             pics[npic] = NULL;
@@ -12499,13 +12516,8 @@ static int fl_flac_metadata_out(fl_flac_sink *s, const fl_format *f) {
       for (i = 0; i < s->nseek; i++) fl_out_write(s->f, pt, 18);
    }
    if (ntag) {
-      const char *vendor = "flapus";
       unsigned char n4[4];
-      fl_u32 len = 4+(fl_u32)strlen(vendor)+4;
-      for (i = 0; i < f->ntags; i++)
-         if (fl_flac_tag_kind(f, f->tags[i]) == 1) len += 4+(fl_u32)strlen(f->tags[i]);
-      if (mask_tag[0]) len += 4+(fl_u32)strlen(mask_tag);
-      fl_block_header(s, 4, !npic && !nblk && !s->padding, len);
+      fl_block_header(s, 4, !npic && !nblk && !s->padding, (fl_u32)clen);
       fl_put_le32(n4, (fl_u32)strlen(vendor));
       fl_out_write(s->f, n4, 4);
       fl_out_write(s->f, vendor, strlen(vendor));
@@ -40806,6 +40818,7 @@ FLDEF const char *fl_error_text(int err) {
    case FL_ERR_CHECKSUM: return "MD5 mismatch: the FLAC input is damaged";
    case FL_ERR_INTERNAL: return "internal FLAC encoder check failed";
    case FL_ERR_NOT_SUBSET: return "bit depth or sample rate outside the FLAC subset (needs --lax)";
+   case FL_ERR_TOO_LARGE: return "tags or picture too large for a FLAC metadata block (16 MB)";
    default: return "unknown error";
    }
 }
