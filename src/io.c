@@ -17,7 +17,7 @@ static int fl_check_options(const fl_options *o) {
    if (o->signal < 0 || o->signal > 2 || o->expect_loss < 0 || o->expect_loss > 100) return FL_ERR_BAD_ARG;
    if (o->downmix < 0 || o->downmix > 2 || o->padding < 0 || o->padding > 0xFFFFFF) return FL_ERR_BAD_ARG;
    if ((o->flac_seektable|o->flac_verify|o->keep_time|o->remove_tags) & ~1) return FL_ERR_BAD_ARG;
-   if (o->serialno < -1 || o->serialno > 4294967295LL) return FL_ERR_BAD_ARG;
+   if (o->serialno < -1 || o->serialno > 4294967295LL || o->search < 0 || o->search > 1<<30) return FL_ERR_BAD_ARG;
    return FL_OK;
 }
 
@@ -362,6 +362,17 @@ static void fl_md5_samples(fl_md5 *m, const fl_i32 *pcm, size_t n, int bits) {
       fl_md5_update(m, tmp, (size_t)(q-tmp));
       i += chunk;
    }
+}
+
+/* Ogg page CRC (polynomial 0x04c11db7) bit by bit: no table that threads would share,
+   and the pages of an Opus file are small. */
+static fl_u32 fl_ogg_crc(fl_u32 crc, const unsigned char *p, size_t n) {
+   int k;
+   while (n--) {
+      crc ^= (fl_u32)*p++<<24;
+      for (k = 0; k < 8; k++) crc = (crc&0x80000000U) ? (crc<<1)^0x04c11db7U : crc<<1;
+   }
+   return crc;
 }
 
 /* ---- base64 (METADATA_BLOCK_PICTURE comments) ---- */

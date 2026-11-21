@@ -140,6 +140,11 @@ as with stdin). Decoding shows only the percentage and ends with `done`.
 
 - `--format wav|flac|opus` sets the output format instead of the extension (needed
   for stdout).
+- `--search N` looks for the start of the stream up to N KB into the input, for
+  example an Opus stream inside an exe. The default is 64. Further in than the start,
+  only a stream that passes closer checks counts: a WAV header, a FLAC STREAMINFO with
+  plausible values, or an Ogg page with a correct CRC; the bytes before it are skipped.
+  Such an input cannot be converted onto itself.
 - `-f` or `--force` overwrites an existing output file. Without it flapus stops with an
   error, as `flac` does.
 - `-s` or `--silent` turns the progress display off.
@@ -403,6 +408,7 @@ line.
   STREAMINFO, the file is reported as damaged.
 - **Ogg Opus**: channel mapping families 0, 1, 2 and 255, chained and multiplexed
   files.
+- A stream that does not start the file is found up to 64 KB in (`--search`).
 - Ogg files are read page by page, so memory use does not grow with the file size (from
   stdin they are first read into memory, since they are scanned twice).
 
@@ -483,7 +489,8 @@ the Opus output options); pass it in the `OPUSENC` variable. The scripts run
 - `test/api`: a two-file program using only the public API. It also checks that reading
   in pieces, after seeks, from memory and through callbacks gives the same samples as
   `fl_read_audio()`, that `fl_writer` and `fl_convert_io()` give the same files as the
-  path functions, and that FLAC frames round-trip.
+  path functions, that FLAC frames round-trip, and that a FLAC stream behind other data
+  is found.
 - `test/math.c`: the `src/math.c` functions against libm's long double versions at
   200000 arguments each, plus large arguments of `sin`/`cos` (up to 2^1024, among them
   the double closest to a multiple of pi/2) and the special values of C99 Annex F.

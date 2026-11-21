@@ -323,6 +323,39 @@ int main(void) {
       opt.flac_lax = 0;
       free(a.samples);
       remove("api_test18.flac");
+      {
+         /* a stream 5000 bytes into other data is found within the search range (64 KB by
+            default), and not at all with search 0 */
+         membuf m;
+         fl_io io;
+         fl_audio c;
+         FILE *f = fopen("api_test.flac", "rb");
+         size_t got;
+         long long k;
+         memset(&m, 0, sizeof(m));
+         m.cap = 1<<22;
+         m.p = (unsigned char*)malloc(m.cap);
+         for (k = 0; k < 5000; k++) m.p[k] = (unsigned char)(k*2654435761u>>13);
+         got = f ? fread(m.p+5000, 1, m.cap-5000, f) : 0;
+         if (f) fclose(f);
+         m.len = 5000+got;
+         io.user = &m;
+         io.read = mem_read;
+         io.write = NULL;
+         io.seek = mem_seek;
+         if ((err = fl_read_audio("api_test.flac", NULL, &b)) != FL_OK || (err = fl_read_audio_io(&io, NULL, &c)) != FL_OK)
+            return printf("search: read error %d\n", err), 1;
+         for (k = 0; k < b.frames*b.channels && c.frames == b.frames && b.samples[k] == c.samples[k]; k++);
+         m.pos = 0;
+         opt.search = 0;
+         err = fl_read_audio_io(&io, &opt, &a);
+         printf("search: %s\n", k == b.frames*b.channels && err == FL_ERR_UNSUPPORTED ? "ok" : "FAILED");
+         if (k != b.frames*b.channels || err != FL_ERR_UNSUPPORTED) return 1;
+         opt.search = 64;
+         fl_audio_free(&b);
+         fl_audio_free(&c);
+         free(m.p);
+      }
 #ifdef FLAPUS_HAVE_ENCODER
       if ((err = fl_convert_file("api_test.flac", "api_test.opus", NULL)) != FL_OK) return printf("convert error %d\n", err), 1;
       if ((err = fl_read_audio("api_test.opus", NULL, &b)) != FL_OK) return printf("Opus read error %d\n", err), 1;

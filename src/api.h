@@ -94,6 +94,8 @@ FLDEF const char *fl_error_text(int err);
 
 typedef struct {
    int format;         /* output format, FL_FORMAT_* */
+   int search;         /* input: how far into the file to look for the start of a WAV, FLAC or Ogg
+                          stream, such as one in an exe, in KB; 64 (default), 0 = only at the start */
    /* Opus input */
    int rate;           /* output rate, 0 = original input rate */
    /* Sample format of WAV and FLAC output (and fl_read_audio), from any input */

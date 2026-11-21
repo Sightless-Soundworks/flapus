@@ -24,16 +24,6 @@ typedef struct {
    int error;
 } fl_oggp;
 
-/* Ogg page CRC (polynomial 0x04c11db7) bit by bit: no table that threads would share,
-   and the pages of an Opus file are small. */
-static fl_u32 fl_ogg_crc(fl_u32 crc, const unsigned char *p, size_t n) {
-   int k;
-   while (n--) {
-      crc ^= (fl_u32)*p++<<24;
-      for (k = 0; k < 8; k++) crc = (crc&0x80000000U) ? (crc<<1)^0x04c11db7U : crc<<1;
-   }
-   return crc;
-}
 static void fl_oggp_reserve(unsigned char **p, size_t *cap, size_t need) {
    if (need > *cap) {
       size_t n = need*3/2+1024;

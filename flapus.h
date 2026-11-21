@@ -94,6 +94,8 @@ FLDEF const char *fl_error_text(int err);
 
 typedef struct {
    int format;         /* output format, FL_FORMAT_* */
+   int search;         /* input: how far into the file to look for the start of a WAV, FLAC or Ogg
+                          stream, such as one in an exe, in KB; 64 (default), 0 = only at the start */
    /* Opus input */
    int rate;           /* output rate, 0 = original input rate */
    /* Sample format of WAV and FLAC output (and fl_read_audio), from any input */
@@ -7950,7 +7952,7 @@ static int fl_check_options(const fl_options *o) {
    if (o->signal < 0 || o->signal > 2 || o->expect_loss < 0 || o->expect_loss > 100) return FL_ERR_BAD_ARG;
    if (o->downmix < 0 || o->downmix > 2 || o->padding < 0 || o->padding > 0xFFFFFF) return FL_ERR_BAD_ARG;
    if ((o->flac_seektable|o->flac_verify|o->keep_time|o->remove_tags) & ~1) return FL_ERR_BAD_ARG;
-   if (o->serialno < -1 || o->serialno > 4294967295LL) return FL_ERR_BAD_ARG;
+   if (o->serialno < -1 || o->serialno > 4294967295LL || o->search < 0 || o->search > 1<<30) return FL_ERR_BAD_ARG;
    return FL_OK;
 }
 
@@ -8295,6 +8297,17 @@ static void fl_md5_samples(fl_md5 *m, const fl_i32 *pcm, size_t n, int bits) {
       fl_md5_update(m, tmp, (size_t)(q-tmp));
       i += chunk;
    }
+}
+
+/* Ogg page CRC (polynomial 0x04c11db7) bit by bit: no table that threads would share,
+   and the pages of an Opus file are small. */
+static fl_u32 fl_ogg_crc(fl_u32 crc, const unsigned char *p, size_t n) {
+   int k;
+   while (n--) {
+      crc ^= (fl_u32)*p++<<24;
+      for (k = 0; k < 8; k++) crc = (crc&0x80000000U) ? (crc<<1)^0x04c11db7U : crc<<1;
+   }
+   return crc;
 }
 
 /* ---- base64 (METADATA_BLOCK_PICTURE comments) ---- */
@@ -39889,16 +39902,6 @@ typedef struct {
    int error;
 } fl_oggp;
 
-/* Ogg page CRC (polynomial 0x04c11db7) bit by bit: no table that threads would share,
-   and the pages of an Opus file are small. */
-static fl_u32 fl_ogg_crc(fl_u32 crc, const unsigned char *p, size_t n) {
-   int k;
-   while (n--) {
-      crc ^= (fl_u32)*p++<<24;
-      for (k = 0; k < 8; k++) crc = (crc&0x80000000U) ? (crc<<1)^0x04c11db7U : crc<<1;
-   }
-   return crc;
-}
 static void fl_oggp_reserve(unsigned char **p, size_t *cap, size_t need) {
    if (need > *cap) {
       size_t n = need*3/2+1024;
@@ -40706,6 +40709,7 @@ FLDEF void fl_options_init(fl_options *opt) {
    opt->quality = -1;
    opt->flac_seektable = 1;
    opt->serialno = -1;
+   opt->search = 64;
 }
 
 FLDEF const char *fl_error_text(int err) {
@@ -40724,10 +40728,37 @@ FLDEF const char *fl_error_text(int err) {
    }
 }
 
-/* Detects the input format from the first bytes of the file (they stay in the buffer). */
-static int fl_detect_format(fl_inbuf *in) {
+/* The format of a stream that starts at b (n bytes; 1 KB holds every header checked), or
+   0: WAV, FLAC with a plausible STREAMINFO first, or the first page of an Ogg Opus or Ogg
+   FLAC stream with a correct CRC. */
+static int fl_stream_at(const unsigned char *b, size_t n) {
+   if (fl_is_wav(b, n)) return FL_FORMAT_WAV;
+   if (n >= 42 && memcmp(b, "fLaC", 4) == 0 && (b[4]&127) == 0 && b[5] == 0 && b[6] == 0 && b[7] == 34) {
+      int minb = b[8]<<8|b[9], maxb = b[10]<<8|b[11];
+      return minb >= 16 && maxb >= minb && (b[18]|b[19]|(b[20]>>4)) ? FL_FORMAT_FLAC : 0;
+   }
+   if (n >= 27 && memcmp(b, "OggS", 4) == 0 && b[4] == 0 && (b[5]&2) && b[26]) {
+      size_t len = 27+b[26], i;
+      unsigned char h[27];
+      for (i = 0; i < b[26]; i++) len += b[27+i];
+      if (len > n || len < (size_t)27+b[26]+8) return 0;
+      memcpy(h, b, 27);
+      memset(h+22, 0, 4);
+      if (fl_ogg_crc(fl_ogg_crc(0, h, 27), b+27, len-27) != fl_get_le32(b+22)) return 0;
+      if (memcmp(b+27+b[26], "OpusHead", 8) == 0) return FL_FORMAT_OPUS;
+      if (memcmp(b+27+b[26], "\177FLAC", 5) == 0) return FL_FORMAT_FLAC;
+   }
+   return 0;
+}
+
+/* Detects the input format from the first bytes of the file, or from a stream that starts
+   less than search bytes into it (checked more closely by fl_stream_at), such as one in an
+   exe. The bytes before the stream are skipped; its first bytes stay in the buffer. */
+static int fl_detect_format(fl_inbuf *in, fl_i64 search) {
    const unsigned char *b;
    size_t n, i;
+   fl_i64 start = fl_inbuf_tell(in);
+   int fmt;
    if (fl_inbuf_need(in, 4096) < 0) return FL_ERR_ALLOC;
    b = in->buf+in->pos;
    n = FL_MIN(in->len-in->pos, 4096);
@@ -40739,6 +40770,19 @@ static int fl_detect_format(fl_inbuf *in) {
          if (memcmp(b+i, "OpusHead", 8) == 0) return FL_FORMAT_OPUS;
          if (memcmp(b+i, "\177FLAC", 5) == 0) return FL_FORMAT_FLAC;
       }
+   }
+   /* further in: 64 KB at a time, read on while less than 1 KB is left */
+   while (fl_inbuf_tell(in)-start+1 < search) {
+      if (fl_inbuf_need(in, 1<<16) < 0) return FL_ERR_ALLOC;
+      b = in->buf+in->pos;
+      n = in->len-in->pos;
+      if (n < 2) break;
+      for (i = 1; i < n && fl_inbuf_tell(in)-start+(fl_i64)i < search && (n-i >= 1024 || in->eof); i++)
+         if ((fmt = fl_stream_at(b+i, n-i)) != 0) {
+            in->pos += i;
+            return fmt;
+         }
+      in->pos += i-1;
    }
    return FL_ERR_UNSUPPORTED;
 }
@@ -41199,7 +41243,7 @@ static int fl_convert(fl_inbuf *in, fl_i64 in_size, const char *out_path, const 
    int in_fmt, out_fmt, ret, err;
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
-   if ((ret = fl_check_options(&opt)) != FL_OK || (ret = in_fmt = fl_detect_format(in)) < 0) goto done;
+   if ((ret = fl_check_options(&opt)) != FL_OK || (ret = in_fmt = fl_detect_format(in, (fl_i64)opt.search<<10)) < 0) goto done;
    out_fmt = ret = opt.format ? opt.format : out_path ? fl_format_from_name(out_path) : FL_ERR_BAD_ARG;
    if (ret < 0) goto done;
    if (same) *same = in_fmt == out_fmt && in_fmt != FL_FORMAT_WAV;
@@ -41254,7 +41298,7 @@ static int fl_read_all(fl_inbuf *in, const fl_options *opt_in, fl_audio *audio) 
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
    memset(audio, 0, sizeof(*audio));
-   if ((ret = fl_check_options(&opt)) == FL_OK && (fmt = ret = fl_detect_format(in)) >= 0) {
+   if ((ret = fl_check_options(&opt)) == FL_OK && (fmt = ret = fl_detect_format(in, (fl_i64)opt.search<<10)) >= 0) {
       memset(&m, 0, sizeof(m));
       m.base.start = fl_mem_start;
       m.base.write = fl_mem_write;
@@ -41474,7 +41518,7 @@ static fl_reader *fl_reader_create(fl_reader *r, const fl_options *opt_in, int *
    int fmt = 0, ret;
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
-   if ((ret = fl_check_options(&opt)) == FL_OK && (fmt = ret = fl_detect_format(&r->in)) >= 0)
+   if ((ret = fl_check_options(&opt)) == FL_OK && (fmt = ret = fl_detect_format(&r->in, (fl_i64)opt.search<<10)) >= 0)
       ret = fl_source_open(fmt, &r->in, &opt, &r->src);
    if (ret >= 0) {
       r->q.C = r->src->fmt.channels;

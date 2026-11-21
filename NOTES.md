@@ -32,6 +32,11 @@ channel order, right-justified to `bits`) to a sink, see `fl_format` and `fl_sin
 Conversion runs the steps to the end; `fl_reader` runs them as far as needed and keeps
 the samples in a queue.
 
+The input format comes from the first bytes (`fl_detect_format`). If they are not a
+header, the next `search` KB are scanned for the start of a stream, with closer checks
+there (`fl_stream_at`: a plausible STREAMINFO, an Ogg page CRC), since a file such as an
+exe holds these magic strings in its data; the bytes before the stream are skipped.
+
 - **Sources**: `fl_wav_open`, `fl_flac_open` (native and Ogg) and `fl_opus_open` (16-bit
   at the original rate by default, dither).
 - **Seeking**: WAV by position; FLAC by bisection over the frames (frame headers carry

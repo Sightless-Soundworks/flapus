@@ -18,6 +18,8 @@ static void usage(FILE *f) {
       "  Use - for stdin or stdout (stdout needs --format).\n"
       "General:\n"
       "      --format F       output format: wav, flac or opus (overrides the extension)\n"
+      "      --search N       look for the start of the stream up to N KB into the input,\n"
+      "                       such as an Opus stream in an exe (default 64)\n"
       "      --padding [N]    free bytes after the tags, so tags can be edited later:\n"
       "                       N, or without N 8192 for FLAC and 512 for Opus\n"
       "                       (default: none)\n"
@@ -128,7 +130,8 @@ static const char *const flag_opts[] = {"-s", "--silent", "-f", "--force", "--de
                                         "--vbr", "--cvbr", "--hard-cbr", "--music", "--speech", "--no-phase-inv",
                                         "--downmix-mono", "--downmix-stereo", NULL};
 static const char *const value_opts[] = {"--format", "--level", "--threads", "--rate", "--bits", "--bitrate", "--comp",
-                                         "--framesize", "--quality", "--expect-loss", "--padding", "--serial", NULL};
+                                         "--framesize", "--quality", "--expect-loss", "--padding", "--serial", "--search",
+                                         NULL};
 
 /* How many arguments option a takes, 0 or 1 (v: the next argument or NULL), or -1 if a
    is not an option. */
@@ -150,14 +153,17 @@ static int count_paths(int argc, char **argv) {
    return argc-i >= 2 ? 2 : 1;
 }
 
-/* Detected format of the input file (FL_FORMAT_* or FL_ERR_*); *ogg: in an Ogg container. */
-static int input_format(const char *path, int *ogg) {
+/* Detected format of the input file (FL_FORMAT_* or FL_ERR_*), searched as opt->search
+   says; *ogg: in an Ogg container, *at: where the stream starts. */
+static int input_format(const char *path, const fl_options *opt, int *ogg, long long *at) {
    fl_inbuf in;
    int fmt;
    *ogg = 0;
+   *at = 0;
    if ((fmt = fl_inbuf_open(&in, path)) != FL_OK) return fmt;
-   fmt = fl_detect_format(&in);
+   fmt = fl_detect_format(&in, (fl_i64)opt->search<<10);
    *ogg = in.len-in.pos >= 4 && memcmp(in.buf+in.pos, "OggS", 4) == 0;
+   *at = fl_inbuf_tell(&in);
    fl_inbuf_close(&in);
    return fmt;
 }
@@ -312,6 +318,8 @@ int main(int argc, char **argv) {
       } else if (strcmp(a, "--padding") == 0) {
          ok = get_int(a, v, 0, 0xFFFFFF, &opt.padding);
          padding_on = 0;  /* the last --padding counts */
+      } else if (strcmp(a, "--search") == 0) {
+         ok = get_int(a, v, 0, 1<<30, &opt.search);
       } else if (strcmp(a, "--serial") == 0) {
          if ((ok = get_num(a, v, 0, 4294967295.0, &d)) && d != floor(d)) {
             fprintf(stderr, "Error: --serial must be a whole number\n");
@@ -324,7 +332,7 @@ int main(int argc, char **argv) {
          /* as in opusenc, only options that shape the encoding */
          if (strcmp(a, "--level") != 0 && strcmp(a, "--threads") != 0 && strcmp(a, "--rate") != 0 &&
              strcmp(a, "--bits") != 0 && strcmp(a, "--format") != 0 && strcmp(a, "--padding") != 0 &&
-             strcmp(a, "--serial") != 0)
+             strcmp(a, "--serial") != 0 && strcmp(a, "--search") != 0)
             note(opts, sizeof(opts), a, v);
          i++;
       }
@@ -336,11 +344,12 @@ int main(int argc, char **argv) {
    if (paths == 1) {
       /* no output: FLAC to FLAC or Opus to Opus onto the input itself */
       int ogg = 0, fmt;
+      long long at;
       if (fl_is_std(in_path)) {
          fprintf(stderr, "Error: stdin input needs an output (- for stdout, with --format)\n");
          return 1;
       }
-      if ((fmt = input_format(in_path, &ogg)) == FL_FORMAT_WAV) {
+      if ((fmt = input_format(in_path, &opt, &ogg, &at)) == FL_FORMAT_WAV) {
          fprintf(stderr, "Error: WAV input needs an output file\n");
          return 1;
       }
@@ -374,6 +383,15 @@ int main(int argc, char **argv) {
       return 1;
    }
    in_place = fl_same_file(in_path, out_path);
+   if (in_place) {
+      /* a stream inside another file (an exe) would replace the whole file */
+      int ogg;
+      long long at;
+      if (input_format(in_path, &opt, &ogg, &at) >= 0 && at > 0) {
+         fprintf(stderr, "Error: the stream starts %lld bytes into %s, so it needs another output file\n", at, in_path);
+         return 1;
+      }
+   }
    if (delete_input && in_place) {
       fprintf(stderr, "Error: --delete-input-file would delete the output, which is the same file\n");
       return 1;
