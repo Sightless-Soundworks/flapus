@@ -147,7 +147,6 @@ static void fl_flac_level(fl_flac_cfg *c, int level, int lax, int rate) {
    if (lax || rate > 48000) c->dp_search = 1;
    if (rate > 48000) {
       if (c->max_order == 12) c->max_order = 32;
-      if (level >= 2) c->max_porder = 15;
    }
    /* long blocks: keep the search affordable */
    if (c->unit && c->max_block > 4608 && c->unit < 256) c->unit = 256;

@@ -213,8 +213,8 @@ Speed and output:
 - With `threads` above 1, block costs and frames are computed in parallel (static
   interleaving, per-thread work spaces). The output does not depend on the thread
   count. The library default is one thread; the command line tool uses one per CPU.
-- Subset limits apply unless `--lax`: up to 48 kHz, order ≤ 12, partition order ≤ 8
-  and blocks ≤ 4608. Above 48 kHz, blocks ≤ 16384.
+- Subset limits apply unless `--lax`: partition order ≤ 8 at every rate, and up to
+  48 kHz order ≤ 12 and blocks ≤ 4608. Above 48 kHz, blocks ≤ 16384.
 - `--lax` allows order 32 and blocks up to 16384 (32768 above 48 kHz). That gives
   another 2-5 %, mostly from the higher LPC order.
 
