@@ -157,17 +157,6 @@ static void progress(void *user, double done, double ratio) {
    fflush(stderr);
 }
 
-static long long file_size(const char *path) {
-   FILE *f = fopen(path, "rb");
-   long long n = -1;
-   if (f) {
-      fseek(f, 0, SEEK_END);
-      n = ftell(f);
-      fclose(f);
-   }
-   return n;
-}
-
 /* Parses a whole number in [lo, hi]. */
 static int get_int(const char *opt, const char *s, long lo, long hi, int *out) {
    char *end;
@@ -362,7 +351,7 @@ int main(int argc, char **argv) {
    ret = fl_convert_file(argv[argc-2], argv[argc-1], &opt);
    if (!silent) {
       if (ret == FL_OK && ps.ratio >= 0 && !to_stdout)
-         fprintf(stderr, "\r%s: wrote %lld bytes, ratio=%.3f   \n", ps.name, file_size(argv[argc-1]), ps.ratio);
+         fprintf(stderr, "\r%s: wrote %lld bytes, ratio=%.3f   \n", ps.name, (long long)fl_file_size(argv[argc-1]), ps.ratio);
       else if (ret == FL_OK && ps.ratio >= 0) fprintf(stderr, "\r%s: done, ratio=%.3f   \n", ps.name, ps.ratio);
       else if (ret == FL_OK) fprintf(stderr, "\r%s: done              \n", ps.name);
       else if (ps.shown) fprintf(stderr, "\n");

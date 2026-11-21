@@ -128,7 +128,9 @@ music.wav: 42% complete, ratio=0.541
 music.wav: wrote 3723033 bytes, ratio=0.704
 ```
 
-Decoding shows only the percentage and ends with `done`.
+The ratio is the output size against the input size as flac counts it: the PCM data
+for WAV input, the file for FLAC and Opus input (not shown when that size is unknown,
+as with stdin). Decoding shows only the percentage and ends with `done`.
 
 **General options**
 

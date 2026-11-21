@@ -121,8 +121,9 @@ typedef struct {
    int keep_time;      /* fl_convert_file: 1 = the output gets the input's modification time, and
                           from FLAC to FLAC or Opus to Opus also its creation time; 0 (default) = not */
    /* Progress during fl_convert_file (NULL = none). done: 0..1 (-1 if the length is unknown),
-      ratio: output size / input PCM size so far (-1 for WAV output). Called with done = 1
-      when the conversion has finished. */
+      ratio: output size / input size so far, as flac counts it: the PCM size for WAV input,
+      the file size for FLAC and Opus input (-1 for WAV output or an unknown size). Called
+      with done = 1 when the conversion has finished. */
    void (*progress)(void *user, double done, double ratio);
    void *progress_user;
 } fl_options;

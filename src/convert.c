@@ -99,12 +99,17 @@ typedef struct {
    const fl_options *opt;
    fl_i64 total, done;
    double pcm_bytes;  /* input PCM bytes per frame */
+   fl_i64 in_size;    /* FLAC or Opus input: its file size (0 = unknown); -1: WAV input */
 } fl_progress_sink;
 
 static void fl_progress_report(fl_progress_sink *p, int final) {
    fl_sink *in = p->inner;
    double done = final ? 1.0 : p->total > 0 ? FL_MIN(1.0, (double)p->done/p->total) : -1.0, ratio = -1.0;
-   if (in->out_frames > 0) ratio = in->out_bytes/(in->out_frames*p->pcm_bytes);
+   if (in->out_frames > 0) {
+      if (p->in_size < 0) ratio = in->out_bytes/(in->out_frames*p->pcm_bytes);
+      else if (p->in_size > 0 && (final || p->total > 0))
+         ratio = in->out_bytes/(p->in_size*(final ? 1.0 : FL_MIN(1.0, (double)in->out_frames/p->total)));
+   }
    p->opt->progress(p->opt->progress_user, done, ratio);
 }
 
@@ -138,7 +143,7 @@ static void fl_progress_destroy(fl_sink *s) {
    free(p);
 }
 
-static fl_sink *fl_progress_wrap(fl_sink *inner, const fl_options *opt, int *err) {
+static fl_sink *fl_progress_wrap(fl_sink *inner, const fl_options *opt, fl_i64 in_size, int *err) {
    fl_progress_sink *p;
    if (!opt->progress) return inner;
    if (!(p = (fl_progress_sink*)calloc(1, sizeof(*p)))) {
@@ -148,6 +153,7 @@ static fl_sink *fl_progress_wrap(fl_sink *inner, const fl_options *opt, int *err
    }
    p->inner = inner;
    p->opt = opt;
+   p->in_size = in_size;
    p->base.start = fl_progress_start;
    p->base.write = fl_progress_write;
    p->base.finish = fl_progress_finish;
@@ -188,7 +194,7 @@ static int fl_format_start(fl_sink *s, const fl_format *f) {
    return p->inner->start(p->inner, &g);
 }
 
-static int fl_format_write(fl_sink *s, const fl_i32 *pcm, int n) {
+static int fl_format_put(fl_sink *s, const fl_i32 *pcm, int n) {
    fl_format_sink *p = (fl_format_sink*)s;
    int i, c, k, C = p->C, N = n*C;
    if (!p->in_bits) return p->inner->write(p->inner, pcm, n);
@@ -254,9 +260,21 @@ static int fl_format_write(fl_sink *s, const fl_i32 *pcm, int n) {
    return p->inner->write(p->inner, p->v, n);
 }
 
+/* The output counters are passed on for the ratio. */
+static int fl_format_write(fl_sink *s, const fl_i32 *pcm, int n) {
+   fl_format_sink *p = (fl_format_sink*)s;
+   int ret = fl_format_put(s, pcm, n);
+   p->base.out_bytes = p->inner->out_bytes;
+   p->base.out_frames = p->inner->out_frames;
+   return ret;
+}
+
 static int fl_format_finish(fl_sink *s) {
    fl_format_sink *p = (fl_format_sink*)s;
-   return p->inner->finish(p->inner);
+   int ret = p->inner->finish(p->inner);
+   p->base.out_bytes = p->inner->out_bytes;
+   p->base.out_frames = p->inner->out_frames;
+   return ret;
 }
 
 static void fl_format_destroy(fl_sink *s) {
@@ -362,6 +380,25 @@ static void fl_get_times(const char *path, fl_times *t) {
 #endif
 }
 
+/* Size of the file at path, or 0 if unknown. */
+static fl_i64 fl_file_size(const char *path) {
+#ifdef _WIN32
+   BY_HANDLE_FILE_INFORMATION info;
+   HANDLE h = fl_open_handle(path, FILE_READ_ATTRIBUTES);
+   int ok;
+   if (h == INVALID_HANDLE_VALUE) return 0;
+   ok = GetFileInformationByHandle(h, &info) != 0;
+   CloseHandle(h);
+   return ok ? (fl_i64)((fl_u64)info.nFileSizeHigh<<32|info.nFileSizeLow) : 0;
+#elif defined(__unix__) || defined(__APPLE__)
+   struct stat st;
+   return stat(path, &st) == 0 && S_ISREG(st.st_mode) ? (fl_i64)st.st_size : 0;
+#else
+   (void)path;
+   return 0;
+#endif
+}
+
 /* Gives path the access and modification times of t, and with created also its
    creation time (Windows and macOS; Linux cannot set it). */
 static void fl_set_times(const char *path, const fl_times *t, int created) {
@@ -415,9 +452,11 @@ static void fl_set_times(const char *path, const fl_times *t, int created) {
 #endif
 }
 
-/* Converts in into a sink for out_path or (out_path NULL) out_io.
-   same: set to 1 when input and output are the same format (FLAC or Opus). */
-static int fl_convert(fl_inbuf *in, const char *out_path, const fl_io *out_io, const fl_options *opt_in, int *same) {
+/* Converts in into a sink for out_path or (out_path NULL) out_io. in_size: the input's size
+   (0 = unknown), for the ratio of FLAC and Opus input. same: set to 1 when input and output
+   are the same format (FLAC or Opus). */
+static int fl_convert(fl_inbuf *in, fl_i64 in_size, const char *out_path, const fl_io *out_io, const fl_options *opt_in,
+                      int *same) {
    fl_options opt;
    fl_sink *sink;
    char *tmp = NULL;
@@ -434,7 +473,7 @@ static int fl_convert(fl_inbuf *in, const char *out_path, const fl_io *out_io, c
    }
    if (!(sink = fl_create_sink(out_fmt, tmp ? tmp : out_path, out_io, &opt, &err)) ||
        (in_fmt != FL_FORMAT_OPUS && out_fmt != FL_FORMAT_OPUS && !(sink = fl_format_wrap(sink, &opt, 0, &err))) ||
-       !(sink = fl_progress_wrap(sink, &opt, &err))) {
+       !(sink = fl_progress_wrap(sink, &opt, in_fmt == FL_FORMAT_WAV ? -1 : in_size, &err))) {
       ret = err;
    } else {
       ret = fl_run_source(in_fmt, in, &opt, sink);
@@ -458,7 +497,7 @@ FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_op
    memset(&t, 0, sizeof(t));
    if (opt && opt->keep_time && !fl_is_std(in_path) && !fl_is_std(out_path)) fl_get_times(in_path, &t);
    if ((ret = fl_inbuf_open(&in, in_path)) != FL_OK) return ret;
-   ret = fl_convert(&in, out_path, NULL, opt, &same);
+   ret = fl_convert(&in, opt && opt->progress && !fl_is_std(in_path) ? fl_file_size(in_path) : 0, out_path, NULL, opt, &same);
    if (ret == FL_OK || ret == FL_ERR_CHECKSUM) fl_set_times(out_path, &t, same);
    return ret;
 }
@@ -467,7 +506,7 @@ FLDEF int fl_convert_io(const fl_io *in_io, const fl_io *out_io, const fl_option
    fl_inbuf in;
    if (!in_io || !out_io || !opt || !opt->format) return FL_ERR_BAD_ARG;
    fl_inbuf_open_io(&in, in_io);
-   return fl_convert(&in, NULL, out_io, opt, NULL);
+   return fl_convert(&in, 0, NULL, out_io, opt, NULL);
 }
 
 static int fl_read_all(fl_inbuf *in, const fl_options *opt_in, fl_audio *audio) {
