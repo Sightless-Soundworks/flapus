@@ -11,7 +11,7 @@ for w in "$dir"/*.wav; do
    b=$(basename "$w" .wav)
    for set in "--level 0" "--level 3" "--level 8" "--level 8 --lax"; do
       tag=$(echo "$set" | tr -d ' -')
-      ../flapus.exe -s $set "$w" out/$b.$tag.flac
+      ../flapus.exe -s -f $set "$w" out/$b.$tag.flac
       r=$?
       if [ $r != 0 ]; then
          echo "$b $set: encoder error $r"; fail=1; continue
@@ -19,7 +19,7 @@ for w in "$dir"/*.wav; do
       if ! $FLAC -t -s out/$b.$tag.flac 2>/dev/null; then
          echo "$b $set: flac -t FAILED"; fail=1
       fi
-      ../flapus.exe -s out/$b.$tag.flac out/$b.$tag.wav
+      ../flapus.exe -s -f out/$b.$tag.flac out/$b.$tag.wav
       $FLAC -d -s -f -o out/$b.$tag.ref.wav out/$b.$tag.flac 2>/dev/null
       m=$(python ../tools/pcmcmp.py out/$b.$tag.wav "$w")
       r=$(python ../tools/pcmcmp.py out/$b.$tag.ref.wav "$w")

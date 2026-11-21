@@ -9,13 +9,13 @@ mkdir -p out
 check() {  # check <flac file> <opusenc options...>
    f=$1; shift
    $OPUSENC --quiet "$@" "$f" out/fo_ref.opus 2>/dev/null
-   ../flapus.exe -s "$@" "$f" out/fo_mine.opus
+   ../flapus.exe -s -f "$@" "$f" out/fo_mine.opus
    echo "$(basename "$f") $*: $(python ../tools/oggcmp.py out/fo_mine.opus out/fo_ref.opus | tail -1)"
 }
 for w in st44.wav mono16.wav ext/s24.wav ext/u8.wav ext/ch3.wav ext/ch6.wav ext/ch8.wav ext/st96000.wav; do
    b=$(basename $w .wav)
    $FLAC -s -f --channel-map=none -o out/$b.ref.flac $w 2>/dev/null
-   ../flapus.exe -s --level 4 $w out/$b.mine.flac
+   ../flapus.exe -s -f --level 4 $w out/$b.mine.flac
    check out/$b.ref.flac
    check out/$b.mine.flac --bitrate 48
 done

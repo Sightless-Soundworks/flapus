@@ -103,6 +103,7 @@ flapus music.flac music.opus                  # FLAC -> Opus
 flapus --bitrate 96 music.wav music.opus      # Opus at 96 kbit/s
 flapus music.opus music.flac                  # Opus -> FLAC
 flapus old.flac new.flac                      # recompress, tags and pictures are kept
+flapus -f music.flac music.flac               # recompress in place
 flapus --rate 48000 music.opus music48k.wav
 flapus --delete-input-file music.wav music.flac   # remove music.wav after success
 ffmpeg -i video.mkv -f wav - | flapus - audio.opus   # read from stdin
@@ -128,6 +129,8 @@ Decoding shows only the percentage and ends with `done`.
 
 - `--format wav|flac|opus` sets the output format instead of the extension (needed
   for stdout).
+- `-f` or `--force` overwrites an existing output file. Without it flapus stops with an
+  error, as `flac` does.
 - `-s` or `--silent` turns the progress display off.
 - `-h` or `--help` shows the options.
 - `-V` or `--version` shows the version, how the Opus encoder was built (portable

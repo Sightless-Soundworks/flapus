@@ -16,6 +16,7 @@ static void usage(FILE *f) {
       "  Use - for stdin or stdout (stdout needs --format).\n"
       "General:\n"
       "      --format F       output format: wav, flac or opus (overrides the extension)\n"
+      "  -f, --force          overwrite an existing output file\n"
       "  -s, --silent         no progress display\n"
       "  -V, --version        show the version and how this build was made\n"
       "      --delete-input-file  delete the input file after a successful conversion\n"
@@ -170,7 +171,7 @@ int main(int argc, char **argv) {
    fl_options opt;
    static char opts[256];
    progress_state ps;
-   int i, ret, last = argc-2, silent = 0, delete_input = 0, to_stdout;
+   int i, ret, last = argc-2, silent = 0, force = 0, delete_input = 0, to_stdout;
    double d;
    if (argc == 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)) {
       version();
@@ -191,6 +192,9 @@ int main(int argc, char **argv) {
       int ok = 1, takes = 1;
       if (strcmp(a, "-s") == 0 || strcmp(a, "--silent") == 0) {
          silent = 1;
+         takes = 0;
+      } else if (strcmp(a, "-f") == 0 || strcmp(a, "--force") == 0) {
+         force = 1;
          takes = 0;
       } else if (strcmp(a, "--delete-input-file") == 0) {
          delete_input = 1;
@@ -288,6 +292,10 @@ int main(int argc, char **argv) {
    }
    if (delete_input && strcmp(argv[argc-2], "-") == 0) {
       fprintf(stderr, "Error: --delete-input-file needs an input file\n");
+      return 1;
+   }
+   if (!to_stdout && !force && fl_file_exists(argv[argc-1])) {
+      fprintf(stderr, "Error: %s exists (use -f to overwrite it)\n", argv[argc-1]);
       return 1;
    }
    if (delete_input && fl_same_file(argv[argc-2], argv[argc-1])) {

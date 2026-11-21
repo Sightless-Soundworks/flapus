@@ -1,7 +1,7 @@
 #!/bin/sh
 # Re-encodes ../../mand.wav with the settings of the reference files and compares the audio.
 mkdir -p out
-enc() { ../flapus.exe -s "$@"; }
+enc() { ../flapus.exe -s -f "$@"; }
 enc --bitrate 1 ../../mand.wav out/mand5.opus
 enc --bitrate 24 ../../mand.wav out/mand24.opus
 enc ../../mand.wav out/mand96.opus
