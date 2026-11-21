@@ -336,11 +336,16 @@ static int fl_run_source(int format, fl_inbuf *in, const fl_options *opt, fl_sin
    the conversion succeeds. So a failed conversion leaves an existing file alone, and the
    input may be the output file itself. */
 static int fl_finish_output(const char *tmp, const char *out_path, int ret, int in_place) {
+   int r;
    if (!tmp) return ret;
    /* a damaged FLAC input still gives complete output, but does not replace itself */
-   if ((ret == FL_OK || (ret == FL_ERR_CHECKSUM && !in_place)) && fl_rename_over(tmp, out_path) == 0) return ret;
-   fl_remove(tmp);
-   return ret == FL_OK || (ret == FL_ERR_CHECKSUM && !in_place) ? FL_ERR_IO : ret;
+   if (ret != FL_OK && (ret != FL_ERR_CHECKSUM || in_place)) {
+      fl_remove(tmp);
+      return ret;
+   }
+   if ((r = fl_rename_over(tmp, out_path)) == 0) return ret;
+   if (r == -1) fl_remove(tmp);  /* else the complete output stays in tmp */
+   return FL_ERR_IO;
 }
 
 /* Times of a file, for fl_options.keep_time. */

@@ -209,11 +209,62 @@ static char *fl_temp_path(const char *path) {
    return NULL;
 }
 
-/* Moves from over to (replacing it). Keeps the permissions of a replaced file. Returns 0. */
+/* 1 if path is a symbolic link (any reparse point on Windows) or a file with several hard
+   links: replacing it would cut the link instead of changing the file. */
+static int fl_is_link(const char *path) {
+#ifdef _WIN32
+   wchar_t *w = fl_widen(path);
+   DWORD share = FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, flags = FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS;
+   BY_HANDLE_FILE_INFORMATION info;
+   HANDLE h;
+   int link;
+   if (w) {
+      h = CreateFileW(w, 0, share, NULL, OPEN_EXISTING, flags, NULL);
+      free(w);
+   } else h = CreateFileA(path, 0, share, NULL, OPEN_EXISTING, flags, NULL);
+   if (h == INVALID_HANDLE_VALUE) return 0;
+   link = GetFileInformationByHandle(h, &info) && ((info.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT) || info.nNumberOfLinks > 1);
+   CloseHandle(h);
+   return link;
+#elif defined(__unix__) || defined(__APPLE__)
+   struct stat st;
+   return lstat(path, &st) == 0 && (S_ISLNK(st.st_mode) || st.st_nlink > 1);
+#else
+   (void)path;
+   return 0;
+#endif
+}
+
+/* Copies the file from into the file to (through a link) and removes from. Returns 0, or -1
+   with from kept if to may have been changed. */
+static int fl_copy_over(const char *from, const char *to) {
+   FILE *a = fl_fopen(from, "rb"), *b = a ? fl_fopen(to, "wb") : NULL;
+   char *buf = (char*)malloc(1<<20);
+   size_t n;
+   int ok = a && b && buf;
+   while (ok && (n = fread(buf, 1, 1<<20, a)) > 0) ok = fwrite(buf, 1, n, b) == n;
+   if (a && ferror(a)) ok = 0;
+   if (a) fclose(a);
+   if (b && fclose(b) != 0) ok = 0;
+   free(buf);
+   if (ok) fl_remove(from);
+   return ok ? 0 : -1;
+}
+
+/* Moves from over to (replacing it). Keeps the permissions of a replaced file, and copies
+   into a link (fl_is_link) instead of replacing it. Returns 0, -1 if to is unchanged or -2
+   if from is kept because to may have been changed. */
 static int fl_rename_over(const char *from, const char *to) {
 #ifdef _WIN32
-   wchar_t *wf = fl_widen(from), *wt = fl_widen(to);
+   wchar_t *wf, *wt;
    int ok;
+#elif defined(__unix__) || defined(__APPLE__)
+   struct stat st;
+#endif
+   if (fl_is_link(to)) return fl_copy_over(from, to) == 0 ? 0 : -2;
+#ifdef _WIN32
+   wf = fl_widen(from);
+   wt = fl_widen(to);
    if (wf && wt) ok = MoveFileExW(wf, wt, MOVEFILE_REPLACE_EXISTING) != 0;
    else ok = MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING) != 0;
    free(wf);
@@ -221,7 +272,6 @@ static int fl_rename_over(const char *from, const char *to) {
    return ok ? 0 : -1;
 #else
 #if defined(__unix__) || defined(__APPLE__)
-   struct stat st;
    if (stat(to, &st) == 0) chmod(from, st.st_mode&07777);
 #endif
    return rename(from, to);

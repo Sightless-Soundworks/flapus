@@ -157,7 +157,9 @@ The output is written to a temporary file next to it (`name.1a2b3c4d.tmp`), whic
 replaces the output file only when the conversion has succeeded. A failed conversion
 leaves an existing file as it was, and a file can be converted onto itself, for example
 to recompress a FLAC file in place. A FLAC file whose MD5 does not match is then left
-unchanged; converted to another file, its output is written anyway.
+unchanged; converted to another file, its output is written anyway. An output that is a
+symbolic link or has several hard links is not replaced: the result is copied into the
+file it links to, so the links stay.
 
 **FLAC output options**
 

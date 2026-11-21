@@ -147,6 +147,8 @@ FLDEF void fl_options_init(fl_options *opt);
    takes a path.
    Output goes to a temporary file in the same folder that replaces out_path only on
    success, so an existing file survives a failed conversion and in_path may be out_path.
+   A symbolic link or a file with several hard links is not replaced: the result is
+   copied into the file it links to.
    A FLAC input whose MD5 differs (FL_ERR_CHECKSUM) is still written to out_path, unless
    out_path is in_path: the damaged file is not replaced. */
 FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_options *opt);
