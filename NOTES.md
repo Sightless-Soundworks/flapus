@@ -185,6 +185,10 @@ Stereo with `one_mode` (levels 1-7): the quick estimate picks one of the four ch
 assignments and only its two channels get the full search. The full search of all four
 was half the time of a frame; the files grow by about 0.02 %.
 
+Stereo in the block size search (quick estimate): each block is costed for one channel
+pair only, the one whose order 2 fixed residual sums (prefix sums) are smallest. Costing
+all four channels took twice as long; the files grow by about 0.04 %.
+
 Some measurements on the test corpus (190 s), in total size and one thread:
 
 - Level 5: 0.04 % smaller than the previous level 5 (all blocks, light search, 3

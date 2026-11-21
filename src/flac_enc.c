@@ -2113,7 +2113,25 @@ static fl_u64 fl_block_cost(fl_flac_sink *s, fl_worker *wk, int off, int bs) {
       }
       return cost;
    }
-   if (fl_use_stereo(s, off, bs)) {
+   if (fl_use_stereo(s, off, bs) && s->pf[0].has_u && bs > 2) {
+      /* the channel pair (left/right, left/side, side/right, mid/side) with the smallest
+         order 2 fixed residual sums, then the estimates of its two channels only */
+      static const int use[4][2] = {{0, 1}, {0, 2}, {2, 1}, {3, 2}};
+      const fl_i32 *src[4];
+      fl_u64 f2[4];
+      int v, m = 0;
+      src[0] = s->buf[0];
+      src[1] = s->buf[1];
+      src[2] = s->side;
+      src[3] = s->mid;
+      for (v = 0; v < 4; v++) f2[v] = s->pf[v].U[2][off+bs-2]-s->pf[v].U[2][off];
+      for (v = 1; v < 4; v++)
+         if (f2[use[v][0]]+f2[use[v][1]] < f2[use[m][0]]+f2[use[m][1]]) m = v;
+      for (c = 0; c < 2; c++) {
+         v = use[m][c];
+         cost += fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[v], src[v], FL_FU(s, v), off, bs, s->bits+(v == 2));
+      }
+   } else if (fl_use_stereo(s, off, bs)) {
       fl_u64 a = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[0], s->buf[0], FL_FU(s, 0), off, bs, s->bits);
       fl_u64 b = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[1], s->buf[1], FL_FU(s, 1), off, bs, s->bits);
       fl_u64 sc = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[2], s->side, FL_FU(s, 2), off, bs, s->bits+1);
