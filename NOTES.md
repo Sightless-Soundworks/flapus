@@ -236,6 +236,10 @@ Speed and output:
   This made level 2 about 12 % and level 5 about 5 % faster on CD audio, and both about
   20 % faster at 96 kHz; AVX2 Rice sums gave nothing and were left out. `FLAPUS_NO_AVX2` builds without them, and the CI
   checks that such a build gives the same files.
+- The double prediction sums become integers in the registers (adding 1.5*2^52 is exact
+  below 2^51), and with AVX2 the residuals from 64-bit sums are computed 4 at a time.
+  That made 24-bit audio about 13 % faster, and CD audio at level 5 (side channel)
+  about 7 %.
 - With `threads` above 1, block costs and frames are computed in parallel (static
   interleaving, per-thread work spaces). The output does not depend on the thread
   count. The library default is one thread; the command line tool uses one per CPU.

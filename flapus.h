@@ -11291,11 +11291,13 @@ static int fl_fixed_residual(const fl_i32 *x, int n, int order, int bps, fl_i32 
 /* fl_lpc_sums modes 1, 3 and 4 with 16 sums at a time (the same sums). */
 static FL_AVX2_FN void fl_lpc_sums_avx2(const double *xd, const fl_i16 *x16, const fl_i16 *x16l, int n, const fl_i32 *c,
                                         int order, int mode, fl_i64 *acc) {
-   int i, j, k, np = order/2;
+   int i, j, np = order/2;
    if (mode == 1) {
+      /* the sums are integers below 2^51: adding 1.5*2^52 puts them in the low bits */
+      const __m256d mg = _mm256_set1_pd(6755399441055744.0);
+      const __m256i mgi = _mm256_castpd_si256(mg);
       for (i = order; i < n; i += 16) {
          __m256d a0 = _mm256_setzero_pd(), a1 = a0, a2 = a0, a3 = a0;
-         double t[16];
          for (j = 0; j < order; j++) {
             const double *h = xd+i-1-j;
             __m256d cj = _mm256_set1_pd((double)c[j]);
@@ -11304,11 +11306,10 @@ static FL_AVX2_FN void fl_lpc_sums_avx2(const double *xd, const fl_i16 *x16, con
             a2 = _mm256_add_pd(a2, _mm256_mul_pd(cj, _mm256_loadu_pd(h+8)));
             a3 = _mm256_add_pd(a3, _mm256_mul_pd(cj, _mm256_loadu_pd(h+12)));
          }
-         _mm256_storeu_pd(t, a0);
-         _mm256_storeu_pd(t+4, a1);
-         _mm256_storeu_pd(t+8, a2);
-         _mm256_storeu_pd(t+12, a3);
-         for (k = 0; k < 16; k++) acc[i+k] = (fl_i64)t[k];
+         _mm256_storeu_si256((__m256i*)(acc+i), _mm256_sub_epi64(_mm256_castpd_si256(_mm256_add_pd(a0, mg)), mgi));
+         _mm256_storeu_si256((__m256i*)(acc+i+4), _mm256_sub_epi64(_mm256_castpd_si256(_mm256_add_pd(a1, mg)), mgi));
+         _mm256_storeu_si256((__m256i*)(acc+i+8), _mm256_sub_epi64(_mm256_castpd_si256(_mm256_add_pd(a2, mg)), mgi));
+         _mm256_storeu_si256((__m256i*)(acc+i+12), _mm256_sub_epi64(_mm256_castpd_si256(_mm256_add_pd(a3, mg)), mgi));
       }
    } else {
       /* as the SSE2 code; unpack works per 128-bit lane, so h0 holds the sums 0-3 and
@@ -11471,8 +11472,10 @@ static void fl_lpc_sums(const fl_i32 *x, const double *xd, const fl_i16 *x16, co
       /* 8 sums at a time in registers, the taps in the inner loop */
       for (i = order; i < n; i += 8) {
 #ifdef FL_FLAC_SSE2
+         /* the sums are integers below 2^51: adding 1.5*2^52 puts them in the low bits */
+         const __m128d mg = _mm_set1_pd(6755399441055744.0);
+         const __m128i mgi = _mm_castpd_si128(mg);
          __m128d a0 = _mm_setzero_pd(), a1 = a0, a2 = a0, a3 = a0;
-         double t[8];
          for (j = 0; j < order; j++) {
             const double *h = xd+i-1-j;
             __m128d cj = _mm_set1_pd((double)c[j]);
@@ -11481,10 +11484,10 @@ static void fl_lpc_sums(const fl_i32 *x, const double *xd, const fl_i16 *x16, co
             a2 = _mm_add_pd(a2, _mm_mul_pd(cj, _mm_loadu_pd(h+4)));
             a3 = _mm_add_pd(a3, _mm_mul_pd(cj, _mm_loadu_pd(h+6)));
          }
-         _mm_storeu_pd(t, a0);
-         _mm_storeu_pd(t+2, a1);
-         _mm_storeu_pd(t+4, a2);
-         _mm_storeu_pd(t+6, a3);
+         _mm_storeu_si128((__m128i*)(acc+i), _mm_sub_epi64(_mm_castpd_si128(_mm_add_pd(a0, mg)), mgi));
+         _mm_storeu_si128((__m128i*)(acc+i+2), _mm_sub_epi64(_mm_castpd_si128(_mm_add_pd(a1, mg)), mgi));
+         _mm_storeu_si128((__m128i*)(acc+i+4), _mm_sub_epi64(_mm_castpd_si128(_mm_add_pd(a2, mg)), mgi));
+         _mm_storeu_si128((__m128i*)(acc+i+6), _mm_sub_epi64(_mm_castpd_si128(_mm_add_pd(a3, mg)), mgi));
 #else
          double t[8] = {0, 0, 0, 0, 0, 0, 0, 0};
          for (j = 0; j < order; j++) {
@@ -11492,8 +11495,8 @@ static void fl_lpc_sums(const fl_i32 *x, const double *xd, const fl_i16 *x16, co
             double cj = c[j];
             for (k = 0; k < 8; k++) t[k] += cj*h[k];
          }
-#endif
          for (k = 0; k < 8; k++) acc[i+k] = (fl_i64)t[k];
+#endif
       }
    } else {
       for (i = order; i < n; i++) {
@@ -11563,6 +11566,34 @@ static FL_AVX2_FN void fl_lpc_residual_avx2(const fl_i32 *x, int n, int order, i
 }
 #endif
 
+#ifdef FL_FLAC_AVX2
+/* The 64-bit part of fl_lpc_residual, 4 samples at a time (the same results). */
+static FL_AVX2_FN int fl_lpc_residual64_avx2(const fl_i32 *x, int n, int order, int shift, const fl_i64 *acc, fl_u32 *u) {
+   __m256i lows = _mm256_setr_epi32(0, 2, 4, 6, 1, 3, 5, 7), z = _mm256_setzero_si256(), bad = z;
+   __m256i lim = _mm256_set1_epi64x(0x7FFFFFFF);
+   __m128i sh = _mm_cvtsi32_si128(shift);
+   fl_i64 b = 0, t[4];
+   int i = order;
+   for (; i+3 < n; i += 4) {
+      /* arithmetic shift of 64-bit lanes: logical shift with the sign flipped around it */
+      __m256i a = _mm256_loadu_si256((const __m256i*)(acc+i)), sg = _mm256_cmpgt_epi64(z, a);
+      __m256i v = _mm256_sub_epi64(_mm256_cvtepi32_epi64(_mm_loadu_si128((const __m128i*)(x+i))),
+                                   _mm256_xor_si256(_mm256_srl_epi64(_mm256_xor_si256(a, sg), sh), sg));
+      __m128i v32 = _mm256_castsi256_si128(_mm256_permutevar8x32_epi32(v, lows));
+      bad = _mm256_or_si256(bad, _mm256_srli_epi64(_mm256_add_epi64(v, lim), 32));  /* outside [-2^31+1, 2^31-1] */
+      _mm_storeu_si128((__m128i*)(u+i-order), _mm_xor_si128(_mm_slli_epi32(v32, 1), _mm_srai_epi32(v32, 31)));
+   }
+   _mm256_storeu_si256((__m256i*)t, bad);
+   b = t[0]|t[1]|t[2]|t[3];
+   for (; i < n; i++) {
+      fl_i64 v = x[i]-(acc[i]>>shift);
+      b |= (v+0x7FFFFFFF)>>32;
+      u[i-order] = fl_zz((fl_i32)v);
+   }
+   return b == 0;
+}
+#endif
+
 /* Zigzag residual u[i-order] from prediction sums; returns 0 on 32-bit overflow. With
    mode 0, 3 or 4 sums (|acc| < 2^31, bps <= 27) and shift >= 1 the residual cannot overflow
    and is computed in 32 bits. */
@@ -11591,6 +11622,9 @@ static int fl_lpc_residual(const fl_i32 *x, int n, int order, int shift, int mod
       for (; i < n; i++) u[i-order] = fl_zz(x[i]-((fl_i32)acc[i]>>shift));
       return 1;
    }
+#ifdef FL_FLAC_AVX2
+   if (avx2) return fl_lpc_residual64_avx2(x, n, order, shift, acc, u);
+#endif
    for (; i < n; i++) {
       fl_i64 v = x[i]-(acc[i]>>shift);
       bad |= (v+0x7FFFFFFF)>>32;  /* nonzero outside [-2^31+1, 2^31-1] */
