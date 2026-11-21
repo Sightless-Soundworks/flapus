@@ -145,7 +145,9 @@ FLDEF void fl_options_init(fl_options *opt);
    STREAMINFO has no MD5 and frame sizes. The same applies to every function below that
    takes a path.
    Output goes to a temporary file in the same folder that replaces out_path only on
-   success, so an existing file survives a failed conversion and in_path may be out_path. */
+   success, so an existing file survives a failed conversion and in_path may be out_path.
+   A FLAC input whose MD5 differs (FL_ERR_CHECKSUM) is still written to out_path, unless
+   out_path is in_path: the damaged file is not replaced. */
 FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_options *opt);
 
 /* Decoded audio in memory: interleaved samples in WAV/FLAC channel order, right-justified
@@ -40745,12 +40747,12 @@ static int fl_run_source(int format, fl_inbuf *in, const fl_options *opt, fl_sin
 /* Output goes to a temporary file next to out_path, which replaces out_path only when
    the conversion succeeds. So a failed conversion leaves an existing file alone, and the
    input may be the output file itself. */
-static int fl_finish_output(const char *tmp, const char *out_path, int ret) {
+static int fl_finish_output(const char *tmp, const char *out_path, int ret, int in_place) {
    if (!tmp) return ret;
-   /* a damaged FLAC input still gives complete output */
-   if ((ret == FL_OK || ret == FL_ERR_CHECKSUM) && fl_rename_over(tmp, out_path) == 0) return ret;
+   /* a damaged FLAC input still gives complete output, but does not replace itself */
+   if ((ret == FL_OK || (ret == FL_ERR_CHECKSUM && !in_place)) && fl_rename_over(tmp, out_path) == 0) return ret;
    fl_remove(tmp);
-   return ret == FL_OK || ret == FL_ERR_CHECKSUM ? FL_ERR_IO : ret;
+   return ret == FL_OK || (ret == FL_ERR_CHECKSUM && !in_place) ? FL_ERR_IO : ret;
 }
 
 /* Times of a file, for fl_options.keep_time. */
@@ -40775,6 +40777,31 @@ static HANDLE fl_open_handle(const char *path, DWORD access) {
    return h;
 }
 #endif
+
+/* 1 if a and b name the same existing file (also through links or another spelling). */
+static int fl_same_file(const char *a, const char *b) {
+   if (fl_is_std(a) || fl_is_std(b)) return 0;
+#ifdef _WIN32
+   {
+      HANDLE ha = fl_open_handle(a, FILE_READ_ATTRIBUTES), hb = fl_open_handle(b, FILE_READ_ATTRIBUTES);
+      BY_HANDLE_FILE_INFORMATION ia, ib;
+      int same = ha != INVALID_HANDLE_VALUE && hb != INVALID_HANDLE_VALUE &&
+                 GetFileInformationByHandle(ha, &ia) && GetFileInformationByHandle(hb, &ib) &&
+                 ia.dwVolumeSerialNumber == ib.dwVolumeSerialNumber &&
+                 ia.nFileIndexHigh == ib.nFileIndexHigh && ia.nFileIndexLow == ib.nFileIndexLow;
+      if (ha != INVALID_HANDLE_VALUE) CloseHandle(ha);
+      if (hb != INVALID_HANDLE_VALUE) CloseHandle(hb);
+      return same;
+   }
+#elif defined(__unix__) || defined(__APPLE__)
+   {
+      struct stat sa, sb;
+      return stat(a, &sa) == 0 && stat(b, &sb) == 0 && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+   }
+#else
+   return strcmp(a, b) == 0;
+#endif
+}
 
 static void fl_get_times(const char *path, fl_times *t) {
    memset(t, 0, sizeof(*t));
@@ -40866,9 +40893,9 @@ static void fl_set_times(const char *path, const fl_times *t, int created) {
 
 /* Converts in into a sink for out_path or (out_path NULL) out_io. in_size: the input's size
    (0 = unknown), for the ratio of FLAC and Opus input. same: set to 1 when input and output
-   are the same format (FLAC or Opus). */
+   are the same format (FLAC or Opus). in_place: out_path is the input file. */
 static int fl_convert(fl_inbuf *in, fl_i64 in_size, const char *out_path, const fl_io *out_io, const fl_options *opt_in,
-                      int *same) {
+                      int *same, int in_place) {
    fl_options opt;
    fl_sink *sink;
    char *tmp = NULL;
@@ -40894,7 +40921,7 @@ static int fl_convert(fl_inbuf *in, fl_i64 in_size, const char *out_path, const 
 done:
    fl_inbuf_close(in);  /* before the rename, which needs the input closed on Windows */
    if (tmp) {
-      ret = fl_finish_output(tmp, out_path, ret);
+      ret = fl_finish_output(tmp, out_path, ret, in_place);
       free(tmp);
    }
    return ret;
@@ -40903,14 +40930,15 @@ done:
 FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_options *opt) {
    fl_inbuf in;
    fl_times t;
-   int ret, same = 0;
+   int ret, same = 0, in_place;
    if (opt && (ret = fl_check_options(opt)) != FL_OK) return ret;
    /* before the conversion, which may replace the input */
    memset(&t, 0, sizeof(t));
    if (opt && opt->keep_time && !fl_is_std(in_path) && !fl_is_std(out_path)) fl_get_times(in_path, &t);
+   in_place = fl_same_file(in_path, out_path);
    if ((ret = fl_inbuf_open(&in, in_path)) != FL_OK) return ret;
-   ret = fl_convert(&in, opt && opt->progress && !fl_is_std(in_path) ? fl_file_size(in_path) : 0, out_path, NULL, opt, &same);
-   if (ret == FL_OK || ret == FL_ERR_CHECKSUM) fl_set_times(out_path, &t, same);
+   ret = fl_convert(&in, opt && opt->progress && !fl_is_std(in_path) ? fl_file_size(in_path) : 0, out_path, NULL, opt, &same, in_place);
+   if (ret == FL_OK || (ret == FL_ERR_CHECKSUM && !in_place)) fl_set_times(out_path, &t, same);
    return ret;
 }
 
@@ -40918,7 +40946,7 @@ FLDEF int fl_convert_io(const fl_io *in_io, const fl_io *out_io, const fl_option
    fl_inbuf in;
    if (!in_io || !out_io || !opt || !opt->format) return FL_ERR_BAD_ARG;
    fl_inbuf_open_io(&in, in_io);
-   return fl_convert(&in, 0, NULL, out_io, opt, NULL);
+   return fl_convert(&in, 0, NULL, out_io, opt, NULL, 0);
 }
 
 static int fl_read_all(fl_inbuf *in, const fl_options *opt_in, fl_audio *audio) {
@@ -41053,7 +41081,7 @@ FLDEF int fl_writer_close(fl_writer *w) {
       w->sink->destroy(w->sink);
    }
    if (w->tmp) {
-      if (w->path) ret = fl_finish_output(w->tmp, w->path, ret);
+      if (w->path) ret = fl_finish_output(w->tmp, w->path, ret, 0);
       else fl_remove(w->tmp);
    }
    free(w->tmp);

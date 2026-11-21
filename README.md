@@ -152,7 +152,8 @@ as with stdin). Decoding shows only the percentage and ends with `done`.
 The output is written to a temporary file next to it (`name.1a2b3c4d.tmp`), which
 replaces the output file only when the conversion has succeeded. A failed conversion
 leaves an existing file as it was, and a file can be converted onto itself, for example
-to recompress a FLAC file in place.
+to recompress a FLAC file in place. A FLAC file whose MD5 does not match is then left
+unchanged; converted to another file, its output is written anyway.
 
 **FLAC output options**
 
