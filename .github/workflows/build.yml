@@ -2,16 +2,18 @@ name: build
 
 # Official builds of the flapus command line tool.
 #
-# Every push builds flapus.exe for x86 and x64 with a pinned w64devkit, runs the
-# tests, and checks that both builds write the same Opus files. A push to main with
-# a new version (FLAPUS_VERSION_* in src/api.h) publishes the release V<version>.
+# Every push builds flapus for Windows (x86, x64), Linux (x64, arm64, static) and macOS
+# (Intel, Apple Silicon), plus an MSVC build that is only tested. Each build runs the
+# tests and encodes the same test signals; the compare job fails unless every build
+# wrote exactly the same Opus and FLAC files. A push to main with a new version
+# (FLAPUS_VERSION_* in src/api.h) publishes the release V<version>.
 #
-# The builds are reproducible: the same commit and devkit give the same exe, byte
-# for byte, also on another machine (no timestamp, no paths, no compiler ident).
+# The Windows builds are reproducible: the same commit and devkit give the same exe,
+# byte for byte, also on another machine (no timestamp, no paths, no compiler ident).
 # Rebuild locally in the devkit shell with:
 #
 #   gcc -O2 -ffp-contract=off -msse2 -mfpmath=sse \
-#       -fno-ident -s -Wl,--no-insert-timestamp -Wl,--gc-sections -o flapus.exe flapus_cli.c
+#       -fno-ident -s -Wl,--no-insert-timestamp -Wl,--gc-sections -o flapus-windows-x86.exe flapus_cli.c
 #
 # (x64: without -msse2 -mfpmath=sse) and compare with the SHA-256 that GitHub shows
 # next to each release asset.
@@ -32,12 +34,12 @@ env:
   CFLAGS: -O2 -ffp-contract=off -fno-ident -s -Wl,--no-insert-timestamp -Wl,--gc-sections
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     # One output per arch; GitHub combines the outputs of the matrix jobs.
     outputs:
-      opus-x86: ${{ steps.encode.outputs.opus-x86 }}
-      opus-x64: ${{ steps.encode.outputs.opus-x64 }}
+      digest-x86: ${{ steps.check.outputs.digest-x86 }}
+      digest-x64: ${{ steps.check.outputs.digest-x64 }}
       version: ${{ steps.build.outputs.version }}
     strategy:
       fail-fast: false
@@ -79,24 +81,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "flapus.h is out of date: run python tools/amalgamate.py" }
 
       # The version for the release comes from the exe itself ("flapus 1.0").
-      - name: Build flapus-${{ matrix.arch }}.exe
+      - name: Build flapus-windows-${{ matrix.arch }}.exe
         id: build
         shell: pwsh
         run: |
           $env:PATH = "C:\w64devkit\bin;$env:PATH"
           $flags = "$env:CFLAGS ${{ matrix.archflags }}".Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
-          & gcc @flags -o flapus-${{ matrix.arch }}.exe flapus_cli.c
+          & gcc @flags -o flapus-windows-${{ matrix.arch }}.exe flapus_cli.c
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
-          $info = @(& .\flapus-${{ matrix.arch }}.exe --version)
+          $info = @(& .\flapus-windows-${{ matrix.arch }}.exe --version)
           $info | Write-Host
           $ver = $info[0] -replace '^flapus ', ''
           if ($ver -notmatch '^\d+\.\d+(\.\d+)?$') { throw "unexpected version: $($info[0])" }
           Add-Content $env:GITHUB_OUTPUT "version=$ver"
 
       # Older Windows versions start the exe only if it imports nothing beyond
-      # KERNEL32.dll and msvcrt.dll, only KERNEL32 functions they have, and its
-      # subsystem version is at most 5.x. A new KERNEL32 import must be checked
-      # against the Windows versions it exists in before it is added to the list.
+      # KERNEL32.dll and msvcrt.dll, only functions they have, and its subsystem
+      # version is at most 5.x. A new KERNEL32 or (x86) msvcrt import must be checked
+      # against the Windows versions it exists in before it is added to a list;
+      # the msvcrt list holds functions that msvcrt.dll has had since NT 4.
       - name: Windows compatibility
         shell: pwsh
         run: |
@@ -107,19 +110,36 @@ jobs:
             "InitializeCriticalSection", "LeaveCriticalSection", "MoveFileExA", "MoveFileExW",
             "MultiByteToWideChar", "SetUnhandledExceptionFilter", "Sleep", "SystemTimeToFileTime",
             "TlsGetValue", "VirtualProtect", "VirtualQuery", "WaitForSingleObject", "WideCharToMultiByte")
-          $pe = & objdump -p flapus-${{ matrix.arch }}.exe
-          $dll = $null; $dlls = @(); $k32 = @()
+          $crt = @("abort", "_amsg_exit", "atexit", "atof", "atoi", "calloc", "ceil", "_cexit", "clock",
+            "_errno", "exit", "fclose", "ferror", "fflush", "fgetpos", "_fileno", "fopen", "fprintf",
+            "fputc", "fread", "free", "fseek", "fsetpos", "ftell", "fwrite", "__getmainargs", "_getpid",
+            "_initterm", "isdigit", "islower", "isspace", "isupper", "__lc_codepage", "localeconv",
+            "_lock", "malloc", "memcmp", "memcpy", "memmove", "memset", "__p___initenv",
+            "__p___mb_cur_max", "__p__commode", "__p__fmode", "__p__iob", "puts", "rand", "realloc",
+            "remove", "__set_app_type", "_setmode", "__setusermatherr", "setvbuf", "signal", "strcmp",
+            "strerror", "strlen", "strncmp", "strspn", "strtol", "strtoul", "_unlock", "vfprintf",
+            "wcslen", "_wfopen", "_wremove")
+          $pe = & objdump -p flapus-windows-${{ matrix.arch }}.exe
+          $dll = $null; $dlls = @(); $k32 = @(); $rt = @()
           foreach ($line in $pe) {
             if ($line -match "DLL Name: (\S+)") { $dll = $Matches[1]; $dlls += $dll }
             elseif ($line -match "^\s*$") { $dll = $null }
-            elseif ($dll -eq "KERNEL32.dll" -and $line -match "^\s+[0-9a-f]+\s+\d+\s+(\w+)") { $k32 += $Matches[1] }
+            elseif ($line -match "^\s+[0-9a-f]+\s+\d+\s+(\w+)") {
+              if ($dll -eq "KERNEL32.dll") { $k32 += $Matches[1] }
+              elseif ($dll -eq "msvcrt.dll") { $rt += $Matches[1] }
+            }
           }
           $sub = [int]($pe | Select-String "MajorSubsystemVersion\s+(\d+)").Matches[0].Groups[1].Value
-          Write-Host "DLLs: $($dlls -join ', '); subsystem version $sub.x; $($k32.Count) KERNEL32 functions"
+          Write-Host "DLLs: $($dlls -join ', '); subsystem version $sub.x; $($k32.Count) KERNEL32 and $($rt.Count) msvcrt functions"
           $bad = @($dlls | Where-Object { $_ -notin "KERNEL32.dll", "msvcrt.dll" })
           if ($bad) { throw "imports other DLLs: $($bad -join ', ')" }
           $bad = @($k32 | Where-Object { $_ -notin $allowed })
           if ($bad) { throw "new KERNEL32 imports: $($bad -join ', ')" }
+          # x64 Windows always has a newer msvcrt.dll
+          if ("${{ matrix.arch }}" -eq "x86") {
+            $bad = @($rt | Where-Object { $_ -notin $crt })
+            if ($bad) { throw "new msvcrt imports: $($bad -join ', ')" }
+          }
           if ($sub -gt 5) { throw "subsystem version $sub.x is too new for older Windows versions" }
 
       - name: Tests
@@ -139,52 +159,160 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "api test failed" }
           Write-Host "api: ok"
 
-      # The same input must give the same Opus files from both builds; the compare
-      # job checks it with one digest of all Opus files per build.
+      # One digest over all Opus and FLAC files; the compare job checks that every
+      # build wrote the same.
       - name: Encode the test signals
-        id: encode
+        id: check
         shell: pwsh
         run: |
-          python tools/testsignal.py signals
-          function flapus { & ".\flapus-${{ matrix.arch }}.exe" -s @args; if ($LASTEXITCODE -ne 0) { throw "flapus $args failed" } }
-          foreach ($s in "stereo44", "mono48") {
-            flapus --serial 1 --padding 0 "signals\$s.wav" "signals\$s.opus"
-            flapus --serial 1 --padding 0 --bitrate 24 "signals\$s.wav" "signals\$s-24k.opus"
-            flapus "signals\$s.wav" "signals\$s.flac"
-            flapus "signals\$s.opus" "signals\$s-dec.wav"
-          }
-          $lines = Get-ChildItem signals -Filter *.opus | Sort-Object Name |
-            ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name }
-          $lines | Write-Host
-          $all = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($lines -join "`n"))
-          Add-Content $env:GITHUB_OUTPUT "opus-${{ matrix.arch }}=$([Convert]::ToHexString($all).ToLower())"
+          python test/crosscheck.py flapus-windows-${{ matrix.arch }}.exe signals | Tee-Object -Variable out
+          if ($LASTEXITCODE -ne 0) { throw "crosscheck failed" }
+          $d = ($out | Select-String '^digest (\w+)').Matches[0].Groups[1].Value
+          Add-Content $env:GITHUB_OUTPUT "digest-${{ matrix.arch }}=$d"
 
       # A single file without archive: the artifact is the plain exe.
       - uses: actions/upload-artifact@v7
         with:
-          path: flapus-${{ matrix.arch }}.exe
+          path: flapus-windows-${{ matrix.arch }}.exe
+          archive: false
+          if-no-files-found: error
+
+  msvc:
+    runs-on: windows-latest
+    outputs:
+      digest: ${{ steps.check.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Build and test with MSVC
+        shell: cmd
+        run: |
+          cl /nologo /O2 /W3 /Fe:flapus-msvc.exe flapus_cli.c || exit /b 1
+          flapus-msvc.exe --version || exit /b 1
+          cl /nologo /O2 /I. /Fe:t_math.exe test\math.c && t_math.exe || exit /b 1
+          cl /nologo /O2 /I. /Fe:t_bitreader.exe test\bitreader.c && t_bitreader.exe || exit /b 1
+          cl /nologo /O2 /Fe:t_api.exe test\api\main.c test\api\impl.c && t_api.exe || exit /b 1
+      - name: Encode the test signals
+        id: check
+        shell: bash
+        run: |
+          python test/crosscheck.py ./flapus-msvc.exe signals | tee out.txt
+          echo "digest=$(sed -n 's/^digest //p' out.txt)" >> "$GITHUB_OUTPUT"
+
+  linux:
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      digest-x64: ${{ steps.check.outputs.digest-x64 }}
+      digest-arm64: ${{ steps.check.outputs.digest-arm64 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install musl
+        run: sudo apt-get update -q && sudo apt-get install -y -q musl-tools
+      # musl and -static: one file that runs on any Linux distribution
+      - name: Build flapus-linux-${{ matrix.arch }}
+        run: |
+          musl-gcc -O2 -ffp-contract=off -static -s -o flapus-linux-${{ matrix.arch }} flapus_cli.c -pthread -lm
+          file flapus-linux-${{ matrix.arch }}
+          ./flapus-linux-${{ matrix.arch }} --version
+      - name: Tests
+        run: |
+          for t in bitreader math; do gcc -O2 -ffp-contract=off -I. -o t_$t test/$t.c -lm && ./t_$t; done
+          gcc -O2 -ffp-contract=off -o t_api test/api/main.c test/api/impl.c -pthread -lm && ./t_api
+          clang -O2 -o flapus-clang flapus_cli.c -pthread -lm
+      - name: Encode the test signals
+        id: check
+        run: |
+          python3 test/crosscheck.py ./flapus-linux-${{ matrix.arch }} signals | tee out.txt
+          python3 test/crosscheck.py ./flapus-clang signals-clang | tee out-clang.txt
+          d=$(sed -n 's/^digest //p' out.txt)
+          test "$d" = "$(sed -n 's/^digest //p' out-clang.txt)" || { echo "GCC and Clang differ"; exit 1; }
+          echo "digest-${{ matrix.arch }}=$d" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          path: flapus-linux-${{ matrix.arch }}
+          archive: false
+          if-no-files-found: error
+
+  macos:
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      digest-x64: ${{ steps.check.outputs.digest-x64 }}
+      digest-arm64: ${{ steps.check.outputs.digest-arm64 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-15-intel
+            min: "10.13"
+          - arch: arm64
+            runner: macos-15
+            min: "11.0"
+    steps:
+      - uses: actions/checkout@v7
+      # macOS has no static libc; the file needs nothing beyond the system
+      - name: Build flapus-macos-${{ matrix.arch }}
+        run: |
+          clang -O2 -mmacosx-version-min=${{ matrix.min }} -o flapus-macos-${{ matrix.arch }} flapus_cli.c
+          strip flapus-macos-${{ matrix.arch }}
+          otool -L flapus-macos-${{ matrix.arch }}
+          ./flapus-macos-${{ matrix.arch }} --version
+      - name: Tests
+        run: |
+          for t in bitreader math; do clang -O2 -I. -o t_$t test/$t.c && ./t_$t; done
+          clang -O2 -o t_api test/api/main.c test/api/impl.c && ./t_api
+      - name: Encode the test signals
+        id: check
+        run: |
+          python3 test/crosscheck.py ./flapus-macos-${{ matrix.arch }} signals | tee out.txt
+          echo "digest-${{ matrix.arch }}=$(sed -n 's/^digest //p' out.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          path: flapus-macos-${{ matrix.arch }}
           archive: false
           if-no-files-found: error
 
   compare:
-    needs: build
+    needs: [windows, msvc, linux, macos]
     runs-on: ubuntu-latest
     steps:
-      - name: x86 and x64 write the same Opus files
+      - name: Every build writes the same Opus and FLAC files
         env:
-          X86: ${{ needs.build.outputs.opus-x86 }}
-          X64: ${{ needs.build.outputs.opus-x64 }}
+          D: >-
+            windows-x86=${{ needs.windows.outputs.digest-x86 }}
+            windows-x64=${{ needs.windows.outputs.digest-x64 }}
+            msvc=${{ needs.msvc.outputs.digest }}
+            linux-x64=${{ needs.linux.outputs.digest-x64 }}
+            linux-arm64=${{ needs.linux.outputs.digest-arm64 }}
+            macos-x64=${{ needs.macos.outputs.digest-x64 }}
+            macos-arm64=${{ needs.macos.outputs.digest-arm64 }}
         run: |
-          echo "x86: $X86"
-          echo "x64: $X64"
-          test -n "$X86" && test "$X86" = "$X64" && echo "x86 and x64: identical Opus output"
+          ref=""
+          for kv in $D; do
+            echo "$kv"
+            d=${kv#*=}
+            test -n "$d" || { echo "missing digest: $kv"; exit 1; }
+            test -z "$ref" && ref=$d
+            test "$d" = "$ref" || { echo "different output: $kv"; exit 1; }
+          done
+          echo "all builds: identical Opus and FLAC output"
 
   # A push to main whose version has no tag V<version> yet -> the release V<version>
   # with the exes and flapus.h; the notes list the commits since the previous
   # release. GitHub shows the SHA-256 of every asset.
   release:
     if: github.ref == 'refs/heads/main'
-    needs: [build, compare]
+    needs: [windows, compare]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -197,14 +325,14 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
-          pattern: flapus-*.exe
+          pattern: flapus-*
           merge-multiple: true
           path: rel
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          VERSION: ${{ needs.build.outputs.version }}
+          VERSION: ${{ needs.windows.outputs.version }}
         run: |
           cd rel
           test -n "$VERSION" || { echo "no version from the build"; exit 1; }
@@ -223,10 +351,13 @@ jobs:
             echo
             echo "Files:"
             echo
-            echo "- \`flapus-x86.exe\`: 32-bit Windows, \`flapus-x64.exe\`: 64-bit Windows. Single files, no DLLs beyond Windows' own."
+            echo "- \`flapus-windows-x86.exe\`, \`flapus-windows-x64.exe\`: Windows, 32 and 64 bit, no DLLs beyond Windows' own (w64devkit $W64DEVKIT_VERSION, reproducible)."
+            echo "- \`flapus-linux-x64\`, \`flapus-linux-arm64\`: Linux, static, for any distribution."
+            echo "- \`flapus-macos-x64\`, \`flapus-macos-arm64\`: macOS on Intel (10.13 and later) and Apple Silicon."
             echo "- \`flapus.h\`: the single-file library, with the license texts at its end."
-            echo "- Built with w64devkit $W64DEVKIT_VERSION: the Opus output is the same on every platform."
-            echo "- Reproducible: the build flags are in .github/workflows/build.yml."
+            echo "- Every build writes the same Opus and FLAC files, byte for byte; the build flags are in .github/workflows/build.yml."
           } > notes.md
           cat notes.md
-          gh release create "$tag" flapus-x86.exe flapus-x64.exe ../flapus.h --title "$tag" --target "$GITHUB_SHA" --notes-file notes.md
+          chmod +x flapus-linux-* flapus-macos-*
+          gh release create "$tag" flapus-windows-x86.exe flapus-windows-x64.exe flapus-linux-x64 flapus-linux-arm64 \
+            flapus-macos-x64 flapus-macos-arm64 ../flapus.h --title "$tag" --target "$GITHUB_SHA" --notes-file notes.md

@@ -53,34 +53,39 @@ python tools/amalgamate.py
 
 ## Official builds
 
-[`.github/workflows/build.yml`](.github/workflows/build.yml) builds `flapus-x86.exe`
-(32-bit) and `flapus-x64.exe` (64-bit) for Windows on every push. Each is a single
-file that needs no DLLs beyond Windows' own.
+[`.github/workflows/build.yml`](.github/workflows/build.yml) builds the command line
+tool on every push:
 
-- **Toolchain:** w64devkit 2.11.0 (MinGW-w64 with the system `msvcrt.dll`), pinned
-  by sha256.
-- **Compatibility:** the exes import only `KERNEL32.dll` and `msvcrt.dll`, so they
-  also run on older Windows versions. The x86 build needs a CPU with SSE2.
+| File | System | Built with |
+|------|--------|------------|
+| `flapus-windows-x86.exe`, `flapus-windows-x64.exe` | Windows (also older versions) | w64devkit 2.11.0, pinned by sha256 |
+| `flapus-linux-x64`, `flapus-linux-arm64` | Linux, static (no shared libraries at all) | GCC with musl |
+| `flapus-macos-x64`, `flapus-macos-arm64` | macOS 10.13 and later, Intel and Apple Silicon | Apple Clang |
+
+- **Compatibility:** the Windows exes import only `KERNEL32.dll` and `msvcrt.dll`. The
+  x86 build needs a CPU with SSE2. The Linux files run on any distribution.
 - **Checks:** the workflow verifies that `flapus.h` matches `src/`, checks the imports
-  and the subsystem version of both exes, and runs the tests. It encodes
-  deterministic test signals (`tools/testsignal.py`) with both builds and fails if the
-  Opus files differ.
-- **Release:** a push to `main` with a new version publishes both exes and `flapus.h`
-  as the release `V<version>` (for example `V1.0`), with the commits since the
-  previous release as release notes. A push that keeps the version publishes
-  nothing. Each workflow run also keeps the two exes as artifacts.
+  and the subsystem version of the Windows exes, and runs the tests on every system. An
+  extra MSVC build is tested the same way, but not published.
+- **Same output everywhere:** every build, MSVC included, encodes deterministic test
+  signals (`tools/testsignal.py`) to Opus and FLAC, and the workflow fails unless all
+  of them wrote exactly the same files.
+- **Release:** a push to `main` with a new version publishes all six files and
+  `flapus.h` as the release `V<version>` (for example `V1.2`), with the commits since
+  the previous release as release notes. A push that keeps the version publishes
+  nothing. Each workflow run also keeps the files as artifacts.
 
-The builds are reproducible: the same commit and devkit give the same exe, byte for
-byte, on any machine. To check a release, build it in the devkit shell and compare
+The Windows builds are reproducible: the same commit and devkit give the same exe, byte
+for byte, on any machine. To check a release, build it in the devkit shell and compare
 with the SHA-256 that GitHub shows next to each release asset:
 
 ```bash
 gcc -O2 -ffp-contract=off -msse2 -mfpmath=sse \
-    -fno-ident -s -Wl,--no-insert-timestamp -Wl,--gc-sections -o flapus-x86.exe flapus_cli.c
+    -fno-ident -s -Wl,--no-insert-timestamp -Wl,--gc-sections -o flapus-windows-x86.exe flapus_cli.c
 ```
 
-For x64, leave out `-msse2 -mfpmath=sse`. `flapus --version` shows the version,
-whether the Opus encoder is built in, the target and the compiler. The version is also
+For x64, leave out `-msse2 -mfpmath=sse`. `flapus --version` shows the version, whether
+the Opus encoder is built in, the target and the compiler. The version is also
 `FLAPUS_VERSION` in `flapus.h`.
 
 To release a new version, change `FLAPUS_VERSION_MAJOR`, `FLAPUS_VERSION_MINOR` or
@@ -448,5 +453,5 @@ the Opus output options); pass it in the `OPUSENC` variable.
   parameter of 3 and quotients up to 76 decoded wrongly because of it, and its MD5
   check failed. libFLAC decodes the same file correctly. On a 3179-file speech
   corpus that one file was the only one affected.
-- The builds for x86 (32- and 64-bit) and ARM64, with GCC and Clang, give the same Opus
-  packets and the same FLAC files.
+- The builds for x86 (32- and 64-bit), ARM64, GCC, Clang and MSVC give the same Opus
+  packets and the same FLAC files; the workflow checks this on every push.
