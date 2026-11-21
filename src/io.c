@@ -22,17 +22,39 @@ static int fl_check_options(const fl_options *o) {
 }
 
 /* Buffered input that keeps at least the requested number of bytes in memory. The input
-   is opened once, so stdin works as well: format detection looks at the buffer. */
+   is opened once, so stdin works as well: format detection looks at the buffer. base is
+   the stream offset of buf[0]. Files can seek; pipes can only skip forward. */
 typedef struct {
    FILE *f;
    unsigned char *buf;
    size_t cap, pos, len;
-   int eof;
+   fl_i64 base;
+   int eof, seekable;
 } fl_inbuf;
+
+/* fseek with 64-bit offsets, SEEK_SET and SEEK_CUR. */
+static int fl_fseek64(FILE *f, fl_i64 off, int whence) {
+#if defined(_WIN32)
+   /* fpos_t is a 64-bit byte offset in every Windows C library, msvcrt.dll of NT 4 included */
+   fpos_t pos;
+   if (whence == SEEK_CUR) {
+      if (fgetpos(f, &pos) != 0) return -1;
+      off += pos;
+   } else if (whence != SEEK_SET) return -1;
+   pos = off;
+   return fsetpos(f, &pos);
+#elif (defined(__unix__) || defined(__APPLE__)) && !defined(__STRICT_ANSI__)
+   return fseeko(f, (off_t)off, whence);
+#else
+   return off > LONG_MAX || off < LONG_MIN ? -1 : fseek(f, (long)off, whence);
+#endif
+}
 
 static int fl_inbuf_open(fl_inbuf *b, const char *path) {
    memset(b, 0, sizeof(*b));
-   return (b->f = fl_fopen(path, "rb")) ? FL_OK : FL_ERR_IO;
+   if (!(b->f = fl_fopen(path, "rb"))) return FL_ERR_IO;
+   b->seekable = b->f != stdin && fl_fseek64(b->f, 0, SEEK_CUR) == 0;
+   return FL_OK;
 }
 
 static void fl_inbuf_close(fl_inbuf *b) {
@@ -41,12 +63,17 @@ static void fl_inbuf_close(fl_inbuf *b) {
    memset(b, 0, sizeof(*b));
 }
 
+static size_t fl_inbuf_raw(fl_inbuf *b, void *dst, size_t n) { return fread(dst, 1, n, b->f); }
+
+static fl_i64 fl_inbuf_tell(const fl_inbuf *b) { return b->base+(fl_i64)b->pos; }
+
 /* Makes n bytes available at buf+pos (fewer only at end of file). */
 static int fl_inbuf_need(fl_inbuf *b, size_t n) {
    if (b->len-b->pos >= n || b->eof) return 0;
    if (b->pos > 0) {
       memmove(b->buf, b->buf+b->pos, b->len-b->pos);
       b->len -= b->pos;
+      b->base += (fl_i64)b->pos;
       b->pos = 0;
    }
    if (n > b->cap) {
@@ -57,7 +84,7 @@ static int fl_inbuf_need(fl_inbuf *b, size_t n) {
       b->cap = cap;
    }
    while (b->len < b->cap && !b->eof) {
-      size_t r = fread(b->buf+b->len, 1, b->cap-b->len, b->f);
+      size_t r = fl_inbuf_raw(b, b->buf+b->len, b->cap-b->len);
       b->len += r;
       if (r == 0) b->eof = 1;
    }
@@ -70,35 +97,46 @@ static size_t fl_inbuf_read(fl_inbuf *b, void *dst, size_t n) {
    if (k) memcpy(dst, b->buf+b->pos, k);
    b->pos += k;
    if (k < n && !b->eof) {
-      size_t r = fread((unsigned char*)dst+k, 1, n-k, b->f);
+      size_t r = fl_inbuf_raw(b, (unsigned char*)dst+k, n-k);
       if (r < n-k) b->eof = 1;
+      b->base += (fl_i64)(b->len+r);
+      b->pos = b->len = 0;
       k += r;
    }
    return k;
 }
 
-/* Skips n bytes: seeks in files, reads through stdin (pipes cannot seek). */
-static void fl_inbuf_skip(fl_inbuf *b, fl_u64 n) {
+/* Moves to stream offset off: within the buffer, by seeking, or (forward only) by
+   reading through. Returns 0 or -1. */
+static int fl_inbuf_seek(fl_inbuf *b, fl_i64 off) {
    unsigned char tmp[4096];
-   size_t k = (size_t)FL_MIN(n, b->len-b->pos);
-   b->pos += k;
-   n -= k;
-   if (!n || b->eof || (b->f != stdin && n <= LONG_MAX && fseek(b->f, (long)n, SEEK_CUR) == 0)) return;
-   while (n > 0 && !b->eof) n -= fl_inbuf_read(b, tmp, (size_t)FL_MIN(n, sizeof(tmp)));
+   if (off >= b->base && off <= b->base+(fl_i64)b->len) {
+      b->pos = (size_t)(off-b->base);
+      return 0;
+   }
+   if (b->seekable) {
+      if (fl_fseek64(b->f, off, SEEK_SET) != 0) return -1;
+      b->base = off;
+      b->pos = b->len = 0;
+      b->eof = 0;
+      return 0;
+   }
+   if (off < b->base) return -1;
+   b->pos = b->len;
+   while (fl_inbuf_tell(b) < off && !b->eof) fl_inbuf_read(b, tmp, (size_t)FL_MIN(off-fl_inbuf_tell(b), (fl_i64)sizeof(tmp)));
+   return fl_inbuf_tell(b) == off ? 0 : -1;
 }
 
-/* Reads the rest of the input into one block that the caller frees (like a whole file). */
-static unsigned char *fl_inbuf_take(fl_inbuf *b, long *size) {
-   unsigned char *p;
-   while (!b->eof)
-      if (fl_inbuf_need(b, b->cap ? 2*b->cap : 65536) < 0) return NULL;
-   if (!b->buf && !(b->buf = (unsigned char*)malloc(1))) return NULL;
-   memmove(b->buf, b->buf+b->pos, b->len-b->pos);
-   *size = (long)(b->len-b->pos);
-   p = b->buf;
-   b->buf = NULL;
-   b->cap = b->pos = b->len = 0;
-   return p;
+/* Skips n bytes. */
+static void fl_inbuf_skip(fl_inbuf *b, fl_u64 n) {
+   if (n > (fl_u64)1<<62 || fl_inbuf_seek(b, fl_inbuf_tell(b)+(fl_i64)n) != 0) b->eof = 1;
+}
+
+/* Input that cannot seek is read into memory, so that it can be scanned twice. */
+static int fl_inbuf_make_seekable(fl_inbuf *b) {
+   while (!b->seekable && !b->eof)
+      if (fl_inbuf_need(b, b->len-b->pos+(b->cap ? b->cap : 65536)) < 0) return -1;
+   return 0;
 }
 
 static void fl_put_le32(unsigned char *p, fl_u32 v) { p[0] = v; p[1] = v>>8; p[2] = v>>16; p[3] = v>>24; }
@@ -353,27 +391,55 @@ static fl_u32 fl_default_mask(int channels) {
    return channels >= 1 && channels <= 8 ? masks[channels-1] : 0;
 }
 
-/* ---- WAV input ---- */
+/* ---- WAV input: RIFF, RF64/BW64 (EBU Tech 3306) and Sony Wave64 ---- */
+static const unsigned char fl_w64_riff[16] = {'r', 'i', 'f', 'f', 0x2E, 0x91, 0xCF, 0x11, 0xA5, 0xD6, 0x28, 0xDB, 0x04, 0xC1, 0, 0};
+/* Wave64 GUIDs of "wave", "fmt " and "data": the FourCC followed by these 12 bytes */
+static const unsigned char fl_w64_tail[12] = {0xF3, 0xAC, 0xD3, 0x11, 0x8C, 0xD1, 0x00, 0xC0, 0x4F, 0x8E, 0xDB, 0x8A};
+
+static fl_u64 fl_get_le64(const unsigned char *p) { return (fl_u64)fl_get_le32(p+4)<<32|fl_get_le32(p); }
+
+/* 1 if the buffer starts a WAV, RF64/BW64 or Wave64 file. */
+static int fl_is_wav(const unsigned char *b, size_t n) {
+   if (n >= 12 && (memcmp(b, "RIFF", 4) == 0 || memcmp(b, "RF64", 4) == 0 || memcmp(b, "BW64", 4) == 0) &&
+       memcmp(b+8, "WAVE", 4) == 0) return 1;
+   return n >= 40 && memcmp(b, fl_w64_riff, 16) == 0 && memcmp(b+24, "wave", 4) == 0 && memcmp(b+28, fl_w64_tail, 12) == 0;
+}
+
 static int fl_run_wav(fl_inbuf *in, fl_sink *sink) {
-   unsigned char hdr[12], ck[8], fmt[40], *buf = NULL;
+   unsigned char hdr[40], ck[24], fmt[40], *buf = NULL;
    fl_i32 *pcm = NULL;
-   int have_fmt = 0, ret, bytes = 0, C = 0, shift = 0, unsigned8 = 0;
-   fl_i64 left = -1;
+   int have_fmt = 0, ret, bytes = 0, C = 0, shift = 0, w64, rf64;
+   fl_i64 left = -1, data_len = -1, ds64_data = -1;
    fl_format f;
    fl_format_init(&f);
    ret = FL_ERR_BAD_FILE;
-   if (fl_inbuf_read(in, hdr, 12) != 12 || memcmp(hdr, "RIFF", 4) != 0 || memcmp(hdr+8, "WAVE", 4) != 0) goto done;
+   if (fl_inbuf_need(in, 40) < 0) return FL_ERR_ALLOC;
+   if (!fl_is_wav(in->buf+in->pos, in->len-in->pos)) goto done;
+   w64 = memcmp(in->buf+in->pos, fl_w64_riff, 16) == 0;
+   rf64 = !w64 && memcmp(in->buf+in->pos, "RIFF", 4) != 0;
+   fl_inbuf_read(in, hdr, w64 ? 40 : 12);
    for (;;) {
-      fl_u32 len;
-      if (fl_inbuf_read(in, ck, 8) != 8) goto done;
-      len = fl_get_le32(ck+4);
+      fl_u64 len;
+      int pad;
+      if (w64) {
+         if (fl_inbuf_read(in, ck, 24) != 24) goto done;
+         len = fl_get_le64(ck+16);
+         if (len < 24) goto done;
+         len -= 24;
+         pad = (int)((8-len%8)%8);
+         if (memcmp(ck+4, fl_w64_tail, 12) != 0) memset(ck, 0, 4);  /* not a known chunk */
+      } else {
+         if (fl_inbuf_read(in, ck, 8) != 8) goto done;
+         len = fl_get_le32(ck+4);
+         pad = (int)(len&1);
+      }
       if (memcmp(ck, "fmt ", 4) == 0) {
          int format, n = len < 40 ? (int)len : 40;
          if (len < 16) goto done;
          memset(fmt, 0, sizeof(fmt));
          if (fl_inbuf_read(in, fmt, n) != (size_t)n) goto done;
          if (len > 40) fl_inbuf_skip(in, len-40);
-         if (len&1) fl_inbuf_skip(in, 1);
+         fl_inbuf_skip(in, pad);
          format = fl_get_le16(fmt);
          C = fl_get_le16(fmt+2);
          f.rate = (int)fl_get_le32(fmt+4);
@@ -390,22 +456,28 @@ static int fl_run_wav(fl_inbuf *in, fl_sink *sink) {
             goto done;
          }
          if (f.is_float) f.bits = 32;
-         unsigned8 = f.container_bits == 8;
          shift = f.container_bits-f.bits;
          bytes = f.container_bits/8;
          have_fmt = 1;
       } else if (memcmp(ck, "data", 4) == 0) {
          if (!have_fmt) goto done;
-         if (len != 0xFFFFFFFFu && len != 0) left = len/((fl_u32)bytes*C);
+         if (rf64 && len == 0xFFFFFFFFu) data_len = ds64_data;
+         else if (w64 || (len != 0xFFFFFFFFu && len != 0)) data_len = (fl_i64)len;
          break;
+      } else if (rf64 && memcmp(ck, "ds64", 4) == 0 && len >= 28) {
+         unsigned char ds[28];
+         if (fl_inbuf_read(in, ds, 28) != 28) goto done;
+         ds64_data = (fl_i64)FL_MIN(fl_get_le64(ds+8), (fl_u64)1<<62);
+         fl_inbuf_skip(in, len-28+pad);
       } else {
-         fl_inbuf_skip(in, len+(len&1));
+         fl_inbuf_skip(in, len+pad);
       }
    }
    if (C < 1 || C > 255 || f.rate <= 0 || f.rate > FL_MAX_RATE) {
       ret = FL_ERR_UNSUPPORTED;
       goto done;
    }
+   if (data_len >= 0) left = data_len/((fl_i64)bytes*C);
    if (f.channel_mask == fl_default_mask(C)) f.channel_mask = 0;
    f.channels = C;
    f.frames = left;
@@ -436,7 +508,6 @@ static int fl_run_wav(fl_inbuf *in, fl_sink *sink) {
          }
          pcm[i] = v;
       }
-      (void)unsigned8;
       if (n > 0 && (ret = sink->write(sink, pcm, n)) != FL_OK) goto done;
       if (left >= 0) left -= n;
       if (n < want || want == 0) break;
@@ -451,42 +522,86 @@ done:
 
 /* ---- WAV output ----
    Opus sources get opusdec's header (16-bit, WAVE_FORMAT_EXTENSIBLE for family 1 with
-   3..8 channels); other sources get flac's (extensible above 2 channels or 16 bits). */
+   3..8 channels); other sources get flac's (extensible above 2 channels or 16 bits).
+   Data that does not fit in 4 GB gets an RF64 header (EBU Tech 3306). */
 typedef struct {
    fl_sink base;
    FILE *f;
-   int C, rate, bits, container, ext, is_float, hdr_len;
+   int C, rate, bits, container, ext, is_float, hdr_len, rf64;
    fl_u32 mask;
    fl_i64 written;
    unsigned char *buf;
    size_t cap;
 } fl_wav_sink;
 
+/* Largest data size of a plain RIFF header. */
+static fl_u64 fl_wav_plain_max(const fl_wav_sink *w) { return 0xFFFFFFFFu-28-(w->ext ? 40 : 16); }
+
+static void fl_put_le64(unsigned char *p, fl_u64 v) {
+   fl_put_le32(p, (fl_u32)v);
+   fl_put_le32(p+4, (fl_u32)(v>>32));
+}
+
 static int fl_wav_header(fl_wav_sink *w, fl_u64 data_bytes) {
    static const unsigned char pcm_guid[16] = {1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71};
-   unsigned char h[68];
-   int bpf = w->container/8*w->C, fmt = w->ext ? 40 : 16, n = 28+fmt;
+   unsigned char h[68+36], *q = h;
+   int bpf = w->container/8*w->C, fmt = w->ext ? 40 : 16, n = 28+fmt+(w->rf64 ? 36 : 0);
    fl_u32 db = data_bytes > 0xFFFFFFFFu-n ? 0xFFFFFFFFu-n : (fl_u32)data_bytes;
-   memcpy(h, "RIFF", 4);
-   fl_put_le32(h+4, db+n-8);
-   memcpy(h+8, "WAVEfmt ", 8);
-   fl_put_le32(h+16, fmt);
-   fl_put_le16(h+20, w->ext ? 0xFFFE : w->is_float ? 3 : 1);
-   fl_put_le16(h+22, w->C);
-   fl_put_le32(h+24, w->rate);
-   fl_put_le32(h+28, (fl_u32)bpf*w->rate);
-   fl_put_le16(h+32, bpf);
-   fl_put_le16(h+34, w->container);
+   if (w->rf64) {
+      /* RF64 with a ds64 chunk; the 32-bit sizes are -1 */
+      memcpy(h, "RF64", 4);
+      fl_put_le32(h+4, 0xFFFFFFFFu);
+      memcpy(h+8, "WAVEds64", 8);
+      fl_put_le32(h+16, 28);
+      fl_put_le64(h+20, data_bytes+(data_bytes&1)+n-8);
+      fl_put_le64(h+28, data_bytes);
+      fl_put_le64(h+36, bpf ? data_bytes/bpf : 0);
+      fl_put_le32(h+44, 0);
+      q = h+36;
+      db = 0xFFFFFFFFu;
+   } else {
+      memcpy(h, "RIFF", 4);
+      fl_put_le32(h+4, db+n-8);
+      memcpy(h+8, "WAVE", 4);
+   }
+   memcpy(q+12, "fmt ", 4);
+   fl_put_le32(q+16, fmt);
+   fl_put_le16(q+20, w->ext ? 0xFFFE : w->is_float ? 3 : 1);
+   fl_put_le16(q+22, w->C);
+   fl_put_le32(q+24, w->rate);
+   fl_put_le32(q+28, (fl_u32)bpf*w->rate);
+   fl_put_le16(q+32, bpf);
+   fl_put_le16(q+34, w->container);
    if (w->ext) {
-      fl_put_le16(h+36, 22);
-      fl_put_le16(h+38, w->bits);
-      fl_put_le32(h+40, w->mask);
-      memcpy(h+44, pcm_guid, 16);
+      fl_put_le16(q+36, 22);
+      fl_put_le16(q+38, w->bits);
+      fl_put_le32(q+40, w->mask);
+      memcpy(q+44, pcm_guid, 16);
    }
    memcpy(h+n-8, "data", 4);
    fl_put_le32(h+n-4, db);
    w->hdr_len = n;
    return fwrite(h, 1, n, w->f) == (size_t)n ? FL_OK : FL_ERR_IO;
+}
+
+/* Moves everything after a plain header 36 bytes on, for an RF64 header (data that was
+   not known to exceed 4 GB in advance). The file is open for reading as well. */
+static int fl_wav_make_room(fl_wav_sink *w, fl_u64 end) {
+   size_t chunk = 1<<20;
+   unsigned char *b = (unsigned char*)malloc(chunk);
+   fl_u64 pos = end;
+   if (!b) return FL_ERR_ALLOC;
+   while (pos > (fl_u64)w->hdr_len) {
+      size_t k = (size_t)FL_MIN((fl_u64)chunk, pos-w->hdr_len);
+      pos -= k;
+      if (fl_fseek64(w->f, (fl_i64)pos, SEEK_SET) != 0 || fread(b, 1, k, w->f) != k ||
+          fl_fseek64(w->f, (fl_i64)pos+36, SEEK_SET) != 0 || fwrite(b, 1, k, w->f) != k) {
+         free(b);
+         return FL_ERR_IO;
+      }
+   }
+   free(b);
+   return FL_OK;
 }
 
 /* Data size for the first header: 0 for files (rewritten in finish), but stdout cannot
@@ -506,6 +621,7 @@ static int fl_wav_start(fl_sink *s, const fl_format *f) {
    if (f->is_float) {
       w->container = 32;
       w->is_float = 1;
+      if (fl_exact_frames(f) >= 0) w->rf64 = (fl_u64)fl_exact_frames(f)*w->C*4 > fl_wav_plain_max(w);
       return fl_wav_header(w, fl_wav_start_size(w, f));
    }
    w->container = (f->bits+7)/8*8;
@@ -518,6 +634,7 @@ static int fl_wav_start(fl_sink *s, const fl_format *f) {
       w->ext = w->C > 2 || w->bits > 16 || w->bits != w->container;
       w->mask = f->channel_mask ? f->channel_mask : fl_default_mask(w->C);
    }
+   if (fl_exact_frames(f) >= 0) w->rf64 = (fl_u64)fl_exact_frames(f)*w->C*(w->container/8) > fl_wav_plain_max(w);
    return fl_wav_header(w, fl_wav_start_size(w, f));
 }
 
@@ -550,6 +667,10 @@ static int fl_wav_finish(fl_sink *s) {
    int ret = FL_OK;
    if (data&1) ret = fputc(0, w->f) == EOF ? FL_ERR_IO : FL_OK;
    if (w->f != stdout) {  /* stdout keeps the header from start() */
+      if (ret == FL_OK && !w->rf64 && data > fl_wav_plain_max(w)) {
+         ret = fl_wav_make_room(w, w->hdr_len+data+(data&1));
+         w->rf64 = 1;
+      }
       fseek(w->f, 0, SEEK_SET);
       if (ret == FL_OK) ret = fl_wav_header(w, data);
    }
@@ -571,7 +692,8 @@ static fl_sink *fl_wav_sink_create(const char *path, int *err) {
       *err = FL_ERR_ALLOC;
       return NULL;
    }
-   if (!(w->f = fl_fopen(path, "wb"))) {
+   /* read access too, for fl_wav_make_room() */
+   if (!(w->f = fl_fopen(path, fl_is_std(path) ? "wb" : "w+b"))) {
       free(w);
       *err = FL_ERR_IO;
       return NULL;

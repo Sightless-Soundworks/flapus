@@ -14,7 +14,7 @@ searches, for whoever changes the code.
 | `silk_common.c`, `silk_dec.c` | SILK shared code and decoder |
 | `opus_dec.c` | Opus packet parsing, mode glue, multistream decoder |
 | `io.c` | buffered input (files and stdin), stream format and sink interface, tags, MD5, base64, WAV input and output |
-| `file_dec.c` | Ogg demuxing, Opus file decoding, resampler, dither |
+| `file_dec.c` | streaming Ogg reader, Opus file decoding (two passes), resampler, dither |
 | `flac_dec.c` | FLAC decoder: native and Ogg FLAC, metadata, CRCs, MD5 check |
 | `flac_enc.c` | FLAC encoder: search, block size DP, threads, verification, metadata |
 | `enc_x87.c` | x87 helpers and MinGW libm emulation |

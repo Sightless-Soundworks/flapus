@@ -1,124 +1,158 @@
 /* ---- Ogg demuxing, speex-style resampler, dither and WAV output (opusdec behaviour) ---- */
 
+/* ---- Streaming Ogg reader ----
+   Follows one logical stream per link: in each group of BOS pages the first stream whose
+   first packet starts with magic (like opusfile); other streams are skipped. Completed
+   packets are appended to a queue. A page's granule belongs to the last packet completed
+   on it, if the page ends at a packet boundary; an EOS page marks the last completed
+   packet. Only that packet can still change, so the consumer leaves it in the queue until
+   a later packet completes or its link has ended. */
 typedef struct {
    unsigned char *data;
-   int len;
-   fl_i64 granule;  /* granule of the page the packet ends on, -1 if none, -2 if damaged */
+   int len, idx, link;  /* idx: packet number within its link */
+   fl_i64 granule;      /* granule of the page the packet ends on, -1 if none, -2 if damaged */
    int eos;
 } fl_ogg_packet;
 
 typedef struct {
    fl_ogg_packet *pk;
-   int count, cap;
-   unsigned char *store;
-} fl_ogg_stream;
+   int count, cap, first;  /* pk[first..count-1] are not consumed yet */
+} fl_ogg_queue;
 
-static void fl_ogg_free(fl_ogg_stream *s) {
+typedef struct {
+   fl_inbuf *in;
+   const char *magic;
+   fl_u32 serial;
+   int have_serial, prev_bos, links, npk, ended;
+   unsigned char *cur;
+   int cur_len;
+   fl_ogg_queue q;
+} fl_ogg_reader;
+
+static void fl_ogg_init(fl_ogg_reader *r, fl_inbuf *in, const char *magic) {
+   memset(r, 0, sizeof(*r));
+   r->in = in;
+   r->magic = magic;
+}
+
+/* Frees the consumed packets and moves the rest to the front. */
+static void fl_ogg_compact(fl_ogg_queue *q) {
    int i;
-   for (i = 0; i < s->count; i++) free(s->pk[i].data);
-   free(s->pk);
-   memset(s, 0, sizeof(*s));
+   for (i = 0; i < q->first; i++) free(q->pk[i].data);
+   memmove(q->pk, q->pk+q->first, sizeof(*q->pk)*(q->count-q->first));
+   q->count -= q->first;
+   q->first = 0;
 }
 
-/* Collects all packets of the first logical stream. Returns 0 on success. */
-static void fl_ogg_add_packet(fl_ogg_stream *s, unsigned char *data, int len) {
-   if (s->count == s->cap) {
-      s->cap = s->cap ? 2*s->cap : 256;
-      s->pk = (fl_ogg_packet*)realloc(s->pk, s->cap*sizeof(*s->pk));
+static void fl_ogg_free(fl_ogg_reader *r) {
+   r->q.first = r->q.count;
+   fl_ogg_compact(&r->q);
+   free(r->q.pk);
+   free(r->cur);
+   memset(&r->q, 0, sizeof(r->q));
+   r->cur = NULL;
+}
+
+static int fl_ogg_add_packet(fl_ogg_reader *r) {
+   fl_ogg_queue *q = &r->q;
+   if (q->count == q->cap) {
+      int cap = q->cap ? 2*q->cap : 64;
+      fl_ogg_packet *t = (fl_ogg_packet*)realloc(q->pk, cap*sizeof(*q->pk));
+      if (!t) return -1;
+      q->pk = t;
+      q->cap = cap;
    }
-   s->pk[s->count].data = data;
-   s->pk[s->count].len = len;
-   s->pk[s->count].granule = -1;
-   s->pk[s->count].eos = 0;
-   s->count++;
+   q->pk[q->count].data = r->cur;
+   q->pk[q->count].len = r->cur_len;
+   q->pk[q->count].idx = r->npk++;
+   q->pk[q->count].link = r->links-1;
+   q->pk[q->count].granule = -1;
+   q->pk[q->count].eos = 0;
+   q->count++;
+   r->cur = NULL;
+   r->cur_len = 0;
+   return 0;
 }
 
-/* Splits an Ogg file into chained links. In each group of BOS pages the first stream
-   whose first packet starts with magic is used (like opusfile); other streams are ignored. */
-static int fl_ogg_parse(const unsigned char *buf, long size, const char *magic, fl_ogg_stream **links, int *nlinks) {
-   int mlen = (int)strlen(magic);
-   long pos = 0;
-   fl_u32 serial = 0;
-   int have_serial = 0, prev_bos = 0, n = 0;
-   unsigned char *cur = NULL;
-   int cur_len = 0;
-   fl_ogg_stream *L = NULL, *s = NULL;
-   while (pos+27 <= size) {
-      int nseg, i, hdr, bos;
-      long body;
+/* Reads the next page of the followed stream into the queue. Returns 1, or 0 at the end of
+   the input (or of the readable part of a damaged file), or FL_ERR_ALLOC. */
+static int fl_ogg_page(fl_ogg_reader *r) {
+   fl_inbuf *b = r->in;
+   int mlen = (int)strlen(r->magic);
+   for (;;) {
+      const unsigned char *h;
+      int nseg, i, hdr, bos, body;
       fl_i64 granule;
       fl_u32 ser;
-      if (memcmp(buf+pos, "OggS", 4) != 0) {
-         pos++;
+      if (r->ended) return 0;
+      if (fl_inbuf_need(b, 27) < 0) return FL_ERR_ALLOC;
+      if (b->len-b->pos < 27) break;
+      h = b->buf+b->pos;
+      if (memcmp(h, "OggS", 4) != 0) {
+         b->pos++;
          continue;
       }
-      nseg = buf[pos+26];
+      nseg = h[26];
       hdr = 27+nseg;
-      if (pos+hdr > size) break;
+      if (fl_inbuf_need(b, hdr+255*255) < 0) return FL_ERR_ALLOC;
+      h = b->buf+b->pos;
+      if (b->len-b->pos < (size_t)hdr) break;
       {
-         /* -1: no packet ends here; -2: damaged (beyond 2^62) */
          fl_u64 g = 0;
-         for (i = 7; i >= 0; i--) g = (g<<8)|buf[pos+6+i];
+         for (i = 7; i >= 0; i--) g = (g<<8)|h[6+i];
          granule = g == ~(fl_u64)0 ? -1 : g < (fl_u64)1<<62 ? (fl_i64)g : -2;
       }
-      ser = buf[pos+14]|(buf[pos+15]<<8)|(buf[pos+16]<<16)|((fl_u32)buf[pos+17]<<24);
-      bos = (buf[pos+5]&2) != 0;
-      body = pos+hdr;
+      ser = h[14]|(h[15]<<8)|(h[16]<<16)|((fl_u32)h[17]<<24);
+      bos = (h[5]&2) != 0;
+      body = hdr;
       if (bos) {
          /* a new group of BOS pages starts a new link */
-         if (!prev_bos) have_serial = 0;
-         if (!have_serial && nseg > 0 && buf[pos+27] >= mlen && body+mlen <= size && memcmp(buf+body, magic, mlen) == 0) {
-            fl_ogg_stream *t = (fl_ogg_stream*)realloc(L, (n+1)*sizeof(*L));
-            if (!t) break;
-            L = t;
-            s = &L[n++];
-            memset(s, 0, sizeof(*s));
-            serial = ser;
-            have_serial = 1;
-            free(cur);
-            cur = NULL;
-            cur_len = 0;
+         if (!r->prev_bos) r->have_serial = 0;
+         if (!r->have_serial && nseg > 0 && h[27] >= mlen && b->len-b->pos >= (size_t)(hdr+mlen) &&
+             memcmp(h+hdr, r->magic, mlen) == 0) {
+            r->serial = ser;
+            r->have_serial = 1;
+            r->links++;
+            r->npk = 0;
+            free(r->cur);
+            r->cur = NULL;
+            r->cur_len = 0;
          }
       }
-      prev_bos = bos;
-      if (!have_serial || ser != serial) {
-         for (i = 0; i < nseg; i++) body += buf[pos+27+i];
-         pos = body;
+      r->prev_bos = bos;
+      if (!r->have_serial || ser != r->serial) {
+         fl_i64 skip = 0;
+         for (i = 0; i < nseg; i++) skip += h[27+i];
+         fl_inbuf_skip(b, (fl_u64)(hdr+skip));
          continue;
       }
       for (i = 0; i < nseg; i++) {
-         int l = buf[pos+27+i];
+         int l = h[27+i];
          unsigned char *t;
-         if (body+l > size) {
-            pos = size;
-            break;
+         if (b->len-b->pos < (size_t)(body+l)) {
+            /* truncated page: the end of the readable input */
+            r->ended = 1;
+            return 0;
          }
-         t = (unsigned char*)realloc(cur, cur_len+l+1);
-         if (!t) break;
-         cur = t;
-         memcpy(cur+cur_len, buf+body, l);
-         cur_len += l;
+         if (!(t = (unsigned char*)realloc(r->cur, r->cur_len+l+1))) return FL_ERR_ALLOC;
+         r->cur = t;
+         memcpy(r->cur+r->cur_len, h+body, l);
+         r->cur_len += l;
          body += l;
-         if (l < 255) {
-            fl_ogg_add_packet(s, cur, cur_len);
-            cur = NULL;
-            cur_len = 0;
-         }
+         if (l < 255 && fl_ogg_add_packet(r) < 0) return FL_ERR_ALLOC;
       }
-      if (pos == size) break;
-      /* The page granule belongs to the last packet completed on this page. */
-      if (s->count > 0 && cur_len == 0) {
-         s->pk[s->count-1].granule = granule;
-         s->pk[s->count-1].eos = (buf[pos+5]&4) != 0;
-      } else if (s->count > 0 && (buf[pos+5]&4)) {
-         s->pk[s->count-1].eos = 1;
+      if (r->npk > 0 && r->q.count > 0 && r->q.pk[r->q.count-1].link == r->links-1) {
+         fl_ogg_packet *last = &r->q.pk[r->q.count-1];
+         if (r->cur_len == 0) {
+            last->granule = granule;
+            last->eos = (h[5]&4) != 0;
+         } else if (h[5]&4) last->eos = 1;
       }
-      pos = body;
+      b->pos += body;
+      return 1;
    }
-   free(cur);
-   *links = L;
-   *nlinks = n;
-   return n > 0 && L[0].count >= 1 ? 0 : -1;
+   r->ended = 1;
+   return 0;
 }
 
 typedef struct {
@@ -491,199 +525,289 @@ static void fl_downmix_stereo(float *pcm, int n, int C) {
    }
 }
 
+/* State of the Opus file decoder (opusdec/opusfile behaviour). */
+typedef struct {
+   fl_opus_head *heads;
+   fl_i64 *last_gp;       /* last granule of an audio packet per link, -1 if none */
+   int *npk;              /* packets per link */
+   int nlinks, cap;
+   unsigned char *tags;   /* OpusTags of the first link */
+   int tags_len;
+   int head_err;          /* first header error */
+   /* decoding */
+   fl_opus_ms_decoder *dec;
+   fl_writer *w;
+   float *pcm, *tmp;
+   unsigned char channel_map[8];
+   int C, rate, force_stereo, permute, link, cur_discard, started;
+   fl_i64 prev_gp;
+} fl_opus_file;
+
+/* Pass 1: collects the headers and lengths of the links from one packet. */
+static int fl_opus_scan_packet(fl_opus_file *o, const fl_ogg_packet *p) {
+   int li = p->link;
+   if (li >= o->cap) {
+      int cap = 2*li+4;
+      fl_opus_head *h = (fl_opus_head*)realloc(o->heads, sizeof(*h)*cap);
+      fl_i64 *g;
+      int *n;
+      if (h) o->heads = h;
+      g = (fl_i64*)realloc(o->last_gp, sizeof(*g)*cap);
+      if (g) o->last_gp = g;
+      n = (int*)realloc(o->npk, sizeof(*n)*cap);
+      if (n) o->npk = n;
+      if (!h || !g || !n) return FL_ERR_ALLOC;
+      o->cap = cap;
+   }
+   while (o->nlinks <= li) {
+      o->last_gp[o->nlinks] = -1;
+      o->npk[o->nlinks++] = 0;
+   }
+   o->npk[li]++;
+   if (p->idx == 0) {
+      int r = fl_parse_opus_head(p->data, p->len, &o->heads[li]);
+      if (r < 0 && !o->head_err) o->head_err = r == FL_ERR_UNSUPPORTED ? r : FL_ERR_BAD_FILE;
+   } else if (p->idx == 1) {
+      if ((p->len < 8 || memcmp(p->data, "OpusTags", 8) != 0) && !o->head_err) o->head_err = FL_ERR_BAD_FILE;
+      if (li == 0) {
+         if (!(o->tags = (unsigned char*)malloc(p->len+1))) return FL_ERR_ALLOC;
+         memcpy(o->tags, p->data, p->len);
+         o->tags_len = p->len;
+      }
+   } else if (p->granule >= 0) o->last_gp[li] = p->granule;
+   return FL_OK;
+}
+
+/* Starts decoding link li. */
+static int fl_opus_link_start(fl_opus_file *o, int li) {
+   fl_opus_head *head = &o->heads[li];
+   o->link = li;
+   o->cur_discard = head->pre_skip;
+   o->started = 0;
+   o->prev_gp = -1;
+   fl_opus_ms_decoder_destroy(o->dec);
+   o->dec = fl_opus_ms_decoder_create(48000, head->channels, head->streams, head->coupled, head->mapping, NULL);
+   if (!o->dec) return FL_ERR_BAD_FILE;
+   fl_opus_ms_decoder_set_gain(o->dec, head->gain);
+   return FL_OK;
+}
+
+/* Decodes the packets completed on one page (pk[0..n-1], the last one carries the
+   granule) or the packets left at the end of a link. */
+static int fl_opus_group(fl_opus_file *o, const fl_ogg_packet *pk, int n) {
+   fl_writer *w = o->w;
+   int HC = o->heads[o->link].channels, C = o->C, k, total = 0, eos_trim = 0, ret;
+   fl_i64 page_gp = pk[n-1].granule, gp;
+   for (k = 0; k < n; k++) {
+      int d = fl_packet_duration(pk[k].data, pk[k].len);
+      total += d > 0 ? d : 0;
+   }
+   if (page_gp < -1) return FL_ERR_BAD_FILE;
+   if (o->prev_gp == -1) {
+      /* first audio page; if it is also the last one and holds more audio than its
+         granule position, the stream starts at 0 and the end is trimmed (opusfile) */
+      o->prev_gp = page_gp-total;
+      if (o->prev_gp < 0) {
+         if (!pk[n-1].eos) return FL_ERR_BAD_FILE;
+         o->prev_gp = 0;
+      }
+   }
+   if (pk[n-1].eos && page_gp-o->prev_gp < total) eos_trim = 1;
+   else o->prev_gp = page_gp-total;
+   gp = o->prev_gp;
+   for (k = 0; k < n; k++) {
+      int dur = fl_packet_duration(pk[k].data, pk[k].len), trimmed, got, skip;
+      float *out = o->pcm, *pcm = o->pcm;
+      if (dur <= 0) continue;
+      got = fl_opus_ms_decode_float(o->dec, pk[k].data, pk[k].len, pcm, 5760);
+      if (got < 0) return FL_ERR_BAD_FILE;
+      trimmed = dur;
+      if (eos_trim) {
+         fl_i64 left = page_gp-gp;
+         trimmed = left <= 0 ? 0 : (int)FL_MIN(left, dur);
+      }
+      gp += dur;
+      skip = FL_MIN(trimmed, o->cur_discard);
+      o->cur_discard -= skip;
+      trimmed -= skip;
+      if (trimmed <= 0) continue;
+      if (skip > 0) memmove(pcm, pcm+skip*HC, sizeof(float)*trimmed*HC);
+      if (o->force_stereo) fl_downmix_stereo(pcm, trimmed, HC);
+      if (o->permute) {
+         int j, c;
+         for (j = 0; j < trimmed; j++)
+            for (c = 0; c < C; c++) o->tmp[j*C+c] = pcm[j*C+o->channel_map[c]];
+         out = o->tmp;
+      }
+      if (!o->started) {
+         /* new link: drain and drop the resampler, restart the per-link counters */
+         if (w->have_rs) {
+            if ((ret = fl_drain_resampler(w)) != FL_OK) return ret;
+            fl_resampler_free(&w->rs);
+            w->have_rs = 0;
+         }
+         w->link_read = w->link_out = 0;
+         if (o->rate != 48000) {
+            if ((ret = fl_resampler_init(&w->rs, C, 48000, o->rate)) != FL_OK) return ret;
+            w->have_rs = 1;
+         }
+         o->started = 1;
+      }
+      w->link_read += trimmed;
+      if ((ret = fl_audio_write(w, out, trimmed)) != FL_OK) return ret;
+   }
+   o->prev_gp = page_gp;
+   return FL_OK;
+}
+
+/* Pass 2: decodes the complete groups in the queue; with done set (no more pages of this
+   link will come) also the rest. A group whose last packet is the latest one read can
+   still get a granule or EOS flag, so it waits. */
+static int fl_opus_drain_queue(fl_opus_file *o, fl_ogg_reader *rd, int more) {
+   fl_ogg_queue *q = &rd->q;
+   while (q->first < q->count) {
+      fl_ogg_packet *p = &q->pk[q->first];
+      int L = p->link, k = q->first, ret, done = !more || rd->links-1 > L;
+      if (L != o->link && (ret = fl_opus_link_start(o, L)) != FL_OK) return ret;
+      if (p->idx < 2) {
+         q->first++;  /* OpusHead and OpusTags */
+         continue;
+      }
+      while (k < q->count && q->pk[k].link == L && q->pk[k].granule == -1) k++;
+      if (k < q->count && q->pk[k].link == L) {
+         if (!done && k == q->count-1) break;
+      } else {
+         if (!done) break;
+         k--;  /* the rest of the link */
+      }
+      if ((ret = fl_opus_group(o, p, k-q->first+1)) != FL_OK) return ret;
+      q->first = k+1;
+   }
+   fl_ogg_compact(q);
+   return FL_OK;
+}
+
 /* Decodes an Ogg Opus file (all chained links) like opusdec and passes it to sink:
-   opt->rate (0 = the original rate), opt->dither, opt->bits and opt->as_float. */
+   opt->rate (0 = the original rate), opt->dither, opt->bits and opt->as_float.
+   The file is read twice: first for the link headers and lengths, then to decode. */
 static int fl_run_opus(fl_inbuf *in, const fl_options *opt, fl_sink *sink) {
    static const int wav_permute[8][8] = {
       {0}, {0, 1}, {0, 2, 1}, {0, 1, 2, 3}, {0, 2, 1, 3, 4}, {0, 2, 1, 4, 5, 3},
       {0, 2, 1, 5, 6, 4, 3}, {0, 2, 1, 6, 7, 4, 5, 3}};
-   long size;
-   unsigned char *file = fl_inbuf_take(in, &size);
-   fl_ogg_stream *links = NULL;
-   int nlinks = 0, li, i, ret = FL_ERR_BAD_FILE, force_stereo = 0, C, maxC = 2, permute = 0;
-   fl_opus_head *heads = NULL;
-   fl_opus_ms_decoder *dec = NULL;
+   fl_opus_file o;
+   fl_ogg_reader rd;
    fl_writer *w = NULL;
-   float *pcm = NULL, *tmp = NULL;
-   unsigned char channel_map[8];
+   int li, i, ret = FL_ERR_BAD_FILE, maxC = 2, more;
+   fl_i64 start = fl_inbuf_tell(in);
    fl_format fmt;
    int rate = opt->rate;
+   memset(&o, 0, sizeof(o));
+   o.link = -1;
    fl_format_init(&fmt);
-   if (!file) return FL_ERR_ALLOC;
-   if (fl_ogg_parse(file, size, "OpusHead", &links, &nlinks) < 0) {
-      free(file);
-      for (li = 0; li < nlinks; li++) fl_ogg_free(&links[li]);
-      free(links);
-      return FL_ERR_BAD_FILE;
-   }
-   free(file);
-   heads = (fl_opus_head*)malloc(sizeof(*heads)*nlinks);
-   if (!heads) {
-      ret = FL_ERR_ALLOC;
-      goto done;
-   }
-   for (li = 0; li < nlinks; li++) {
-      fl_ogg_stream *s = &links[li];
-      int r = s->count >= 2 ? fl_parse_opus_head(s->pk[0].data, s->pk[0].len, &heads[li]) : -1;
-      if (r < 0 || s->pk[1].len < 8 || memcmp(s->pk[1].data, "OpusTags", 8) != 0) {
-         ret = r == FL_ERR_UNSUPPORTED ? r : FL_ERR_BAD_FILE;
+   fl_ogg_init(&rd, in, "OpusHead");
+   if (fl_inbuf_make_seekable(in) < 0) return FL_ERR_ALLOC;
+   /* pass 1 */
+   do {
+      fl_ogg_queue *q = &rd.q;
+      int lim;
+      if ((more = fl_ogg_page(&rd)) < 0) {
+         ret = more;
          goto done;
       }
-      if (heads[li].channels != heads[0].channels) force_stereo = 1;
-      maxC = FL_MAX(maxC, heads[li].channels);
+      lim = more ? q->count-1 : q->count;
+      for (i = q->first; i < lim; i++)
+         if ((ret = fl_opus_scan_packet(&o, &q->pk[i])) != FL_OK) goto done;
+      q->first = FL_MAX(q->first, lim);
+      fl_ogg_compact(q);
+   } while (more);
+   ret = FL_ERR_BAD_FILE;
+   if (rd.links == 0 || o.nlinks < rd.links) goto done;
+   for (li = 0; li < o.nlinks; li++)
+      if (o.npk[li] < 2) goto done;
+   if (o.head_err) {
+      ret = o.head_err;
+      goto done;
+   }
+   fl_ogg_free(&rd);
+   for (li = 0; li < o.nlinks; li++) {
+      if (o.heads[li].channels != o.heads[0].channels) o.force_stereo = 1;
+      maxC = FL_MAX(maxC, o.heads[li].channels);
    }
    if (rate == 0) {
-      rate = heads[0].input_sample_rate ? (int)heads[0].input_sample_rate : 48000;
-      for (li = 1; li < nlinks; li++)
-         if ((heads[li].input_sample_rate ? (int)heads[li].input_sample_rate : 48000) != rate) rate = 48000;
+      rate = o.heads[0].input_sample_rate ? (int)o.heads[0].input_sample_rate : 48000;
+      for (li = 1; li < o.nlinks; li++)
+         if ((o.heads[li].input_sample_rate ? (int)o.heads[li].input_sample_rate : 48000) != rate) rate = 48000;
    }
    if (rate < 8000 || rate > 192000) rate = 48000;
-   C = force_stereo ? 2 : heads[0].channels;
-   if (C > 8) {
+   o.rate = rate;
+   o.C = o.force_stereo ? 2 : o.heads[0].channels;
+   if (o.C > 8) {
       ret = FL_ERR_UNSUPPORTED;  /* output state holds at most 8 channels */
       goto done;
    }
-   w = (fl_writer*)calloc(1, sizeof(*w));
-   pcm = (float*)malloc(sizeof(float)*5760*maxC);
-   tmp = (float*)malloc(sizeof(float)*5760*C);
-   if (!w || !pcm || !tmp) {
+   o.w = w = (fl_writer*)calloc(1, sizeof(*w));
+   o.pcm = (float*)malloc(sizeof(float)*5760*maxC);
+   o.tmp = (float*)malloc(sizeof(float)*5760*o.C);
+   if (!w || !o.pcm || !o.tmp) {
       ret = FL_ERR_ALLOC;
       goto done;
    }
    /* WAV channel order for family 1 (opusdec adjust_wav_mapping) */
-   permute = heads[0].mapping_family == 1 && !force_stereo && (C == 3 || C > 4);
-   if (permute)
-      for (i = 0; i < C; i++) channel_map[wav_permute[C-1][i]] = (unsigned char)i;
+   o.permute = o.heads[0].mapping_family == 1 && !o.force_stereo && (o.C == 3 || o.C > 4);
+   if (o.permute)
+      for (i = 0; i < o.C; i++) o.channel_map[wav_permute[o.C-1][i]] = (unsigned char)i;
    w->sink = sink;
-   w->C = C;
+   w->C = o.C;
    w->rate = rate;
    w->dither = opt->dither;
    w->bits = opt->as_float ? 0 : opt->bits ? opt->bits : 16;
    w->ss.fs = rate;
    w->ss.mute = 960;
    w->ss.rngseed = 22222;
-   fmt.channels = C;
+   fmt.channels = o.C;
    fmt.rate = rate;
    fmt.bits = fmt.container_bits = opt->as_float ? 32 : opt->bits ? opt->bits : 16;
    fmt.is_float = opt->as_float;
-   fmt.opus_family = force_stereo ? 0 : heads[0].mapping_family;
+   fmt.opus_family = o.force_stereo ? 0 : o.heads[0].mapping_family;
    {
       /* approximate length (for progress): last granule minus pre-skip of every link */
       fl_i64 total = 0;
-      for (li = 0; li < nlinks; li++)
-         for (i = links[li].count-1; i >= 2; i--)
-            if (links[li].pk[i].granule >= 0) {
-               /* clamped, so that damaged granules cannot overflow */
-               total = FL_MIN(total+FL_MAX(0, links[li].pk[i].granule-heads[li].pre_skip), (fl_i64)1<<50);
-               break;
-            }
+      for (li = 0; li < o.nlinks; li++)
+         if (o.last_gp[li] >= 0)
+            /* clamped, so that damaged granules cannot overflow */
+            total = FL_MIN(total+FL_MAX(0, o.last_gp[li]-o.heads[li].pre_skip), (fl_i64)1<<50);
       fmt.frames = total/48000*rate+total%48000*rate/48000;
    }
-   fl_parse_comments(&fmt, links[0].pk[1].data+8, links[0].pk[1].len-8);
+   fl_parse_comments(&fmt, o.tags+8, o.tags_len-8);
    if ((ret = sink->start(sink, &fmt)) != FL_OK) goto done;
-   for (li = 0; li < nlinks; li++) {
-      fl_ogg_stream *s = &links[li];
-      fl_opus_head *head = &heads[li];
-      int cur_discard = head->pre_skip, HC = head->channels, started = 0;
-      fl_i64 prev_gp = -1;
-      fl_opus_ms_decoder_destroy(dec);
-      dec = fl_opus_ms_decoder_create(48000, HC, head->streams, head->coupled, head->mapping, NULL);
-      if (!dec) {
-         ret = FL_ERR_BAD_FILE;
+   /* pass 2 */
+   if (fl_inbuf_seek(in, start) != 0) {
+      ret = FL_ERR_IO;
+      goto done;
+   }
+   fl_ogg_init(&rd, in, "OpusHead");
+   do {
+      if ((more = fl_ogg_page(&rd)) < 0) {
+         ret = more;
          goto done;
       }
-      fl_opus_ms_decoder_set_gain(dec, head->gain);
-      for (i = 2; i < s->count;) {
-         /* Group the packets completed on one page (the last one carries the granule). */
-         int first = i, last = i, k, total = 0, eos_trim = 0;
-         fl_i64 page_gp, gp;
-         while (last < s->count && s->pk[last].granule == -1) last++;
-         if (last >= s->count) last = s->count-1;
-         for (k = first; k <= last; k++) {
-            int d = fl_packet_duration(s->pk[k].data, s->pk[k].len);
-            total += d > 0 ? d : 0;
-         }
-         page_gp = s->pk[last].granule;
-         if (page_gp < -1) {
-            ret = FL_ERR_BAD_FILE;
-            goto done;
-         }
-         if (prev_gp == -1) {
-            /* first audio page; if it is also the last one and holds more audio than its
-               granule position, the stream starts at 0 and the end is trimmed (opusfile) */
-            prev_gp = page_gp-total;
-            if (prev_gp < 0) {
-               if (!s->pk[last].eos) {
-                  ret = FL_ERR_BAD_FILE;
-                  goto done;
-               }
-               prev_gp = 0;
-            }
-         }
-         if (s->pk[last].eos && page_gp-prev_gp < total) eos_trim = 1;
-         else prev_gp = page_gp-total;
-         gp = prev_gp;
-         for (k = first; k <= last; k++) {
-            int dur = fl_packet_duration(s->pk[k].data, s->pk[k].len), trimmed, n, skip;
-            float *out = pcm;
-            if (dur <= 0) continue;
-            n = fl_opus_ms_decode_float(dec, s->pk[k].data, s->pk[k].len, pcm, 5760);
-            if (n < 0) {
-               ret = FL_ERR_BAD_FILE;
-               goto done;
-            }
-            trimmed = dur;
-            if (eos_trim) {
-               fl_i64 left = page_gp-gp;
-               trimmed = left <= 0 ? 0 : (int)FL_MIN(left, dur);
-            }
-            gp += dur;
-            skip = FL_MIN(trimmed, cur_discard);
-            cur_discard -= skip;
-            trimmed -= skip;
-            if (trimmed <= 0) continue;
-            if (skip > 0) memmove(pcm, pcm+skip*HC, sizeof(float)*trimmed*HC);
-            if (force_stereo) fl_downmix_stereo(pcm, trimmed, HC);
-            if (permute) {
-               int j, c;
-               for (j = 0; j < trimmed; j++)
-                  for (c = 0; c < C; c++) tmp[j*C+c] = pcm[j*C+channel_map[c]];
-               out = tmp;
-            }
-            if (!started) {
-               /* new link: drain and drop the resampler, restart the per-link counters */
-               if (w->have_rs) {
-                  if ((ret = fl_drain_resampler(w)) != FL_OK) goto done;
-                  fl_resampler_free(&w->rs);
-                  w->have_rs = 0;
-               }
-               w->link_read = w->link_out = 0;
-               if (rate != 48000) {
-                  if ((ret = fl_resampler_init(&w->rs, C, 48000, rate)) != FL_OK) goto done;
-                  w->have_rs = 1;
-               }
-               started = 1;
-            }
-            w->link_read += trimmed;
-            if ((ret = fl_audio_write(w, out, trimmed)) != FL_OK) goto done;
-         }
-         prev_gp = page_gp;
-         i = last+1;
-      }
-   }
+      if ((ret = fl_opus_drain_queue(&o, &rd, more)) != FL_OK) goto done;
+   } while (more);
    if (w->have_rs && (ret = fl_drain_resampler(w)) != FL_OK) goto done;
    ret = sink->finish(sink);
 done:
+   fl_ogg_free(&rd);
    fl_format_free(&fmt);
    if (w) {
       if (w->have_rs) fl_resampler_free(&w->rs);
       free(w);
    }
-   fl_opus_ms_decoder_destroy(dec);
-   free(pcm);
-   free(tmp);
-   free(heads);
-   for (li = 0; li < nlinks; li++) fl_ogg_free(&links[li]);
-   free(links);
+   fl_opus_ms_decoder_destroy(o.dec);
+   free(o.pcm);
+   free(o.tmp);
+   free(o.heads);
+   free(o.last_gp);
+   free(o.npk);
+   free(o.tags);
    return ret;
 }

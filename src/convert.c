@@ -34,7 +34,7 @@ static int fl_detect_format(fl_inbuf *in) {
    if (fl_inbuf_need(in, 4096) < 0) return FL_ERR_ALLOC;
    b = in->buf+in->pos;
    n = FL_MIN(in->len-in->pos, 4096);
-   if (n >= 12 && memcmp(b, "RIFF", 4) == 0 && memcmp(b+8, "WAVE", 4) == 0) return FL_FORMAT_WAV;
+   if (fl_is_wav(b, n)) return FL_FORMAT_WAV;
    if (n >= 4 && (memcmp(b, "fLaC", 4) == 0 || memcmp(b, "ID3", 3) == 0)) return FL_FORMAT_FLAC;
    if (n >= 4 && memcmp(b, "OggS", 4) == 0) {
       /* look at the first packets of the BOS pages */

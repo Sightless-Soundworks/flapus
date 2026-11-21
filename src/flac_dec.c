@@ -412,25 +412,37 @@ static int fl_md5_check(fl_md5 *m, const fl_streaminfo *si) {
    return memcmp(si->md5, zero, 16) == 0 || memcmp(si->md5, sum, 16) == 0 ? FL_OK : FL_ERR_CHECKSUM;
 }
 
-/* Ogg FLAC (first logical stream, mapping version 1). */
-static int fl_run_ogg_flac(const unsigned char *file, long size, fl_sink *sink) {
-   fl_ogg_stream *links = NULL;
-   int nlinks = 0, i, ret = FL_ERR_BAD_FILE;
+/* Ogg FLAC (first logical stream, mapping version 1), read page by page. */
+static int fl_run_ogg_flac(fl_inbuf *in, fl_sink *sink) {
+   fl_ogg_reader rd;
+   int ret = FL_ERR_BAD_FILE, first = 1, more, stop = 0;
    fl_flac_dec d;
    fl_format f;
    fl_md5 md5;
    memset(&d, 0, sizeof(d));
    fl_format_init(&f);
    fl_md5_init(&md5);
-   if (fl_ogg_parse(file, size, "\177FLAC", &links, &nlinks) < 0) goto done;
-   {
-      fl_ogg_stream *s = &links[0];
-      int first = 1;
-      if (s->pk[0].len < 51 || memcmp(s->pk[0].data+9, "fLaC", 4) != 0) goto done;
-      fl_parse_streaminfo(s->pk[0].data+17, &d.si);
-      for (i = 1; i < s->count; i++) {
-         const unsigned char *p = s->pk[i].data;
-         int len = s->pk[i].len, n;
+   fl_ogg_init(&rd, in, "\177FLAC");
+   do {
+      fl_ogg_queue *q = &rd.q;
+      if ((more = fl_ogg_page(&rd)) < 0) {
+         ret = more;
+         goto done;
+      }
+      for (; q->first < q->count && !stop; q->first++) {
+         const fl_ogg_packet *pk = &q->pk[q->first];
+         const unsigned char *p = pk->data;
+         int len = pk->len, n;
+         if (pk->link > 0) {
+            stop = 1;  /* only the first link */
+            break;
+         }
+         ret = FL_ERR_BAD_FILE;
+         if (pk->idx == 0) {
+            if (len < 51 || memcmp(p+9, "fLaC", 4) != 0) goto done;
+            fl_parse_streaminfo(p+17, &d.si);
+            continue;
+         }
          if (len > 0 && p[0] != 0xFF) {
             /* header packet: one metadata block */
             if (len < 4) goto done;
@@ -448,13 +460,14 @@ static int fl_run_ogg_flac(const unsigned char *file, long size, fl_sink *sink) 
          fl_md5_samples(&md5, d.out, (size_t)n*d.si.channels, d.si.bits);
          if ((ret = sink->write(sink, d.out, n)) != FL_OK) goto done;
       }
-      if (first && (ret = fl_flac_start(&d, &f, sink)) != FL_OK) goto done;
-      ret = sink->finish(sink);
-      if (ret == FL_OK) ret = fl_md5_check(&md5, &d.si);
-   }
+      fl_ogg_compact(q);
+   } while (more && !stop);
+   if (rd.links == 0) goto done;
+   if (first && (ret = fl_flac_start(&d, &f, sink)) != FL_OK) goto done;
+   ret = sink->finish(sink);
+   if (ret == FL_OK) ret = fl_md5_check(&md5, &d.si);
 done:
-   for (i = 0; i < nlinks; i++) fl_ogg_free(&links[i]);
-   free(links);
+   fl_ogg_free(&rd);
    fl_flac_dec_free(&d);
    fl_format_free(&f);
    return ret;
@@ -475,10 +488,7 @@ static int fl_run_flac(fl_inbuf *b, fl_sink *sink) {
       goto done;
    }
    if (in.len-in.pos >= 4 && memcmp(in.buf+in.pos, "OggS", 4) == 0) {
-      long size;
-      unsigned char *file = fl_inbuf_take(&in, &size);
-      ret = file ? fl_run_ogg_flac(file, size, sink) : FL_ERR_ALLOC;
-      free(file);
+      ret = fl_run_ogg_flac(&in, sink);
       goto done;
    }
    /* skip ID3v2 tags */

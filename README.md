@@ -343,12 +343,15 @@ line.
 **Input**
 
 - **WAV**: 8/16/24/32-bit PCM or 32-bit float, `WAVE_FORMAT_EXTENSIBLE` with
-  valid-bits, sample rates up to 1048575 Hz (the FLAC limit).
+  valid-bits, sample rates up to 1048575 Hz (the FLAC limit). RF64/BW64 and Sony Wave64
+  files (above 4 GB) are read as well.
 - **FLAC**: any bit depth from 4 to 32 bits, 1-8 channels, fixed or variable block
   size. Ogg FLAC and leading ID3v2 tags are accepted. The MD5 is checked, and a
   mismatch is reported as `FL_ERR_CHECKSUM`.
 - **Ogg Opus**: channel mapping families 0, 1, 2 and 255, chained and multiplexed
   files.
+- Ogg files are read page by page, so memory use does not grow with the file size (from
+  stdin they are first read into memory, since they are scanned twice).
 
 **FLAC output**
 
@@ -374,6 +377,9 @@ line.
   `WAVE_FORMAT_EXTENSIBLE` for 3-8 channel surround and above 16 bits.
 - From FLAC: the original bit depth (`--bits` and `--float` change that), with flac's
   header (`WAVE_FORMAT_EXTENSIBLE` above 2 channels or 16 bits).
+- Above 4 GB of samples the file is RF64 (EBU Tech 3306), which ffmpeg, Audacity and
+  most editors read. When the length is not known in advance (a WAV stream on stdin), the
+  header becomes RF64 at the end if needed.
 
 **Not supported**
 
