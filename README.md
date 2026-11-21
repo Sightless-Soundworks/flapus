@@ -134,7 +134,12 @@ Decoding shows only the percentage and ends with `done`.
   math or not) and the target.
 - `--delete-input-file` deletes the input file after a successful conversion. It is
   off by default, and nothing is deleted when an error occurs. It cannot be combined
-  with stdin input.
+  with stdin input, or with an output that is the input file itself.
+
+The output is written to a temporary file next to it (`name.1a2b3c4d.tmp`), which
+replaces the output file only when the conversion has succeeded. A failed conversion
+leaves an existing file as it was, and a file can be converted onto itself, for example
+to recompress a FLAC file in place.
 
 **FLAC output options**
 

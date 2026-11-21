@@ -1,21 +1,5 @@
 /* ---- Opus encoder front end: libopusenc buffering/resampling, Ogg output, opusenc main loop ---- */
 
-/* A 32-bit number that differs between calls, processes and runs (for Ogg serials). */
-static fl_u32 fl_random32(const void *salt) {
-   static fl_u32 counter;
-   fl_u64 x = (fl_u64)time(NULL);
-#ifdef _WIN32
-   x ^= (fl_u64)_getpid()<<32;
-#elif defined(__unix__) || defined(__APPLE__)
-   x ^= (fl_u64)getpid()<<32;
-#endif
-   x ^= (fl_u64)clock()<<16^(fl_u64)(size_t)salt^(fl_u64)(size_t)&x<<8^(fl_u64)++counter<<48;
-   /* splitmix64 finalizer */
-   x = (x^(x>>30))*0xbf58476d1ce4e5b9ULL;
-   x = (x^(x>>27))*0x94d049bb133111ebULL;
-   return (fl_u32)((x^(x>>31))>>32);
-}
-
 /* ---- libopusenc resampler: fl_resampler with the sinc table computed on the x87 ---- */
 /* sinc() with compute_func() as compiled in libopusenc (window KAISER10). */
 static float fl_ope_sinc(float cutoff, int i, fl_u32 den, int jterm, int N) {

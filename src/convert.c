@@ -145,35 +145,48 @@ static int fl_run_source(int format, fl_inbuf *in, const fl_options *opt, fl_sin
    return fl_run_opus(in, opt->rate, opt->dither, sink);
 }
 
+/* Output goes to a temporary file next to out_path, which replaces out_path only when
+   the conversion succeeds. So a failed conversion leaves an existing file alone, and the
+   input may be the output file itself. */
+static int fl_finish_output(const char *tmp, const char *out_path, int ret) {
+   if (!tmp) return ret;
+   /* a damaged FLAC input still gives complete output */
+   if ((ret == FL_OK || ret == FL_ERR_CHECKSUM) && fl_rename_over(tmp, out_path) == 0) return ret;
+   fl_remove(tmp);
+   return ret == FL_OK || ret == FL_ERR_CHECKSUM ? FL_ERR_IO : ret;
+}
+
 FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_options *opt_in) {
    fl_options opt;
    fl_sink *sink;
    fl_inbuf in;
+   char *tmp = NULL;
    int in_fmt, out_fmt, ret, err;
    if (opt_in) opt = *opt_in;
    else fl_options_init(&opt);
    if ((ret = fl_check_options(&opt)) != FL_OK) return ret;
-   if (strcmp(in_path, out_path) == 0 && !fl_is_std(in_path)) return FL_ERR_BAD_ARG;
    if ((ret = fl_inbuf_open(&in, in_path)) != FL_OK) return ret;
    in_fmt = ret = fl_detect_format(&in);
    if (ret < 0) goto done;
    out_fmt = ret = opt.format ? opt.format : fl_format_from_name(out_path);
    if (ret < 0) goto done;
-   if (!(sink = fl_create_sink(out_fmt, out_path, &opt, &err))) {
-      ret = err;
+   if (!fl_is_std(out_path) && !(tmp = fl_temp_path(out_path))) {
+      ret = FL_ERR_IO;
       goto done;
    }
-   if (!(sink = fl_progress_wrap(sink, &opt, &err))) {
-      fl_remove(out_path);
+   if (!(sink = fl_create_sink(out_fmt, tmp ? tmp : out_path, &opt, &err)) ||
+       !(sink = fl_progress_wrap(sink, &opt, &err))) {
       ret = err;
       goto done;
    }
    ret = fl_run_source(in_fmt, &in, &opt, sink);
    sink->destroy(sink);
-   /* a damaged FLAC input still gives complete output; anything else is removed */
-   if (ret != FL_OK && ret != FL_ERR_CHECKSUM) fl_remove(out_path);
 done:
    fl_inbuf_close(&in);
+   if (tmp) {
+      ret = fl_finish_output(tmp, out_path, ret);
+      free(tmp);
+   }
    return ret;
 }
 
@@ -206,6 +219,7 @@ FLDEF int fl_write_audio(const char *path, const fl_audio *a, const fl_options *
    fl_options opt;
    fl_format f;
    fl_sink *sink;
+   char *tmp = NULL;
    int out_fmt, ret, err;
    long long pos = 0;
    if (opt_in) opt = *opt_in;
@@ -214,7 +228,12 @@ FLDEF int fl_write_audio(const char *path, const fl_audio *a, const fl_options *
    out_fmt = opt.format ? opt.format : fl_format_from_name(path);
    if (out_fmt < 0) return out_fmt;
    if (a->channels < 1 || a->bits < 1 || a->bits > 32 || a->rate < 1 || a->frames < 0) return FL_ERR_BAD_ARG;
-   if (!(sink = fl_create_sink(out_fmt, path, &opt, &err))) return err;
+   if (!fl_is_std(path) && !(tmp = fl_temp_path(path))) return FL_ERR_IO;
+   if (!(sink = fl_create_sink(out_fmt, tmp ? tmp : path, &opt, &err))) {
+      if (tmp) fl_remove(tmp);
+      free(tmp);
+      return err;
+   }
    fl_format_init(&f);
    f.channels = a->channels;
    f.rate = a->rate;
@@ -229,7 +248,10 @@ FLDEF int fl_write_audio(const char *path, const fl_audio *a, const fl_options *
    }
    if (ret == FL_OK) ret = sink->finish(sink);
    sink->destroy(sink);
-   if (ret != FL_OK) fl_remove(path);
+   if (tmp) {
+      ret = fl_finish_output(tmp, path, ret);
+      free(tmp);
+   }
    return ret;
 }
 

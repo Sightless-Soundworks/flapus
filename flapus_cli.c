@@ -48,6 +48,45 @@ static void usage(FILE *f) {
       );
 }
 
+/* Opens path for querying its identity (Windows). */
+#ifdef _WIN32
+static HANDLE fl_open_attr(const char *path) {
+   wchar_t *w = fl_widen(path);
+   HANDLE h;
+   DWORD share = FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE;
+   if (w) {
+      h = CreateFileW(w, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+      free(w);
+   } else h = CreateFileA(path, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+   return h;
+}
+#endif
+
+/* 1 if a and b name the same existing file (also through links or another spelling). */
+static int fl_same_file(const char *a, const char *b) {
+   if (fl_is_std(a) || fl_is_std(b)) return 0;
+#ifdef _WIN32
+   {
+      HANDLE ha = fl_open_attr(a), hb = fl_open_attr(b);
+      BY_HANDLE_FILE_INFORMATION ia, ib;
+      int same = ha != INVALID_HANDLE_VALUE && hb != INVALID_HANDLE_VALUE &&
+                 GetFileInformationByHandle(ha, &ia) && GetFileInformationByHandle(hb, &ib) &&
+                 ia.dwVolumeSerialNumber == ib.dwVolumeSerialNumber &&
+                 ia.nFileIndexHigh == ib.nFileIndexHigh && ia.nFileIndexLow == ib.nFileIndexLow;
+      if (ha != INVALID_HANDLE_VALUE) CloseHandle(ha);
+      if (hb != INVALID_HANDLE_VALUE) CloseHandle(hb);
+      return same;
+   }
+#elif defined(__unix__) || defined(__APPLE__)
+   {
+      struct stat sa, sb;
+      return stat(a, &sa) == 0 && stat(b, &sb) == 0 && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+   }
+#else
+   return strcmp(a, b) == 0;
+#endif
+}
+
 /* --version: the version, how the Opus encoder was built, and the target. */
 static void version(void) {
    printf("flapus %s\n", FLAPUS_VERSION);
@@ -249,6 +288,10 @@ int main(int argc, char **argv) {
    }
    if (delete_input && strcmp(argv[argc-2], "-") == 0) {
       fprintf(stderr, "Error: --delete-input-file needs an input file\n");
+      return 1;
+   }
+   if (delete_input && fl_same_file(argv[argc-2], argv[argc-1])) {
+      fprintf(stderr, "Error: --delete-input-file would delete the output, which is the same file\n");
       return 1;
    }
    opt.comment_options = opts[0] ? opts : NULL;
