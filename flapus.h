@@ -327,6 +327,7 @@ FLDEF int fl_opus_encode_float(fl_opus_encoder *enc, const float *pcm, unsigned 
 #include <stdio.h>
 #include <math.h>
 #include <limits.h>
+#include <locale.h>
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -40057,6 +40058,21 @@ static void fl_apply_downmix(const float *m, const float *in, float *out, int n,
       }
 }
 
+/* strtod as in the C locale: tags use '.' whatever locale the program has set. */
+static double fl_strtod_c(const char *s, char **end) {
+   const char *dp = localeconv()->decimal_point;
+   char buf[64], *e;
+   size_t i;
+   double v;
+   if (!dp[0] || dp[1] || dp[0] == '.') return strtod(s, end);
+   /* swap '.' and the locale's point, so strtod stops where it would in the C locale */
+   for (i = 0; i+1 < sizeof(buf) && s[i]; i++) buf[i] = s[i] == '.' ? dp[0] : s[i] == dp[0] ? '.' : s[i];
+   buf[i] = 0;
+   v = strtod(buf, &e);
+   *end = (char*)s+(e-buf);
+   return v;
+}
+
 /* opusenc ReplayGain handling for FLAC input: album gain -> OpusHead gain (R128 level),
    track gain -> R128_TRACK_GAIN. Other ReplayGain tags are dropped. The reference
    loudness is in dB SPL (89 = -18 LUFS) or, if negative, in LUFS. */
@@ -40070,17 +40086,17 @@ static void fl_opus_gain_from_tags(const fl_format *f, char *r128, int *gain_q8)
       char *end;
       double v;
       if (fl_tag_is(t, "REPLAYGAIN_REFERENCE_LOUDNESS")) {
-         v = strtod(t+30, &end);
+         v = fl_strtod_c(t+30, &end);
          if (end > t+30) ref = v < 0 ? v : v-89-18;
       } else if (fl_tag_is(t, "REPLAYGAIN_ALBUM_GAIN")) {
-         v = strtod(t+22, &end);
+         v = fl_strtod_c(t+22, &end);
          if (end > t+22) {
             album = v;
             saw_album = 1;
          }
       } else if (fl_tag_is(t, "REPLAYGAIN_TRACK_GAIN")) {
          /* opusenc takes an unparsable track gain as 0 */
-         track = strtod(t+22, &end);
+         track = fl_strtod_c(t+22, &end);
          saw_track = 1;
       }
    }
