@@ -331,9 +331,13 @@ int main(int argc, char **argv) {
    }
    if (paths == 1) {
       /* no output: FLAC to FLAC or Opus to Opus onto the input itself */
-      int ogg = 0, fmt = fl_is_std(in_path) ? FL_FORMAT_WAV : input_format(in_path, &ogg);
-      if (fmt == FL_FORMAT_WAV) {
-         usage(stderr);
+      int ogg = 0, fmt;
+      if (fl_is_std(in_path)) {
+         fprintf(stderr, "Error: stdin input needs an output (- for stdout, with --format)\n");
+         return 1;
+      }
+      if ((fmt = input_format(in_path, &ogg)) == FL_FORMAT_WAV) {
+         fprintf(stderr, "Error: WAV input needs an output file\n");
          return 1;
       }
       if (fmt < 0) {
