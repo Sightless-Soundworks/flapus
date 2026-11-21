@@ -221,6 +221,14 @@ Speed and output:
 - With SSE2, the 32-bit prediction sums use `pmaddwd` on 16-bit parts of the samples,
   and the residuals, the autocorrelation and the Rice sums have SSE2 versions as well.
   They give the same results as the plain C code, so the output does not depend on SSE2.
+- If the CPU has AVX2 (checked at run time with `cpuid` and `xgetbv`), the prediction
+  sums, the residuals, the autocorrelation and the prefix sums use AVX2 versions. They
+  give the same results too: the integer sums are exact, the double prediction sums are
+  exact as well, and the autocorrelation keeps the four lanes of the SSE2 code, with four
+  lags k, k+4, k+8, k+12 at a time (they see x[i] in the same lane). No FMA is used.
+  This made level 2 about 12 % and level 5 about 5 % faster on CD audio, and both about
+  20 % faster at 96 kHz; AVX2 Rice sums gave nothing and were left out. `FLAPUS_NO_AVX2` builds without them, and the CI
+  checks that such a build gives the same files.
 - With `threads` above 1, block costs and frames are computed in parallel (static
   interleaving, per-thread work spaces). The output does not depend on the thread
   count. The library default is one thread; the command line tool uses one per CPU.

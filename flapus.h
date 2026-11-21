@@ -10415,6 +10415,46 @@ FLDEF void fl_flac_frame_decoder_destroy(fl_flac_frame_decoder *dec) {
 #define FL_FLAC_SSE2 1
 #endif
 
+/* AVX2 versions too, used when the CPU has AVX2 (checked at run time; same results).
+   FLAPUS_NO_AVX2 leaves them out. */
+#if defined(FL_FLAC_SSE2) && !defined(FLAPUS_NO_AVX2) && (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER))
+#include <immintrin.h>
+#define FL_FLAC_AVX2 1
+#if defined(__GNUC__) || defined(__clang__)
+#define FL_AVX2_FN __attribute__((target("avx2")))
+#else
+#include <intrin.h>
+#define FL_AVX2_FN
+#endif
+#endif
+
+/* 1 if the CPU has AVX2 and the operating system saves its registers. */
+static int fl_cpu_avx2(void) {
+#if defined(FL_FLAC_AVX2) && (defined(__GNUC__) || defined(__clang__))
+   unsigned a, b, c, d, lo, hi;
+   __asm__ __volatile__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0), "c"(0));
+   if (a < 7) return 0;
+   __asm__ __volatile__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
+   if (!(c>>27&1) || !(c>>28&1)) return 0;  /* OSXSAVE, AVX */
+   __asm__ __volatile__(".byte 0x0f, 0x01, 0xd0" : "=a"(lo), "=d"(hi) : "c"(0));  /* xgetbv */
+   (void)hi;
+   if ((lo&6) != 6) return 0;  /* XMM and YMM state */
+   __asm__ __volatile__("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(7), "c"(0));
+   return b>>5&1;
+#elif defined(FL_FLAC_AVX2)
+   int r[4];
+   __cpuid(r, 0);
+   if (r[0] < 7) return 0;
+   __cpuid(r, 1);
+   if (!(r[2]>>27&1) || !(r[2]>>28&1)) return 0;  /* OSXSAVE, AVX */
+   if ((_xgetbv(0)&6) != 6) return 0;  /* XMM and YMM state */
+   __cpuidex(r, 7, 0);
+   return r[1]>>5&1;
+#else
+   return 0;
+#endif
+}
+
 /* ---- Optional threads: fl_parallel() runs fn(ctx, t, nt) for t = 0..nt-1 ---- */
 #if !defined(FLAPUS_NO_THREADS) && defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -10966,6 +11006,7 @@ typedef struct {
    int *ktmp;
    fl_u64 *rl;     /* fl_rice_exact's masked sums */
    fl_u32 *rlor;
+   int avx2;       /* use the AVX2 versions */
 } fl_ws;
 
 static void fl_ws_free(fl_ws *w) {
@@ -11016,12 +11057,62 @@ static int fl_ws_alloc(fl_ws *w, int n, int max_porder) {
 
 /* ---- Prediction ---- */
 
+#ifdef FL_FLAC_AVX2
+/* fl_fixed_residual for bps <= 27, 8 samples at a time (the same 32-bit arithmetic). */
+static FL_AVX2_FN void fl_fixed_residual_avx2(const fl_i32 *x, int n, int order, fl_i32 *r, fl_u32 *u) {
+   int i = order;
+   for (; i+7 < n; i += 8) {
+      __m256i x0 = _mm256_loadu_si256((const __m256i*)(x+i)), v;
+      if (order == 0) v = x0;
+      else {
+         __m256i x1 = _mm256_loadu_si256((const __m256i*)(x+i-1));
+         if (order == 1) v = _mm256_sub_epi32(x0, x1);
+         else {
+            __m256i x2 = _mm256_loadu_si256((const __m256i*)(x+i-2));
+            if (order == 2) v = _mm256_add_epi32(_mm256_sub_epi32(x0, _mm256_slli_epi32(x1, 1)), x2);
+            else {
+               __m256i x3 = _mm256_loadu_si256((const __m256i*)(x+i-3)), d = _mm256_sub_epi32(x1, x2);
+               if (order == 3) v = _mm256_sub_epi32(_mm256_sub_epi32(x0, _mm256_add_epi32(_mm256_slli_epi32(d, 1), d)), x3);
+               else {
+                  __m256i x4 = _mm256_loadu_si256((const __m256i*)(x+i-4)), x2s = _mm256_slli_epi32(x2, 1);
+                  v = _mm256_sub_epi32(x0, _mm256_slli_epi32(_mm256_add_epi32(x1, x3), 2));
+                  v = _mm256_add_epi32(_mm256_add_epi32(v, _mm256_add_epi32(_mm256_slli_epi32(x2s, 1), x2s)), x4);
+               }
+            }
+         }
+      }
+      _mm256_storeu_si256((__m256i*)(r+i), v);
+      _mm256_storeu_si256((__m256i*)(u+i-order), _mm256_xor_si256(_mm256_slli_epi32(v, 1), _mm256_srai_epi32(v, 31)));
+   }
+   for (; i < n; i++) {
+      fl_i32 v;
+      switch (order) {
+      case 0: v = x[i]; break;
+      case 1: v = x[i]-x[i-1]; break;
+      case 2: v = x[i]-2*x[i-1]+x[i-2]; break;
+      case 3: v = x[i]-3*(x[i-1]-x[i-2])-x[i-3]; break;
+      default: v = x[i]-4*(x[i-1]+x[i-3])+6*x[i-2]+x[i-4]; break;
+      }
+      r[i] = v;
+      u[i-order] = fl_zz(v);
+   }
+}
+#endif
+
 /* Fixed predictor residual r and its zigzag values u[i-order]; returns 0 if a residual does
    not fit in 32 bits. For bps <= 27 every residual and partial sum is below 2^30 in
    magnitude, so 32-bit arithmetic is exact. */
-static int fl_fixed_residual(const fl_i32 *x, int n, int order, int bps, fl_i32 *r, fl_u32 *u) {
+static int fl_fixed_residual(const fl_i32 *x, int n, int order, int bps, fl_i32 *r, fl_u32 *u, int avx2) {
    int i;
    for (i = 0; i < order; i++) r[i] = x[i];
+#ifdef FL_FLAC_AVX2
+   if (avx2 && bps <= 27) {
+      fl_fixed_residual_avx2(x, n, order, r, u);
+      return 1;
+   }
+#else
+   (void)avx2;
+#endif
    if (bps <= 27) {
       fl_i32 v;
       switch (order) {
@@ -11079,14 +11170,90 @@ static int fl_fixed_residual(const fl_i32 *x, int n, int order, int bps, fl_i32 
    return 1;
 }
 
+#ifdef FL_FLAC_AVX2
+/* fl_lpc_sums modes 1, 3 and 4 with 16 sums at a time (the same sums). */
+static FL_AVX2_FN void fl_lpc_sums_avx2(const double *xd, const fl_i16 *x16, const fl_i16 *x16l, int n, const fl_i32 *c,
+                                        int order, int mode, fl_i64 *acc) {
+   int i, j, k, np = order/2;
+   if (mode == 1) {
+      for (i = order; i < n; i += 16) {
+         __m256d a0 = _mm256_setzero_pd(), a1 = a0, a2 = a0, a3 = a0;
+         double t[16];
+         for (j = 0; j < order; j++) {
+            const double *h = xd+i-1-j;
+            __m256d cj = _mm256_set1_pd((double)c[j]);
+            a0 = _mm256_add_pd(a0, _mm256_mul_pd(cj, _mm256_loadu_pd(h)));
+            a1 = _mm256_add_pd(a1, _mm256_mul_pd(cj, _mm256_loadu_pd(h+4)));
+            a2 = _mm256_add_pd(a2, _mm256_mul_pd(cj, _mm256_loadu_pd(h+8)));
+            a3 = _mm256_add_pd(a3, _mm256_mul_pd(cj, _mm256_loadu_pd(h+12)));
+         }
+         _mm256_storeu_pd(t, a0);
+         _mm256_storeu_pd(t+4, a1);
+         _mm256_storeu_pd(t+8, a2);
+         _mm256_storeu_pd(t+12, a3);
+         for (k = 0; k < 16; k++) acc[i+k] = (fl_i64)t[k];
+      }
+   } else {
+      /* as the SSE2 code; unpack works per 128-bit lane, so h0 holds the sums 0-3 and
+         8-11, h1 the sums 4-7 and 12-15 */
+      __m256i cv[FL_FLAC_MAX_ORDER/2+1], z = _mm256_setzero_si256();
+      for (j = 0; j < np; j++) cv[j] = _mm256_set1_epi32((fl_i32)((fl_u32)(fl_u16)c[2*j+1]<<16|(fl_u16)c[2*j]));
+      if (order&1) cv[np] = _mm256_set1_epi32((fl_i32)(fl_u16)c[order-1]);
+      for (i = order; i < n; i += 16) {
+         __m256i h0 = z, h1 = z, l0 = z, l1 = z, va, vb;
+         for (j = 0; j < np; j++) {
+            const fl_i16 *ph = x16+i-1-2*j;
+            va = _mm256_loadu_si256((const __m256i*)ph);
+            vb = _mm256_loadu_si256((const __m256i*)(ph-1));
+            h0 = _mm256_add_epi32(h0, _mm256_madd_epi16(_mm256_unpacklo_epi16(va, vb), cv[j]));
+            h1 = _mm256_add_epi32(h1, _mm256_madd_epi16(_mm256_unpackhi_epi16(va, vb), cv[j]));
+            if (mode == 4) {
+               const fl_i16 *pl = x16l+i-1-2*j;
+               va = _mm256_loadu_si256((const __m256i*)pl);
+               vb = _mm256_loadu_si256((const __m256i*)(pl-1));
+               l0 = _mm256_add_epi32(l0, _mm256_madd_epi16(_mm256_unpacklo_epi16(va, vb), cv[j]));
+               l1 = _mm256_add_epi32(l1, _mm256_madd_epi16(_mm256_unpackhi_epi16(va, vb), cv[j]));
+            }
+         }
+         if (order&1) {
+            va = _mm256_loadu_si256((const __m256i*)(x16+i-order));
+            h0 = _mm256_add_epi32(h0, _mm256_madd_epi16(_mm256_unpacklo_epi16(va, z), cv[np]));
+            h1 = _mm256_add_epi32(h1, _mm256_madd_epi16(_mm256_unpackhi_epi16(va, z), cv[np]));
+            if (mode == 4) {
+               va = _mm256_loadu_si256((const __m256i*)(x16l+i-order));
+               l0 = _mm256_add_epi32(l0, _mm256_madd_epi16(_mm256_unpacklo_epi16(va, z), cv[np]));
+               l1 = _mm256_add_epi32(l1, _mm256_madd_epi16(_mm256_unpackhi_epi16(va, z), cv[np]));
+            }
+         }
+         if (mode == 4) {
+            h0 = _mm256_add_epi32(_mm256_slli_epi32(h0, 15), l0);
+            h1 = _mm256_add_epi32(_mm256_slli_epi32(h1, 15), l1);
+         }
+         _mm256_storeu_si256((__m256i*)(acc+i), _mm256_cvtepi32_epi64(_mm256_castsi256_si128(h0)));
+         _mm256_storeu_si256((__m256i*)(acc+i+4), _mm256_cvtepi32_epi64(_mm256_castsi256_si128(h1)));
+         _mm256_storeu_si256((__m256i*)(acc+i+8), _mm256_cvtepi32_epi64(_mm256_extracti128_si256(h0, 1)));
+         _mm256_storeu_si256((__m256i*)(acc+i+12), _mm256_cvtepi32_epi64(_mm256_extracti128_si256(h1, 1)));
+      }
+   }
+}
+#endif
+
 /* Unshifted LPC prediction sums acc[i] = sum c[j]*x[i-1-j] for i >= order. mode 0: the sum
    fits in 32 bits (wrapping 32-bit arithmetic is exact), 3: the same with 16-bit samples
    (x16 = x) and coefficients, two taps at a time, 4 (SSE2): the same with x = x16*2^15+x16l,
    1: double is exact (xd = x as double), 2: 64-bit. Modes 0, 1, 3 and 4 read and write up
    to 255 entries past n (buffers have FL_SLACK). */
 static void fl_lpc_sums(const fl_i32 *x, const double *xd, const fl_i16 *x16, const fl_i16 *x16l, int n,
-                        const fl_i32 *c, int order, int mode, fl_i64 *acc) {
+                        const fl_i32 *c, int order, int mode, fl_i64 *acc, int avx2) {
    int i, j, k;
+#ifdef FL_FLAC_AVX2
+   if (avx2 && (mode == 1 || mode >= 3)) {
+      fl_lpc_sums_avx2(xd, x16, x16l, n, c, order, mode, acc);
+      return;
+   }
+#else
+   (void)avx2;
+#endif
 #ifdef FL_FLAC_SSE2
    if (mode == 4) {
       /* like mode 3 for the high and the low parts; the parts fit pmaddwd the same way */
@@ -11260,12 +11427,37 @@ static void fl_fill_x16(fl_ws *ws, const fl_i32 *x, int n, int bps) {
 #endif
 }
 
+#ifdef FL_FLAC_AVX2
+/* The 32-bit part of fl_lpc_residual, 8 samples at a time. */
+static FL_AVX2_FN void fl_lpc_residual_avx2(const fl_i32 *x, int n, int order, int shift, const fl_i64 *acc, fl_u32 *u) {
+   __m256i lows = _mm256_setr_epi32(0, 2, 4, 6, 1, 3, 5, 7);
+   __m128i sh = _mm_cvtsi32_si128(shift);
+   int i = order;
+   for (; i+7 < n; i += 8) {
+      /* the low halves of eight 64-bit sums */
+      __m256i a = _mm256_permutevar8x32_epi32(_mm256_loadu_si256((const __m256i*)(acc+i)), lows);
+      __m256i b = _mm256_permutevar8x32_epi32(_mm256_loadu_si256((const __m256i*)(acc+i+4)), lows);
+      __m256i v = _mm256_sub_epi32(_mm256_loadu_si256((const __m256i*)(x+i)), _mm256_sra_epi32(_mm256_permute2x128_si256(a, b, 0x20), sh));
+      _mm256_storeu_si256((__m256i*)(u+i-order), _mm256_xor_si256(_mm256_slli_epi32(v, 1), _mm256_srai_epi32(v, 31)));
+   }
+   for (; i < n; i++) u[i-order] = fl_zz(x[i]-((fl_i32)acc[i]>>shift));
+}
+#endif
+
 /* Zigzag residual u[i-order] from prediction sums; returns 0 on 32-bit overflow. With
    mode 0, 3 or 4 sums (|acc| < 2^31, bps <= 27) and shift >= 1 the residual cannot overflow
    and is computed in 32 bits. */
-static int fl_lpc_residual(const fl_i32 *x, int n, int order, int shift, int mode, const fl_i64 *acc, fl_u32 *u) {
+static int fl_lpc_residual(const fl_i32 *x, int n, int order, int shift, int mode, const fl_i64 *acc, fl_u32 *u, int avx2) {
    int i = order;
    fl_i64 bad = 0;
+#ifdef FL_FLAC_AVX2
+   if (avx2 && (mode == 0 || mode >= 3) && shift >= 1) {
+      fl_lpc_residual_avx2(x, n, order, shift, acc, u);
+      return 1;
+   }
+#else
+   (void)avx2;
+#endif
    if ((mode == 0 || mode >= 3) && shift >= 1) {
 #ifdef FL_FLAC_SSE2
       __m128i sh = _mm_cvtsi32_si128(shift);
@@ -11373,8 +11565,54 @@ static void fl_wcache_free(fl_wcache *c) {
    for (i = 0; i < FL_WCACHE; i++) free(c->e[i].w);
 }
 
-static void fl_autocorr(const double *x, int n, int lags, double *R) {
+#ifdef FL_FLAC_AVX2
+/* fl_autocorr for four lags k, k+4, k+8, k+12 at a time. These lags see x[i] in the same
+   lane, so every lane (s0-s3) adds the same products in the same order. */
+static FL_AVX2_FN void fl_autocorr_avx2(const double *x, int n, int lags, double *R) {
+   int k0, g, i, i0, k;
+   for (k0 = 0; k0 <= lags; k0 += k0%4 == 3 ? 13 : 1) {
+      __m256d a[4];
+      double t[4];
+      int ng = FL_MIN(4, (lags-k0)/4+1), top = k0+4*(ng-1);
+      for (g = 0; g < 4; g++) a[g] = _mm256_setzero_pd();
+      /* the first products of the smaller lags, then all lags together */
+      for (g = 0; g < ng-1; g++)
+         for (i = k0+4*g; i < top && i+3 < n; i += 4)
+            a[g] = _mm256_add_pd(a[g], _mm256_mul_pd(_mm256_loadu_pd(x+i), _mm256_loadu_pd(x+i-k0-4*g)));
+      for (i = top; i+3 < n; i += 4) {
+         __m256d xi = _mm256_loadu_pd(x+i);
+         a[0] = _mm256_add_pd(a[0], _mm256_mul_pd(xi, _mm256_loadu_pd(x+i-k0)));
+         if (ng > 1) a[1] = _mm256_add_pd(a[1], _mm256_mul_pd(xi, _mm256_loadu_pd(x+i-k0-4)));
+         if (ng > 2) a[2] = _mm256_add_pd(a[2], _mm256_mul_pd(xi, _mm256_loadu_pd(x+i-k0-8)));
+         if (ng > 3) a[3] = _mm256_add_pd(a[3], _mm256_mul_pd(xi, _mm256_loadu_pd(x+i-k0-12)));
+      }
+      /* where fl_autocorr's loop of lag k stops: i0, or k itself if it does not start */
+      for (i0 = k0; i0+3 < n; i0 += 4);
+      for (g = 0; g < ng; g++) {
+         double s0, s1, s2, s3;
+         k = k0+4*g;
+         _mm256_storeu_pd(t, a[g]);
+         s0 = t[0];
+         s1 = t[1];
+         s2 = t[2];
+         s3 = t[3];
+         for (i = FL_MAX(i0, k); i < n; i++) s0 += x[i]*x[i-k];
+         R[k] = (s0+s1)+(s2+s3);
+      }
+   }
+}
+#endif
+
+static void fl_autocorr(const double *x, int n, int lags, double *R, int avx2) {
    int k, i;
+#ifdef FL_FLAC_AVX2
+   if (avx2) {
+      fl_autocorr_avx2(x, n, lags, R);
+      return;
+   }
+#else
+   (void)avx2;
+#endif
    for (k = 0; k <= lags; k++) {
       double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
 #ifdef FL_FLAC_SSE2
@@ -11493,8 +11731,48 @@ static int fl_lpc_ls_all(const double *x, int n, int P, double a[][FL_FLAC_MAX_O
 typedef struct {
    fl_i64 *P[FL_DP_ORDER+1];
    fl_u64 *U[5];
-   int cap, has_u;
+   fl_i64 *y;   /* y for the AVX2 code, after 16 zeros */
+   int cap, has_u, avx2;
 } fl_prefix;
+
+#ifdef FL_FLAC_AVX2
+/* The P part of fl_prefix_build with all lags at a time (exact 64-bit sums: the same
+   entries). The zeros before y make P[k][j] = 0 for j <= k. */
+static FL_AVX2_FN void fl_prefix_p_avx2(fl_prefix *pf, const fl_i32 *x, int len, int sh, int step) {
+   __m256i a0 = _mm256_setzero_si256(), a1 = a0, a2 = a0, a3 = a0;
+   fl_i64 *y = pf->y+16, t[16];
+   int k, m, c;
+   for (m = 0; m < 16; m++) pf->y[m] = 0;
+   for (m = 0; m < len; m++) y[m] = x[m]>>sh;
+   for (k = 0; k <= FL_DP_ORDER; k++) pf->P[k][0] = 0;
+#define FL_PREFIX_STEP(m) do { \
+      __m256i ym = _mm256_set1_epi64x(y[m]); \
+      a0 = _mm256_add_epi64(a0, _mm256_mul_epi32(ym, _mm256_permute4x64_epi64(_mm256_loadu_si256((const __m256i*)(y+(m)-3)), 0x1B))); \
+      a1 = _mm256_add_epi64(a1, _mm256_mul_epi32(ym, _mm256_permute4x64_epi64(_mm256_loadu_si256((const __m256i*)(y+(m)-7)), 0x1B))); \
+      a2 = _mm256_add_epi64(a2, _mm256_mul_epi32(ym, _mm256_permute4x64_epi64(_mm256_loadu_si256((const __m256i*)(y+(m)-11)), 0x1B))); \
+      a3 = _mm256_add_epi64(a3, _mm256_mul_epi32(ym, _mm256_permute4x64_epi64(_mm256_loadu_si256((const __m256i*)(y+(m)-15)), 0x1B))); \
+   } while (0)
+#define FL_PREFIX_STORE(j) do { \
+      _mm256_storeu_si256((__m256i*)t, a0); \
+      _mm256_storeu_si256((__m256i*)(t+4), a1); \
+      _mm256_storeu_si256((__m256i*)(t+8), a2); \
+      _mm256_storeu_si256((__m256i*)(t+12), a3); \
+      for (k = 0; k <= FL_DP_ORDER; k++) pf->P[k][j] = t[k]; \
+   } while (0)
+   /* the same windows as fl_prefix_build */
+   for (m = 0, c = 0; m < len; c = c+step < len ? c+step : len) {
+      int lo = FL_MAX(c-FL_DP_ORDER, m), hi = FL_MIN(c+FL_DP_ORDER, len);
+      for (; m < lo; m++) FL_PREFIX_STEP(m);
+      if (m <= hi) FL_PREFIX_STORE(m);
+      for (; m < hi; m++) {
+         FL_PREFIX_STEP(m);
+         FL_PREFIX_STORE(m+1);
+      }
+   }
+#undef FL_PREFIX_STEP
+#undef FL_PREFIX_STORE
+}
+#endif
 
 /* fu: the segment's fixed residuals of this channel (see fl_flac_sink) or NULL. quick: P and
    U[2] (quick estimate); light: U of every order (light search). An encoder always passes
@@ -11512,6 +11790,8 @@ static int fl_prefix_build(fl_prefix *pf, const fl_i32 *x, fl_u32 *const *fu, in
          pf->U[k] = NULL;
          if ((light || k == 2) && !(pf->U[k] = (fl_u64*)malloc(sizeof(fl_u64)*(len+1)))) return -1;
       }
+      free(pf->y);
+      if (!(pf->y = (fl_i64*)malloc(sizeof(fl_i64)*(len+16)))) return -1;
       pf->cap = len+1;
    }
    pf->has_u = fu != NULL;
@@ -11520,6 +11800,12 @@ static int fl_prefix_build(fl_prefix *pf, const fl_i32 *x, fl_u32 *const *fu, in
       pf->U[k][0] = 0;
       for (i = 0; i+k < len; i++) pf->U[k][i+1] = pf->U[k][i]+fu[k][i];
    }
+#ifdef FL_FLAC_AVX2
+   if (pf->avx2 && quick) {
+      fl_prefix_p_avx2(pf, x, len, sh, step);
+      return 0;
+   }
+#endif
    for (k = 0; k <= FL_DP_ORDER && quick; k++) {
       fl_i64 *P = pf->P[k], acc = 0;  /* acc = P[m] */
       for (i = 0; i <= k && i <= len; i++) P[i] = 0;
@@ -11540,6 +11826,7 @@ static void fl_prefix_free(fl_prefix *pf) {
    int k;
    for (k = 0; k <= FL_DP_ORDER; k++) free(pf->P[k]);
    for (k = 0; k < 5; k++) free(pf->U[k]);
+   free(pf->y);
 }
 
 /* ---- Subframe search ---- */
@@ -11573,8 +11860,8 @@ static int fl_default_prec(int n, int bps) {
 static fl_u64 fl_try_lpc(fl_search *s, const fl_i32 *q, int order, int prec, int shift) {
    fl_ws *w = s->ws;
    fl_u64 bits = 8+(fl_u64)order*s->bps+4+5+(fl_u64)order*prec;
-   fl_lpc_sums(s->x, w->xd, w->x16, w->x16l, s->n, q, order, fl_lpc_mode(s->bps, prec, order), w->acc);
-   if (!fl_lpc_residual(s->x, s->n, order, shift, fl_lpc_mode(s->bps, prec, order), w->acc, w->u)) return ~(fl_u64)0;
+   fl_lpc_sums(s->x, w->xd, w->x16, w->x16l, s->n, q, order, fl_lpc_mode(s->bps, prec, order), w->acc, w->avx2);
+   if (!fl_lpc_residual(s->x, s->n, order, shift, fl_lpc_mode(s->bps, prec, order), w->acc, w->u, w->avx2)) return ~(fl_u64)0;
    bits += fl_rice_estimate(&w->rws, w->u, s->n, order, s->porder, s->bps > 16 ? 30 : 14,
                             s->cap ? fl_est_limit(s->best_bits, bits) : ~(fl_u64)0);
    if (bits < s->best_bits) {
@@ -11618,7 +11905,7 @@ static void fl_climb(fl_search *s, int passes) {
    qmax = (1<<(prec-1))-1;
    qmin = -qmax-1;
    memcpy(q, s->best.coef, sizeof(q[0])*order);
-   fl_lpc_sums(x, w->xd, w->x16, w->x16l, n, q, order, fl_lpc_mode(s->bps, prec, order), w->acc);
+   fl_lpc_sums(x, w->xd, w->x16, w->x16l, n, q, order, fl_lpc_mode(s->bps, prec, order), w->acc, w->avx2);
    cur = s->best_bits;
    for (pass = 0; pass < passes; pass++) {
       int improved = 0;
@@ -11760,7 +12047,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
          continue;
       }
       if (fu && !wasted) u = fu[order]+off;
-      else if (!fl_fixed_residual(x, n, order, bps, ws->res, ws->u)) continue;
+      else if (!fl_fixed_residual(x, n, order, bps, ws->res, ws->u, ws->avx2)) continue;
       bits += fl_rice_estimate(&ws->rws, u, n, order, cfg->max_porder, bps > 16 ? 30 : 14, fl_est_limit(s.best_bits, bits));
       if (bits < s.best_bits) {
          s.best_bits = bits;
@@ -11788,7 +12075,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
             for (; i+1 < n; i += 2) _mm_storeu_pd(ws->wx+i, _mm_mul_pd(_mm_loadu_pd(ws->xd+i), _mm_loadu_pd(wv+i)));
 #endif
             for (; i < n; i++) ws->wx[i] = ws->xd[i]*wv[i];
-            fl_autocorr(ws->wx, n, max_order, R);
+            fl_autocorr(ws->wx, n, max_order, R, ws->avx2);
             memcpy(Rroot, R, sizeof(double)*(max_order+1));
          } else {
             /* subdivide_tukey: part c of d parts with the whole block's tapers, or (d > 2, odd
@@ -11802,7 +12089,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
                int m = n/d, st = (d == 2 ? c : c/2)*m, h = m/2;
                if (m <= 2*max_order+2 || !wv) continue;
                for (i = 0; i < m; i++) ws->wx[i] = ws->xd[st+i]*(i < h ? wv[i] : wv[n-m+i]);
-               fl_autocorr(ws->wx, m, max_order, R);
+               fl_autocorr(ws->wx, m, max_order, R, ws->avx2);
             } else {
                if (n/d <= 2*max_order+2) continue;
                for (k = 0; k <= max_order; k++) R[k] = Rroot[k]-R[k];
@@ -11885,10 +12172,10 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
    else if (s.best.type == 1) out->bits = 8+(fl_u64)n*bps;
    else {
       int ord = s.best.order;
-      if (s.best.type == 2) fl_fixed_residual(x, n, ord, bps, ws->res, ws->u);
+      if (s.best.type == 2) fl_fixed_residual(x, n, ord, bps, ws->res, ws->u, ws->avx2);
       else {
-         fl_lpc_sums(x, ws->xd, ws->x16, ws->x16l, n, s.best.coef, ord, fl_lpc_mode(bps, s.best.prec, ord), ws->acc);
-         fl_lpc_residual(x, n, ord, s.best.shift, fl_lpc_mode(bps, s.best.prec, ord), ws->acc, ws->u);
+         fl_lpc_sums(x, ws->xd, ws->x16, ws->x16l, n, s.best.coef, ord, fl_lpc_mode(bps, s.best.prec, ord), ws->acc, ws->avx2);
+         fl_lpc_residual(x, n, ord, s.best.shift, fl_lpc_mode(bps, s.best.prec, ord), ws->acc, ws->u, ws->avx2);
       }
       out->bits = 8+(fl_u64)ord*bps+(s.best.type == 3 ? 9+(fl_u64)ord*s.best.prec : 0)+
                   fl_rice_exact(&ws->plan, ws->ktmp, ws->rl, ws->rlor, ws->u, n, ord, cfg->max_porder, bps > 14);
@@ -11928,15 +12215,15 @@ static void fl_write_subframe(fl_bw *w, const fl_flac_cfg *cfg, fl_ws *ws, const
       return;
    }
    for (i = 0; i < order; i++) fl_bw_put_signed(w, x[i], bps);
-   if (sf->type == 2) fl_fixed_residual(x, n, order, bps, ws->res, ws->u);
+   if (sf->type == 2) fl_fixed_residual(x, n, order, bps, ws->res, ws->u, ws->avx2);
    else {
       fl_bw_put(w, sf->prec-1, 4);
       fl_bw_put(w, sf->shift, 5);
       for (i = 0; i < order; i++) fl_bw_put_signed(w, sf->coef[i], sf->prec);
       for (i = 0; i < n; i++) ws->xd[i] = x[i];
       fl_fill_x16(ws, x, n, bps);
-      fl_lpc_sums(x, ws->xd, ws->x16, ws->x16l, n, sf->coef, order, fl_lpc_mode(bps, sf->prec, order), ws->acc);
-      fl_lpc_residual(x, n, order, sf->shift, fl_lpc_mode(bps, sf->prec, order), ws->acc, ws->u);
+      fl_lpc_sums(x, ws->xd, ws->x16, ws->x16l, n, sf->coef, order, fl_lpc_mode(bps, sf->prec, order), ws->acc, ws->avx2);
+      fl_lpc_residual(x, n, order, sf->shift, fl_lpc_mode(bps, sf->prec, order), ws->acc, ws->u, ws->avx2);
       for (i = order; i < n; i++) ws->res[i] = (fl_i32)(x[i]-(ws->acc[i]>>sf->shift));
    }
    if (sf->k) {
@@ -11974,7 +12261,7 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
    }
    kmax = bps > 16 ? 30 : 14;
    best = 8+(fl_u64)n*bps;
-   if (pf->has_u || fl_fixed_residual(x, n, 2, bps, ws->res, ws->u)) {
+   if (pf->has_u || fl_fixed_residual(x, n, 2, bps, ws->res, ws->u, ws->avx2)) {
       b = 8+2*(fl_u64)bps;
       if (pf->has_u) b += fl_rice_estimate_sums(&ws->rws, pf->U[2]+off, wasted, n, 2, porder, kmax, fl_est_limit(best, b));
       else b += fl_rice_estimate(&ws->rws, ws->u, n, 2, porder, kmax, fl_est_limit(best, b));
@@ -12093,6 +12380,7 @@ typedef struct {
    fl_frame_job *jobs;
    int njobs, seg_len;
    int padding, want_seek, frame_api;
+   int avx2;              /* the CPU has AVX2 */
    int nseek, seek_k, seek_fill;  /* seek points (one per 10 s), next target, points known */
    fl_u64 *seek;          /* per point: first sample, frame offset and samples of its frame */
    fl_u64 frame_bytes;    /* bytes of the frames so far */
@@ -12344,6 +12632,8 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
          for (o = 0; o < 5; o++)
             if (!(s->fu[c][o] = (fl_u32*)malloc(sizeof(fl_u32)*slen))) return FL_ERR_ALLOC;
    }
+   s->avx2 = fl_cpu_avx2();
+   for (c = 0; c < 8; c++) s->pf[c].avx2 = s->avx2;
    for (t = 0; t < s->nthreads; t++) {
       fl_worker *w = &s->wk[t];
       w->dec.si.channels = s->C;
@@ -12352,6 +12642,7 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
       if (fl_ws_alloc(&w->ws, s->cfg.max_block, s->cfg.max_porder) < 0 || fl_flac_dec_alloc(&w->dec, s->cfg.max_block) < 0 ||
           !(w->plans = (int*)malloc(sizeof(int)*8<<s->cfg.max_porder)))
          return FL_ERR_ALLOC;
+      w->ws.avx2 = s->avx2;
    }
    if (!s->f->seekable) {
       /* stdout cannot seek back: STREAMINFO is final now, with the block size limits
@@ -12611,7 +12902,7 @@ static void fl_flac_segment_prep(fl_flac_sink *s, int len) {
       int ns = s->stereo ? 4 : s->C, o;
       for (c = 0; c < ns; c++) {
          const fl_i32 *src = !s->stereo || c < 2 ? s->buf[c] : c == 2 ? s->side : s->mid;
-         for (o = 0; o <= 4 && o < len; o++) fl_fixed_residual(src, len, o, s->bits+(s->stereo && c == 2), s->fres, s->fu[c][o]);
+         for (o = 0; o <= 4 && o < len; o++) fl_fixed_residual(src, len, o, s->bits+(s->stereo && c == 2), s->fres, s->fu[c][o], s->avx2);
       }
    }
 }

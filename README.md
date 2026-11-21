@@ -363,7 +363,9 @@ line.
 - **FLAC and all decoders**: portable C99. Threads use the Win32 API on Windows and
   pthreads elsewhere. Define `FLAPUS_NO_THREADS` to build without threads. On x86 the
   FLAC encoder uses SSE2 when the compiler targets it (always on x86-64, with `-msse2` on
-  32-bit); the output is the same either way.
+  32-bit), and AVX2 as well when the CPU has it (checked at run time, so the program
+  still runs on older CPUs; define `FLAPUS_NO_AVX2` to leave it out). The output is the
+  same either way.
 - **Opus encoder**: portable C99 as well (libopus 1.6.1, see above), on every compiler
   and CPU. Define `FLAPUS_NO_ENCODER` to leave it out; `FLAPUS_HAVE_ENCODER` tells
   whether it is there.

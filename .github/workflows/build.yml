@@ -230,13 +230,17 @@ jobs:
           for t in bitreader math; do gcc -O2 -ffp-contract=off -I. -o t_$t test/$t.c -lm && ./t_$t; done
           gcc -O2 -ffp-contract=off -o t_api test/api/main.c test/api/impl.c -pthread -lm && ./t_api
           clang -O2 -o flapus-clang flapus_cli.c -pthread -lm
+          gcc -O2 -DFLAPUS_NO_AVX2 -o flapus-noavx2 flapus_cli.c -pthread -lm
       - name: Encode the test signals
         id: check
         run: |
           python3 test/crosscheck.py ./flapus-linux-${{ matrix.arch }} signals | tee out.txt
           python3 test/crosscheck.py ./flapus-clang signals-clang | tee out-clang.txt
+          python3 test/crosscheck.py ./flapus-noavx2 signals-noavx2 | tee out-noavx2.txt
           d=$(sed -n 's/^digest //p' out.txt)
           test "$d" = "$(sed -n 's/^digest //p' out-clang.txt)" || { echo "GCC and Clang differ"; exit 1; }
+          # the runners have AVX2: this checks the SSE2 code against it
+          test "$d" = "$(sed -n 's/^digest //p' out-noavx2.txt)" || { echo "AVX2 and SSE2 differ"; exit 1; }
           echo "digest-${{ matrix.arch }}=$d" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         with:
