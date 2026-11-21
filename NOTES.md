@@ -172,8 +172,9 @@ The block cost is either:
 - the quick estimate (levels 2-8): least-squares LPC (covariance method) from prefix
   sums of the autocorrelation products, one order, one quantization, plus the order 2
   fixed residual from prefix sums of its Rice values; or
-- a light subframe search with estimated sizes (`--lax` and above 48 kHz),
-  whose fixed residuals also come from prefix sums.
+- a light subframe search with estimated sizes (`--lax` and above 48 kHz), one
+  window and one LPC order (3 orders took a third longer for the same sizes), whose
+  fixed residuals also come from prefix sums.
 
 Both estimate the Rice coding with partition orders up to 4 (`FL_EST_PORDER`). Finer
 partitions took about a sixth of the search time and did not lead to better blocks: the

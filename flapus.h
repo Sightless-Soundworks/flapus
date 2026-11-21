@@ -12311,6 +12311,7 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
    if (s->cfg.dp_search) {
       fl_flac_level(&s->dcfg, 0, s->lax, s->rate);
       s->dcfg.max_porder = FL_MIN(s->cfg.max_porder, FL_EST_PORDER);
+      s->dcfg.picks = 1;  /* level 0 tries 3 orders; one is enough to compare blocks */
       s->dcfg.max_order = s->cfg.max_order;
       s->dcfg.estimate = 1;
    }
