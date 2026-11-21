@@ -203,7 +203,8 @@ FLDEF int fl_reader_tag_count(const fl_reader *r);
 FLDEF const char *fl_reader_tag(const fl_reader *r, int index);
 /* Reads up to max_frames frames into pcm (interleaved, like fl_audio). Returns the frames
    read, 0 at the end, or an FL_ERR_* code. FL_ERR_CHECKSUM comes at the end of a FLAC
-   file whose MD5 differs (only if it was read from the start without seeking). */
+   file whose MD5 differs, FL_ERR_BAD_FILE at the end of one with fewer samples than its
+   STREAMINFO says (both only if it was read from the start without seeking). */
 FLDEF int fl_reader_read(fl_reader *r, int *pcm, int max_frames);
 /* Moves to frame (at the output rate). WAV and FLAC are exact. Opus restarts decoding
    80 ms before the target, as opusfile does, so the samples can differ slightly from a

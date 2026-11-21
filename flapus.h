@@ -203,7 +203,8 @@ FLDEF int fl_reader_tag_count(const fl_reader *r);
 FLDEF const char *fl_reader_tag(const fl_reader *r, int index);
 /* Reads up to max_frames frames into pcm (interleaved, like fl_audio). Returns the frames
    read, 0 at the end, or an FL_ERR_* code. FL_ERR_CHECKSUM comes at the end of a FLAC
-   file whose MD5 differs (only if it was read from the start without seeking). */
+   file whose MD5 differs, FL_ERR_BAD_FILE at the end of one with fewer samples than its
+   STREAMINFO says (both only if it was read from the start without seeking). */
 FLDEF int fl_reader_read(fl_reader *r, int *pcm, int max_frames);
 /* Moves to frame (at the output rate). WAV and FLAC are exact. Opus restarts decoding
    80 ms before the target, as opusfile does, so the samples can differ slightly from a
@@ -10039,7 +10040,8 @@ typedef struct {
    fl_inbuf *in;
    fl_flac_dec d;
    fl_md5 md5;
-   int check;            /* read from the start, so the MD5 is checked */
+   int check;            /* read from the start, so the MD5 and the length are checked */
+   fl_u64 decoded;       /* samples decoded so far (with check) */
    fl_i64 frames_off;    /* native: offset of the first frame */
    int ogg, ogg_stop;
    fl_ogg_reader rd;
@@ -10047,12 +10049,19 @@ typedef struct {
 } fl_flac_src;
 
 static int fl_flac_frame_out(fl_flac_src *s, fl_sink *sink, int n) {
-   if (s->check) fl_md5_samples(&s->md5, s->d.out, (size_t)n*s->d.si.channels, s->d.si.bits);
+   if (s->check) {
+      fl_md5_samples(&s->md5, s->d.out, (size_t)n*s->d.si.channels, s->d.si.bits);
+      s->decoded += (fl_u64)n;
+   }
    return sink->write(sink, s->d.out, n);
 }
 
+/* End of the stream: fewer samples than STREAMINFO says means a truncated file, also
+   without an MD5 (more are no error, as in flac). */
 static void fl_flac_end(fl_flac_src *s) {
-   s->base.end_status = s->check ? fl_md5_check(&s->md5, &s->d.si) : FL_OK;
+   if (!s->check) s->base.end_status = FL_OK;
+   else if (s->d.si.total && s->decoded < s->d.si.total) s->base.end_status = FL_ERR_BAD_FILE;
+   else s->base.end_status = fl_md5_check(&s->md5, &s->d.si);
 }
 
 static int fl_flac_step(fl_source *src, fl_sink *sink) {
