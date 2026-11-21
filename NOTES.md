@@ -143,7 +143,8 @@ Arithmetic:
 ### Stereo
 
 All four channel assignments are searched: left/right, left/side, side/right,
-mid/side.
+mid/side. With 32-bit audio the side channel has 33 bits; the samples are kept in 32
+bits, so blocks where the side does not fit there are coded as left/right.
 
 ### Block sizes (`fl_flac_process`)
 

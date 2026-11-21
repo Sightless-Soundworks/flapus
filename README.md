@@ -327,7 +327,8 @@ line.
 
 **FLAC output**
 
-- FLAC takes integer PCM only, from 4 to 32 bits and 1-8 channels.
+- FLAC takes integer PCM only, from 4 to 32 bits and 1-8 channels. 32-bit audio gets
+  LPC and stereo decorrelation (33-bit side channel) like any other bit depth.
 - Tags and pictures carry over between FLAC and Opus:
   - FLAC pictures become `METADATA_BLOCK_PICTURE` comments in Opus, and back.
   - On Opus → FLAC the Opus encoder tags are dropped.

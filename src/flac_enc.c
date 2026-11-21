@@ -185,7 +185,14 @@ static void fl_bw_put(fl_bw *w, fl_u32 v, int k) {
    }
 }
 
-static void fl_bw_put_signed(fl_bw *w, fl_i32 v, int k) { fl_bw_put(w, (fl_u32)v, k); }
+static void fl_bw_put_signed(fl_bw *w, fl_i32 v, int k) {
+   if (k > 32) {
+      /* 33-bit side channel of 32-bit audio: the sign extension first */
+      fl_bw_put(w, v < 0 ? (1u<<(k-32))-1 : 0, k-32);
+      k = 32;
+   }
+   fl_bw_put(w, (fl_u32)v, k);
+}
 
 static void fl_bw_zeros(fl_bw *w, fl_u32 q) {
    while (q >= 32) {
@@ -1189,7 +1196,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
    }
    /* LPC */
    max_order = FL_MIN(cfg->max_order, n/2-1);
-   if (max_order >= 1 && bps < 32) {
+   if (max_order >= 1) {
       double R[FL_FLAC_MAX_ORDER+1], lpc[FL_FLAC_MAX_ORDER][FL_FLAC_MAX_ORDER], err[FL_FLAC_MAX_ORDER+1];
       double best_lp[FL_FLAC_MAX_ORDER];
       int win, best_order = 0;
@@ -1378,7 +1385,7 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
       b += fl_rice_estimate(&ws->rws, fu ? fu[2]+off : ws->u, n, 2, cfg->max_porder, kmax, fl_est_limit(best, b));
       if (b < best) best = b;
    }
-   if (max_order >= 1 && bps < 32) {
+   if (max_order >= 1) {
       double R[FL_FLAC_MAX_ORDER+1], lpc[FL_FLAC_MAX_ORDER][FL_FLAC_MAX_ORDER], err[FL_FLAC_MAX_ORDER+1], bv = 1e300;
       int got, o, k, bo = 0;
       for (k = 0; k <= max_order; k++) R[k] = (double)(pf->P[k][off+n]-pf->P[k][off+k]);
@@ -1437,6 +1444,7 @@ typedef struct {
    fl_i32 *buf[8];      /* deinterleaved input not yet encoded */
    int have;            /* samples per channel in buf */
    fl_i32 *side, *mid;
+   int *side_bad;     /* 32-bit audio: side samples beyond 32 bits before each position */
    fl_u32 *fu[8][5];    /* zigzag fixed residuals of the segment per source and order: fu[v][o][i-o]
                            for sample i >= o; computed once instead of per block (bits <= 26) */
    fl_i32 *fres;
@@ -1581,7 +1589,7 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
    s->C = f->channels;
    s->bits = f->bits;
    s->rate = f->rate;
-   s->stereo = s->C == 2 && s->bits < 32;  /* the side channel needs bits+1 <= 32 */
+   s->stereo = s->C == 2;
    fl_flac_level(&s->cfg, s->level, s->lax, s->rate);
    if (s->cfg.dp_search) {
       fl_flac_level(&s->dcfg, 0, s->lax, s->rate);
@@ -1607,6 +1615,7 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
    s->side = (fl_i32*)calloc(slen, sizeof(fl_i32));
    s->mid = (fl_i32*)calloc(slen, sizeof(fl_i32));
    if (!s->side || !s->mid) return FL_ERR_ALLOC;
+   if (s->stereo && s->bits == 32 && !(s->side_bad = (int*)calloc(slen+1, sizeof(int)))) return FL_ERR_ALLOC;
    s->fu_ok = s->bits <= 26;
    if (s->fu_ok) {
       int ns = s->stereo ? 4 : s->C, o;
@@ -1693,6 +1702,12 @@ static int fl_frame_header_bits(int bs) {
 
 #define FL_FU(s, v) ((s)->fu_ok ? (fl_u32 *const*)(s)->fu[v] : NULL)
 
+/* Stereo decorrelation for the block: always below 32 bits; with 32-bit audio only if the
+   33-bit side channel fits in 32 bits there. */
+static int fl_use_stereo(const fl_flac_sink *s, int off, int bs) {
+   return s->stereo && (!s->side_bad || s->side_bad[off+bs] == s->side_bad[off]);
+}
+
 /* Encodes one frame into the worker's bit writer and verifies it by decoding. */
 static int fl_encode_frame(fl_flac_sink *s, fl_worker *wk, fl_frame_job *job, fl_u64 num) {
    fl_sf sf[8], sfx[4];
@@ -1703,7 +1718,7 @@ static int fl_encode_frame(fl_flac_sink *s, fl_worker *wk, fl_frame_job *job, fl
    unsigned char h[16];
    for (c = 0; c < s->C; c++) ch[c] = s->buf[c]+off;
    assignment = s->C-1;
-   if (s->stereo) {
+   if (fl_use_stereo(s, off, bs)) {
       /* compare left/right, left/side, side/right and mid/side */
       const fl_i32 *sd = s->side+off, *md = s->mid+off;
       fl_u64 costs[4];
@@ -1767,7 +1782,7 @@ static fl_u64 fl_block_cost(fl_flac_sink *s, fl_worker *wk, int off, int bs) {
    if (s->cfg.dp_search) {
       fl_sf sf;
       fl_u64 v[4];
-      if (s->stereo) {
+      if (fl_use_stereo(s, off, bs)) {
          const fl_i32 *src[4];
          src[0] = s->buf[0];
          src[1] = s->buf[1];
@@ -1785,7 +1800,7 @@ static fl_u64 fl_block_cost(fl_flac_sink *s, fl_worker *wk, int off, int bs) {
       }
       return cost;
    }
-   if (s->stereo) {
+   if (fl_use_stereo(s, off, bs)) {
       fl_u64 a = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[0], s->buf[0], FL_FU(s, 0), off, bs, s->bits);
       fl_u64 b = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[1], s->buf[1], FL_FU(s, 1), off, bs, s->bits);
       fl_u64 sc = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[2], s->side, FL_FU(s, 2), off, bs, s->bits+1);
@@ -1835,8 +1850,10 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
    if (s->stereo) {
       const fl_i32 *l = s->buf[0], *r = s->buf[1];
       for (i = 0; i < len; i++) {
-         s->side[i] = l[i]-r[i];
+         fl_i64 d = (fl_i64)l[i]-r[i];
+         s->side[i] = (fl_i32)FL_MAX(-0x7FFFFFFF, FL_MIN(0x7FFFFFFF, d));
          s->mid[i] = (fl_i32)(((fl_i64)l[i]+r[i])>>1);
+         if (s->side_bad) s->side_bad[i+1] = s->side_bad[i]+(d != s->side[i]);
       }
    }
    if (s->fu_ok) {
@@ -1975,6 +1992,7 @@ static void fl_flacenc_destroy(fl_sink *sk) {
    }
    free(s->fres);
    free(s->side);
+   free(s->side_bad);
    free(s->mid);
    free(s->cost);
    free(s->dp_cost);
