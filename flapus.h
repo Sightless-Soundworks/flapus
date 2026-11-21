@@ -11740,7 +11740,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
    s.x = x;
    s.porder = cfg->max_porder;
    /* the LPC candidates' own estimates matter only for the refinements */
-   s.cap = !(cfg->ls || cfg->prec_range > 1 || cfg->irls || cfg->climb);
+   s.cap = !(cfg->ls || cfg->prec_range > 0 || cfg->irls || cfg->climb);
    /* verbatim */
    s.best.type = 1;
    s.best_bits = 8+(fl_u64)n*bps;
@@ -11837,10 +11837,11 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
                      pick[k] = o;
                   }
             }
+            /* the default precision here, the others for the best candidate below */
             for (k = 0; k < 3; k++) {
                fl_u64 b;
                if (!pick[k]) continue;
-               b = fl_try_lpc_float(&s, lpc[pick[k]-1], pick[k], FL_MIN(cfg->prec_range, 1));
+               b = fl_try_lpc_float(&s, lpc[pick[k]-1], pick[k], 0);
                if (b < best_lp_bits) {
                   best_lp_bits = b;
                   best_order = pick[k];
@@ -11871,7 +11872,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
       }
       s.cap = 1;
       if (best_order) {
-         if (cfg->prec_range > 1) fl_try_lpc_float(&s, best_lp, best_order, cfg->prec_range);
+         if (cfg->prec_range > 0) fl_try_lpc_float(&s, best_lp, best_order, cfg->prec_range);
          if (cfg->irls && n > 64) fl_irls(&s, best_lp, best_order, cfg->irls);
          if (cfg->climb) fl_climb(&s, cfg->climb);
       }
