@@ -452,14 +452,20 @@ static void fl_flac_end(fl_flac_src *s) {
 static int fl_flac_step(fl_source *src, fl_sink *sink) {
    fl_flac_src *s = (fl_flac_src*)src;
    fl_inbuf *in = s->in;
-   size_t used;
+   size_t used = 0;
    int n, ret;
-   if (fl_inbuf_need(in, FL_FLAC_MAX_FRAME) < 0) return FL_ERR_ALLOC;
+   /* 64 KB hold most frames; asking for the largest frame (4 MB) every time would move
+      the buffer for each frame */
+   if (fl_inbuf_need(in, 1<<16) < 0) return FL_ERR_ALLOC;
+   if (in->pos < in->len) used = fl_flac_decode_frame(&s->d, in->buf+in->pos, in->len-in->pos, &n);
+   if (used == 0 && !in->eof) {
+      if (fl_inbuf_need(in, FL_FLAC_MAX_FRAME) < 0) return FL_ERR_ALLOC;
+      if (in->pos < in->len) used = fl_flac_decode_frame(&s->d, in->buf+in->pos, in->len-in->pos, &n);
+   }
    if (in->pos >= in->len) {
       fl_flac_end(s);
       return 0;
    }
-   used = fl_flac_decode_frame(&s->d, in->buf+in->pos, in->len-in->pos, &n);
    if (used == 0 && s->d.changed) return FL_ERR_UNSUPPORTED;
    if (used == 0) {
       /* not a frame: trailing junk (tags) is ignored, a valid frame later means damage */
