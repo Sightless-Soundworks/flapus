@@ -10407,6 +10407,7 @@ FLDEF void fl_flac_frame_decoder_destroy(fl_flac_frame_decoder *dec) {
 #define FL_FLAC_MAX_ORDER 32
 #define FL_PI 3.14159265358979323846
 #define FL_SLACK 288   /* extra entries after every sample buffer */
+#define FL_EST_PORDER 4  /* partition order limit of the block cost estimates */
 
 /* SSE2 versions of the hot loops (same results as the C code) */
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
@@ -11551,6 +11552,7 @@ typedef struct {
    fl_u64 best_bits;   /* estimated */
    fl_sf best;
    int cap;            /* LPC estimates are only compared with best_bits (see fl_est_limit) */
+   int porder;         /* partition order limit of the estimates */
 } fl_search;
 
 /* Highest coefficient precision that keeps 32-bit decoding for <= 17 bits (libFLAC rule). */
@@ -11573,7 +11575,7 @@ static fl_u64 fl_try_lpc(fl_search *s, const fl_i32 *q, int order, int prec, int
    fl_u64 bits = 8+(fl_u64)order*s->bps+4+5+(fl_u64)order*prec;
    fl_lpc_sums(s->x, w->xd, w->x16, w->x16l, s->n, q, order, fl_lpc_mode(s->bps, prec, order), w->acc);
    if (!fl_lpc_residual(s->x, s->n, order, shift, fl_lpc_mode(s->bps, prec, order), w->acc, w->u)) return ~(fl_u64)0;
-   bits += fl_rice_estimate(&w->rws, w->u, s->n, order, s->cfg->max_porder, s->bps > 16 ? 30 : 14,
+   bits += fl_rice_estimate(&w->rws, w->u, s->n, order, s->porder, s->bps > 16 ? 30 : 14,
                             s->cap ? fl_est_limit(s->best_bits, bits) : ~(fl_u64)0);
    if (bits < s->best_bits) {
       s->best_bits = bits;
@@ -11633,7 +11635,7 @@ static void fl_climb(fl_search *s, int passes) {
             }
             if (bad) continue;
             bits = 8+(fl_u64)order*s->bps+4+5+(fl_u64)order*prec;
-            bits += fl_rice_estimate(&w->rws, w->u, n, order, s->cfg->max_porder, kmax, fl_est_limit(cur, bits));
+            bits += fl_rice_estimate(&w->rws, w->u, n, order, s->porder, kmax, fl_est_limit(cur, bits));
             if (bits < cur) {
                cur = bits;
                q[j] += d;
@@ -11736,6 +11738,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
    s.bps = bps;
    s.n = n;
    s.x = x;
+   s.porder = cfg->max_porder;
    /* the LPC candidates' own estimates matter only for the refinements */
    s.cap = !(cfg->ls || cfg->prec_range > 1 || cfg->irls || cfg->climb);
    /* verbatim */
@@ -11955,6 +11958,7 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
    fl_u64 best, b;
    fl_i32 orv = 0;
    int i, max_order = FL_MIN(FL_MIN(cfg->max_order, FL_DP_ORDER), n/2-1), wasted = 0, kmax;
+   int porder = FL_MIN(cfg->max_porder, FL_EST_PORDER);
    for (i = 1; i < n && x[i] == x[0]; i++);
    if (i == n) return 8+bps;
    for (i = 0; i < n; i++) orv |= x[i];
@@ -11971,8 +11975,8 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
    best = 8+(fl_u64)n*bps;
    if (pf->has_u || fl_fixed_residual(x, n, 2, bps, ws->res, ws->u)) {
       b = 8+2*(fl_u64)bps;
-      if (pf->has_u) b += fl_rice_estimate_sums(&ws->rws, pf->U[2]+off, wasted, n, 2, cfg->max_porder, kmax, fl_est_limit(best, b));
-      else b += fl_rice_estimate(&ws->rws, ws->u, n, 2, cfg->max_porder, kmax, fl_est_limit(best, b));
+      if (pf->has_u) b += fl_rice_estimate_sums(&ws->rws, pf->U[2]+off, wasted, n, 2, porder, kmax, fl_est_limit(best, b));
+      else b += fl_rice_estimate(&ws->rws, ws->u, n, 2, porder, kmax, fl_est_limit(best, b));
       if (b < best) best = b;
    }
    if (max_order >= 1 && n > 2*max_order) {
@@ -12029,6 +12033,7 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
          s.x = x;
          s.best_bits = best;
          s.cap = 1;
+         s.porder = porder;
          /* xd is only read by the double sums (mode 1) */
          if (fl_lpc_mode(bps, prec, bo) == 1)
             for (i = 0; i < n; i++) ws->xd[i] = x[i];
@@ -12304,7 +12309,7 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
    }
    if (s->cfg.dp_search) {
       fl_flac_level(&s->dcfg, 0, s->lax, s->rate);
-      s->dcfg.max_porder = s->cfg.max_porder;
+      s->dcfg.max_porder = FL_MIN(s->cfg.max_porder, FL_EST_PORDER);
       s->dcfg.max_order = s->cfg.max_order;
       s->dcfg.estimate = 1;
    }

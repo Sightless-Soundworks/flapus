@@ -173,6 +173,10 @@ The block cost is either:
 - a light subframe search with estimated sizes (`--lax` and above 48 kHz),
   whose fixed residuals also come from prefix sums.
 
+Both estimate the Rice coding with partition orders up to 4 (`FL_EST_PORDER`). Finer
+partitions took about a sixth of the search time and did not lead to better blocks: the
+files stayed the same size or became slightly smaller.
+
 The quick estimate first used the autocorrelation method on the rectangular prefix sums.
 Without a window, its coefficients were poor on music with a steep spectrum, and the
 estimates were up to 30 % above the real sizes; least squares fixed most of that. It
