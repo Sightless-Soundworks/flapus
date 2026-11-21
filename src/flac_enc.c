@@ -156,8 +156,7 @@ typedef struct {
    int unit;          /* block size grid for the search (0 = fixed block size) */
    int fixed_block;   /* block size when unit == 0 */
    int subdiv;        /* LPC windows: 1 = tukey(0.5), else as flac's subdivide_tukey(subdiv) */
-   int picks;         /* LPC orders tried per window (unless all_orders) */
-   int all_orders;    /* evaluate every LPC order (else the best few by prediction error) */
+   int picks;         /* LPC orders tried per window: the best by prediction error */
    int prec_range;    /* coefficient precisions tried around the default (99 = all, 98 = outward
                          while they help) */
    int ls;            /* covariance method candidates */
@@ -171,16 +170,16 @@ typedef struct {
 
 static void fl_flac_level(fl_flac_cfg *c, int level, int lax, int rate) {
    static const fl_flac_cfg levels[9] = {
-      /* order porder block unit fixed sub picks all prec ls irls climb dp refine one */
-      {8, 6, 4608, 0, 4096, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-      {12, 8, 4608, 0, 4096, 2, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 1024, 4096, 2, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 512, 4096, 3, 1, 0, 98, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 256, 4096, 3, 1, 0, 98, 0, 0, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 4, 1, 0, 98, 0, 0, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 5, 1, 0, 99, 0, 4, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 5, 3, 0, 99, 0, 4, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 5, 3, 0, 99, 1, 8, 8, 0, 1, 0, 0}};
+      /* order porder block unit fixed sub picks prec ls irls climb dp refine one */
+      {8, 6, 4608, 0, 4096, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0},
+      {12, 8, 4608, 0, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 1024, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 512, 4096, 3, 1, 98, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 256, 4096, 3, 1, 98, 0, 0, 0, 0, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 4, 1, 98, 0, 0, 0, 0, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 5, 1, 99, 0, 4, 0, 0, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 5, 3, 99, 0, 4, 0, 0, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 5, 3, 99, 1, 8, 8, 0, 1, 0, 0}};
    *c = levels[level < 0 ? 0 : level > 8 ? 8 : level];
    if (lax) {
       if (c->max_order > 8) c->max_order = 32;
@@ -302,7 +301,6 @@ static fl_u64 fl_rice_part_est(fl_u64 s, fl_u32 n, fl_u32 umax, int kmax) {
 typedef struct {
    fl_u64 *sum;
    fl_u32 *umax;
-   int cap;
 } fl_rice_ws;
 
 /* Highest usable partition order for a block of n samples and predictor order. */
@@ -408,7 +406,6 @@ static fl_u64 fl_est_limit(fl_u64 best, fl_u64 header) { return best > header ? 
 typedef struct {
    int porder, method;
    int *k;     /* parameter per partition; escapes are stored as -1-bits */
-   int cap;
 } fl_rice_plan;
 
 static fl_u64 fl_rice_part_exact(const fl_u32 *u, fl_u32 n, int k) {
@@ -1760,7 +1757,8 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
       int nw = 1, d = 1, c = 0, k;
       for (k = 2; k <= cfg->subdiv; k++) nw += k == 2 ? 2 : 2*k;
       for (win = 0; win < nw; win++) {
-         int got, o;
+         double est[FL_FLAC_MAX_ORDER+1];
+         int got, o, pick[3] = {0, 0, 0};
          if (win == 0) {
             const double *wv = fl_window_get(wc, n, cfg->subdiv);
             if (!wv) continue;
@@ -1793,52 +1791,35 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
          R[0] *= 1.0+1e-10;
          got = fl_levinson(R, max_order, lpc, err);
          if (got < 1) continue;
-         if (cfg->all_orders) {
-            for (o = 1; o <= got; o++) {
-               fl_u64 b = fl_try_lpc_float(&s, lpc[o-1], o, FL_MIN(cfg->prec_range, 1));
-               if (b < best_lp_bits) {
-                  best_lp_bits = b;
-                  best_order = o;
-                  memcpy(best_lp, lpc[o-1], sizeof(double)*o);
+         /* the orders with the lowest estimated cost from the prediction error */
+         for (o = 1; o <= got; o++) {
+            double e = err[o] > 0 ? err[o]/n : 1e-9;
+            est[o] = (n-o)*0.5*fl_log(e+1e-9)/fl_log(2.0)+o*(bps+fl_default_prec(n, bps));
+         }
+         for (k = 0; k < FL_MIN(cfg->picks, 3); k++) {
+            double bv = 1e300;
+            for (o = 1; o <= got; o++)
+               if (o != pick[0] && o != pick[1] && est[o] < bv) {
+                  bv = est[o];
+                  pick[k] = o;
                }
-            }
-         } else {
-            /* the orders with the lowest estimated cost from the prediction error */
-            double est[FL_FLAC_MAX_ORDER+1];
-            int pick[3] = {0, 0, 0};
-            for (o = 1; o <= got; o++) {
-               double e = err[o] > 0 ? err[o]/n : 1e-9;
-               est[o] = (n-o)*0.5*fl_log(e+1e-9)/fl_log(2.0)+o*(bps+fl_default_prec(n, bps));
-            }
-            for (k = 0; k < FL_MIN(cfg->picks, 3); k++) {
-               double bv = 1e300;
-               for (o = 1; o <= got; o++)
-                  if (o != pick[0] && o != pick[1] && est[o] < bv) {
-                     bv = est[o];
-                     pick[k] = o;
-                  }
-            }
-            /* the default precision here, the others for the best candidate below */
-            for (k = 0; k < 3; k++) {
-               fl_u64 b;
-               if (!pick[k]) continue;
-               b = fl_try_lpc_float(&s, lpc[pick[k]-1], pick[k], 0);
-               if (b < best_lp_bits) {
-                  best_lp_bits = b;
-                  best_order = pick[k];
-                  memcpy(best_lp, lpc[pick[k]-1], sizeof(double)*pick[k]);
-               }
+         }
+         /* the default precision here, the others for the best candidate below */
+         for (k = 0; k < 3; k++) {
+            fl_u64 b;
+            if (!pick[k]) continue;
+            b = fl_try_lpc_float(&s, lpc[pick[k]-1], pick[k], 0);
+            if (b < best_lp_bits) {
+               best_lp_bits = b;
+               best_order = pick[k];
+               memcpy(best_lp, lpc[pick[k]-1], sizeof(double)*pick[k]);
             }
          }
       }
       if (cfg->ls && n > 64) {
-         /* exact least squares for the best order and its neighbours (all orders if asked) */
+         /* exact least squares for the best order and its neighbours */
          int lo = FL_MAX(1, (best_order ? best_order : max_order)-2), hi = FL_MIN(max_order, (best_order ? best_order : max_order)+2), o, got;
          double als[FL_FLAC_MAX_ORDER][FL_FLAC_MAX_ORDER];
-         if (cfg->all_orders) {
-            lo = 1;
-            hi = max_order;
-         }
          got = fl_lpc_ls_all(ws->xd, n, hi, als);
          for (o = lo; o <= got; o++) {
             double *a = als[o-1];
@@ -1925,7 +1906,6 @@ static void fl_write_subframe(fl_bw *w, const fl_flac_cfg *cfg, fl_ws *ws, const
       plan.porder = sf->porder;
       plan.method = sf->method;
       plan.k = (int*)sf->k;
-      plan.cap = 0;
       fl_rice_write(w, &plan, ws->res, n, order);
    } else {
       fl_rice_exact(&ws->plan, ws->ktmp, ws->rl, ws->rlor, ws->u, n, order, cfg->max_porder, bps > 14);
@@ -1934,8 +1914,8 @@ static void fl_write_subframe(fl_bw *w, const fl_flac_cfg *cfg, fl_ws *ws, const
 }
 
 /* ---- Quick cost estimate for the block size search ---- */
-static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_prefix *pf, const fl_i32 *seg,
-                                  fl_u32 *const *fu, int off, int n, int bps) {
+static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_prefix *pf, const fl_i32 *seg, int off,
+                                  int n, int bps) {
    const fl_i32 *x = seg+off;
    fl_u64 best, b;
    fl_i32 orv = 0;
@@ -2436,7 +2416,7 @@ static int fl_encode_frame(fl_flac_sink *s, fl_worker *wk, fl_frame_job *job, fl
       src[2] = s->side;
       src[3] = s->mid;
       if (s->cfg.one_mode) {
-         for (v = 0; v < 4; v++) sfx[v].bits = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[v], src[v], FL_FU(s, v), off, bs, s->bits+(v == 2));
+         for (v = 0; v < 4; v++) sfx[v].bits = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[v], src[v], off, bs, s->bits+(v == 2));
          for (i = 0; i < 4; i++) costs[i] = sfx[use[i][0]].bits+sfx[use[i][1]].bits;
          for (i = 1; i < 4; i++)
             if (costs[i] < costs[m]) m = i;
@@ -2535,16 +2515,16 @@ static fl_u64 fl_block_cost(fl_flac_sink *s, fl_worker *wk, int off, int bs) {
          if (f2[use[v][0]]+f2[use[v][1]] < f2[use[m][0]]+f2[use[m][1]]) m = v;
       for (c = 0; c < 2; c++) {
          v = use[m][c];
-         cost += fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[v], src[v], FL_FU(s, v), off, bs, s->bits+(v == 2));
+         cost += fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[v], src[v], off, bs, s->bits+(v == 2));
       }
    } else if (fl_use_stereo(s, off, bs)) {
-      fl_u64 a = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[0], s->buf[0], FL_FU(s, 0), off, bs, s->bits);
-      fl_u64 b = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[1], s->buf[1], FL_FU(s, 1), off, bs, s->bits);
-      fl_u64 sc = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[2], s->side, FL_FU(s, 2), off, bs, s->bits+1);
-      fl_u64 m = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[3], s->mid, FL_FU(s, 3), off, bs, s->bits);
+      fl_u64 a = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[0], s->buf[0], off, bs, s->bits);
+      fl_u64 b = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[1], s->buf[1], off, bs, s->bits);
+      fl_u64 sc = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[2], s->side, off, bs, s->bits+1);
+      fl_u64 m = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[3], s->mid, off, bs, s->bits);
       cost += FL_MIN(FL_MIN(a+b, a+sc), FL_MIN(sc+b, m+sc));
    } else {
-      for (c = 0; c < s->C; c++) cost += fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[c], s->buf[c], FL_FU(s, c), off, bs, s->bits);
+      for (c = 0; c < s->C; c++) cost += fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[c], s->buf[c], off, bs, s->bits);
    }
    return cost;
 }

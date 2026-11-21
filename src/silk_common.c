@@ -3,11 +3,9 @@
 #define silk_int32_MIN ((fl_i32)0x80000000)
 #define silk_int16_MAX 0x7FFF
 #define silk_int16_MIN ((fl_i16)0x8000)
-#define silk_uint8_MAX 0xFF
 
 #define silk_SMULWB(a32,b32) ((fl_i32)(((a32)*(fl_i64)((fl_i16)(b32)))>>16))
 #define silk_SMLAWB(a32,b32,c32) ((fl_i32)((a32)+(((b32)*(fl_i64)((fl_i16)(c32)))>>16)))
-#define silk_SMLAWT(a32,b32,c32) ((fl_i32)((a32)+(((b32)*((fl_i64)(c32)>>16))>>16)))
 #define silk_SMULBB(a32,b32) ((fl_i32)((fl_i16)(a32))*(fl_i32)((fl_i16)(b32)))
 #define silk_SMLABB(a32,b32,c32) ((a32)+((fl_i32)((fl_i16)(b32)))*(fl_i32)((fl_i16)(c32)))
 #define silk_SMULWW(a32,b32) ((fl_i32)(((fl_i64)(a32)*(b32))>>16))
@@ -28,11 +26,9 @@
 #define silk_SMLABB_ovflw(a32,b32,c32) (silk_ADD32_ovflw((a32), ((fl_i32)((fl_i16)(b32)))*(fl_i32)((fl_i16)(c32))))
 #define silk_DIV32_16(a32,b16) ((fl_i32)((a32)/(b16)))
 #define silk_DIV32(a32,b32) ((fl_i32)((a32)/(b32)))
-#define silk_ADD32(a,b) ((a)+(b))
 #define silk_SUB32(a,b) ((a)-(b))
 #define silk_SAT16(a) ((a) > silk_int16_MAX ? silk_int16_MAX : ((a) < silk_int16_MIN ? silk_int16_MIN : (a)))
 #define silk_ADD_SAT16(a,b) (fl_i16)silk_SAT16(((fl_i32)(a))+(b))
-#define silk_ADD_POS_SAT32(a,b) ((((fl_u32)(a)+(fl_u32)(b))&0x80000000) ? silk_int32_MAX : ((a)+(b)))
 #define silk_LSHIFT32(a,shift) ((fl_i32)((fl_u32)(a)<<(shift)))
 #define silk_LSHIFT(a,shift) silk_LSHIFT32(a, shift)
 #define silk_RSHIFT(a,shift) ((a)>>(shift))
@@ -49,7 +45,6 @@
 #define silk_ADD_RSHIFT32(a,b,shift) ((a)+silk_RSHIFT32((b), (shift)))
 #define silk_ADD_RSHIFT_uint(a,b,shift) ((a)+((b)>>(shift)))
 #define silk_SUB_LSHIFT32(a,b,shift) ((a)-silk_LSHIFT32((b), (shift)))
-#define silk_SUB_RSHIFT32(a,b,shift) ((a)-silk_RSHIFT32((b), (shift)))
 #define silk_RSHIFT_ROUND(a,shift) ((shift) == 1 ? ((a)>>1)+((a)&1) : (((a)>>((shift)-1))+1)>>1)
 #define silk_RSHIFT_ROUND64(a,shift) ((shift) == 1 ? ((a)>>1)+((a)&1) : (((a)>>((shift)-1))+1)>>1)
 #define silk_min(a,b) (((a) < (b)) ? (a) : (b))
@@ -69,7 +64,6 @@
 #define MAX_FS_KHZ 16
 #define MAX_API_FS_KHZ 48
 #define TYPE_NO_VOICE_ACTIVITY 0
-#define TYPE_UNVOICED 1
 #define TYPE_VOICED 2
 #define CODE_INDEPENDENTLY 0
 #define CODE_INDEPENDENTLY_NO_LTP_SCALING 1
@@ -121,7 +115,6 @@
 #define PE_MAX_NB_SUBFR 4
 #define PE_MAX_LAG_MS 18
 #define PE_MIN_LAG_MS 2
-#define PE_NB_CBKS_STAGE2 3
 #define PE_NB_CBKS_STAGE2_EXT 11
 #define PE_NB_CBKS_STAGE3_MAX 34
 #define PE_NB_CBKS_STAGE3_MID 24

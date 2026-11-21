@@ -82,7 +82,8 @@ File-level handling, from opusfile and opus-tools:
 - Every file-scope name gets the prefix `oe_` and becomes `static`; `extern` data
   declarations go. A macro that two headers define differently (`PI`) gets one name per
   header, and each file uses the one it would have seen.
-- Whatever the four multistream entry points do not reach is left out.
+- Whatever the four multistream entry points do not reach is left out, and so are the
+  macros that nothing mentions.
 - `log`, `log10`, `exp`, `pow`, `sin`, `cos` and `acos` become the `fl_` functions of
   `src/math.c`.
 

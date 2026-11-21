@@ -2314,7 +2314,6 @@ static const fl_u32 fl_pvq_u_data[1272] = {
 #define COMBFILTER_MINPERIOD 15
 #define CELT_LPC_ORDER 24
 #define SPREAD_NONE 0
-#define SPREAD_LIGHT 1
 #define SPREAD_NORMAL 2
 #define SPREAD_AGGRESSIVE 3
 #define MAX_FINE_BITS 8
@@ -4505,11 +4504,9 @@ static int fl_celt_decode(fl_celt_dec *st, const unsigned char *data, int len, f
 #define silk_int32_MIN ((fl_i32)0x80000000)
 #define silk_int16_MAX 0x7FFF
 #define silk_int16_MIN ((fl_i16)0x8000)
-#define silk_uint8_MAX 0xFF
 
 #define silk_SMULWB(a32,b32) ((fl_i32)(((a32)*(fl_i64)((fl_i16)(b32)))>>16))
 #define silk_SMLAWB(a32,b32,c32) ((fl_i32)((a32)+(((b32)*(fl_i64)((fl_i16)(c32)))>>16)))
-#define silk_SMLAWT(a32,b32,c32) ((fl_i32)((a32)+(((b32)*((fl_i64)(c32)>>16))>>16)))
 #define silk_SMULBB(a32,b32) ((fl_i32)((fl_i16)(a32))*(fl_i32)((fl_i16)(b32)))
 #define silk_SMLABB(a32,b32,c32) ((a32)+((fl_i32)((fl_i16)(b32)))*(fl_i32)((fl_i16)(c32)))
 #define silk_SMULWW(a32,b32) ((fl_i32)(((fl_i64)(a32)*(b32))>>16))
@@ -4530,11 +4527,9 @@ static int fl_celt_decode(fl_celt_dec *st, const unsigned char *data, int len, f
 #define silk_SMLABB_ovflw(a32,b32,c32) (silk_ADD32_ovflw((a32), ((fl_i32)((fl_i16)(b32)))*(fl_i32)((fl_i16)(c32))))
 #define silk_DIV32_16(a32,b16) ((fl_i32)((a32)/(b16)))
 #define silk_DIV32(a32,b32) ((fl_i32)((a32)/(b32)))
-#define silk_ADD32(a,b) ((a)+(b))
 #define silk_SUB32(a,b) ((a)-(b))
 #define silk_SAT16(a) ((a) > silk_int16_MAX ? silk_int16_MAX : ((a) < silk_int16_MIN ? silk_int16_MIN : (a)))
 #define silk_ADD_SAT16(a,b) (fl_i16)silk_SAT16(((fl_i32)(a))+(b))
-#define silk_ADD_POS_SAT32(a,b) ((((fl_u32)(a)+(fl_u32)(b))&0x80000000) ? silk_int32_MAX : ((a)+(b)))
 #define silk_LSHIFT32(a,shift) ((fl_i32)((fl_u32)(a)<<(shift)))
 #define silk_LSHIFT(a,shift) silk_LSHIFT32(a, shift)
 #define silk_RSHIFT(a,shift) ((a)>>(shift))
@@ -4551,7 +4546,6 @@ static int fl_celt_decode(fl_celt_dec *st, const unsigned char *data, int len, f
 #define silk_ADD_RSHIFT32(a,b,shift) ((a)+silk_RSHIFT32((b), (shift)))
 #define silk_ADD_RSHIFT_uint(a,b,shift) ((a)+((b)>>(shift)))
 #define silk_SUB_LSHIFT32(a,b,shift) ((a)-silk_LSHIFT32((b), (shift)))
-#define silk_SUB_RSHIFT32(a,b,shift) ((a)-silk_RSHIFT32((b), (shift)))
 #define silk_RSHIFT_ROUND(a,shift) ((shift) == 1 ? ((a)>>1)+((a)&1) : (((a)>>((shift)-1))+1)>>1)
 #define silk_RSHIFT_ROUND64(a,shift) ((shift) == 1 ? ((a)>>1)+((a)&1) : (((a)>>((shift)-1))+1)>>1)
 #define silk_min(a,b) (((a) < (b)) ? (a) : (b))
@@ -4571,7 +4565,6 @@ static int fl_celt_decode(fl_celt_dec *st, const unsigned char *data, int len, f
 #define MAX_FS_KHZ 16
 #define MAX_API_FS_KHZ 48
 #define TYPE_NO_VOICE_ACTIVITY 0
-#define TYPE_UNVOICED 1
 #define TYPE_VOICED 2
 #define CODE_INDEPENDENTLY 0
 #define CODE_INDEPENDENTLY_NO_LTP_SCALING 1
@@ -4623,7 +4616,6 @@ static int fl_celt_decode(fl_celt_dec *st, const unsigned char *data, int len, f
 #define PE_MAX_NB_SUBFR 4
 #define PE_MAX_LAG_MS 18
 #define PE_MIN_LAG_MS 2
-#define PE_NB_CBKS_STAGE2 3
 #define PE_NB_CBKS_STAGE2_EXT 11
 #define PE_NB_CBKS_STAGE3_MAX 34
 #define PE_NB_CBKS_STAGE3_MID 24
@@ -10668,8 +10660,7 @@ typedef struct {
    int unit;          /* block size grid for the search (0 = fixed block size) */
    int fixed_block;   /* block size when unit == 0 */
    int subdiv;        /* LPC windows: 1 = tukey(0.5), else as flac's subdivide_tukey(subdiv) */
-   int picks;         /* LPC orders tried per window (unless all_orders) */
-   int all_orders;    /* evaluate every LPC order (else the best few by prediction error) */
+   int picks;         /* LPC orders tried per window: the best by prediction error */
    int prec_range;    /* coefficient precisions tried around the default (99 = all, 98 = outward
                          while they help) */
    int ls;            /* covariance method candidates */
@@ -10683,16 +10674,16 @@ typedef struct {
 
 static void fl_flac_level(fl_flac_cfg *c, int level, int lax, int rate) {
    static const fl_flac_cfg levels[9] = {
-      /* order porder block unit fixed sub picks all prec ls irls climb dp refine one */
-      {8, 6, 4608, 0, 4096, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-      {12, 8, 4608, 0, 4096, 2, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 1024, 4096, 2, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 512, 4096, 3, 1, 0, 98, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 256, 4096, 3, 1, 0, 98, 0, 0, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 4, 1, 0, 98, 0, 0, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 5, 1, 0, 99, 0, 4, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 5, 3, 0, 99, 0, 4, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 5, 3, 0, 99, 1, 8, 8, 0, 1, 0, 0}};
+      /* order porder block unit fixed sub picks prec ls irls climb dp refine one */
+      {8, 6, 4608, 0, 4096, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0},
+      {12, 8, 4608, 0, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 1024, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 512, 4096, 3, 1, 98, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 256, 4096, 3, 1, 98, 0, 0, 0, 0, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 4, 1, 98, 0, 0, 0, 0, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 5, 1, 99, 0, 4, 0, 0, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 5, 3, 99, 0, 4, 0, 0, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 5, 3, 99, 1, 8, 8, 0, 1, 0, 0}};
    *c = levels[level < 0 ? 0 : level > 8 ? 8 : level];
    if (lax) {
       if (c->max_order > 8) c->max_order = 32;
@@ -10814,7 +10805,6 @@ static fl_u64 fl_rice_part_est(fl_u64 s, fl_u32 n, fl_u32 umax, int kmax) {
 typedef struct {
    fl_u64 *sum;
    fl_u32 *umax;
-   int cap;
 } fl_rice_ws;
 
 /* Highest usable partition order for a block of n samples and predictor order. */
@@ -10920,7 +10910,6 @@ static fl_u64 fl_est_limit(fl_u64 best, fl_u64 header) { return best > header ? 
 typedef struct {
    int porder, method;
    int *k;     /* parameter per partition; escapes are stored as -1-bits */
-   int cap;
 } fl_rice_plan;
 
 static fl_u64 fl_rice_part_exact(const fl_u32 *u, fl_u32 n, int k) {
@@ -12272,7 +12261,8 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
       int nw = 1, d = 1, c = 0, k;
       for (k = 2; k <= cfg->subdiv; k++) nw += k == 2 ? 2 : 2*k;
       for (win = 0; win < nw; win++) {
-         int got, o;
+         double est[FL_FLAC_MAX_ORDER+1];
+         int got, o, pick[3] = {0, 0, 0};
          if (win == 0) {
             const double *wv = fl_window_get(wc, n, cfg->subdiv);
             if (!wv) continue;
@@ -12305,52 +12295,35 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
          R[0] *= 1.0+1e-10;
          got = fl_levinson(R, max_order, lpc, err);
          if (got < 1) continue;
-         if (cfg->all_orders) {
-            for (o = 1; o <= got; o++) {
-               fl_u64 b = fl_try_lpc_float(&s, lpc[o-1], o, FL_MIN(cfg->prec_range, 1));
-               if (b < best_lp_bits) {
-                  best_lp_bits = b;
-                  best_order = o;
-                  memcpy(best_lp, lpc[o-1], sizeof(double)*o);
+         /* the orders with the lowest estimated cost from the prediction error */
+         for (o = 1; o <= got; o++) {
+            double e = err[o] > 0 ? err[o]/n : 1e-9;
+            est[o] = (n-o)*0.5*fl_log(e+1e-9)/fl_log(2.0)+o*(bps+fl_default_prec(n, bps));
+         }
+         for (k = 0; k < FL_MIN(cfg->picks, 3); k++) {
+            double bv = 1e300;
+            for (o = 1; o <= got; o++)
+               if (o != pick[0] && o != pick[1] && est[o] < bv) {
+                  bv = est[o];
+                  pick[k] = o;
                }
-            }
-         } else {
-            /* the orders with the lowest estimated cost from the prediction error */
-            double est[FL_FLAC_MAX_ORDER+1];
-            int pick[3] = {0, 0, 0};
-            for (o = 1; o <= got; o++) {
-               double e = err[o] > 0 ? err[o]/n : 1e-9;
-               est[o] = (n-o)*0.5*fl_log(e+1e-9)/fl_log(2.0)+o*(bps+fl_default_prec(n, bps));
-            }
-            for (k = 0; k < FL_MIN(cfg->picks, 3); k++) {
-               double bv = 1e300;
-               for (o = 1; o <= got; o++)
-                  if (o != pick[0] && o != pick[1] && est[o] < bv) {
-                     bv = est[o];
-                     pick[k] = o;
-                  }
-            }
-            /* the default precision here, the others for the best candidate below */
-            for (k = 0; k < 3; k++) {
-               fl_u64 b;
-               if (!pick[k]) continue;
-               b = fl_try_lpc_float(&s, lpc[pick[k]-1], pick[k], 0);
-               if (b < best_lp_bits) {
-                  best_lp_bits = b;
-                  best_order = pick[k];
-                  memcpy(best_lp, lpc[pick[k]-1], sizeof(double)*pick[k]);
-               }
+         }
+         /* the default precision here, the others for the best candidate below */
+         for (k = 0; k < 3; k++) {
+            fl_u64 b;
+            if (!pick[k]) continue;
+            b = fl_try_lpc_float(&s, lpc[pick[k]-1], pick[k], 0);
+            if (b < best_lp_bits) {
+               best_lp_bits = b;
+               best_order = pick[k];
+               memcpy(best_lp, lpc[pick[k]-1], sizeof(double)*pick[k]);
             }
          }
       }
       if (cfg->ls && n > 64) {
-         /* exact least squares for the best order and its neighbours (all orders if asked) */
+         /* exact least squares for the best order and its neighbours */
          int lo = FL_MAX(1, (best_order ? best_order : max_order)-2), hi = FL_MIN(max_order, (best_order ? best_order : max_order)+2), o, got;
          double als[FL_FLAC_MAX_ORDER][FL_FLAC_MAX_ORDER];
-         if (cfg->all_orders) {
-            lo = 1;
-            hi = max_order;
-         }
          got = fl_lpc_ls_all(ws->xd, n, hi, als);
          for (o = lo; o <= got; o++) {
             double *a = als[o-1];
@@ -12437,7 +12410,6 @@ static void fl_write_subframe(fl_bw *w, const fl_flac_cfg *cfg, fl_ws *ws, const
       plan.porder = sf->porder;
       plan.method = sf->method;
       plan.k = (int*)sf->k;
-      plan.cap = 0;
       fl_rice_write(w, &plan, ws->res, n, order);
    } else {
       fl_rice_exact(&ws->plan, ws->ktmp, ws->rl, ws->rlor, ws->u, n, order, cfg->max_porder, bps > 14);
@@ -12446,8 +12418,8 @@ static void fl_write_subframe(fl_bw *w, const fl_flac_cfg *cfg, fl_ws *ws, const
 }
 
 /* ---- Quick cost estimate for the block size search ---- */
-static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_prefix *pf, const fl_i32 *seg,
-                                  fl_u32 *const *fu, int off, int n, int bps) {
+static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_prefix *pf, const fl_i32 *seg, int off,
+                                  int n, int bps) {
    const fl_i32 *x = seg+off;
    fl_u64 best, b;
    fl_i32 orv = 0;
@@ -12948,7 +12920,7 @@ static int fl_encode_frame(fl_flac_sink *s, fl_worker *wk, fl_frame_job *job, fl
       src[2] = s->side;
       src[3] = s->mid;
       if (s->cfg.one_mode) {
-         for (v = 0; v < 4; v++) sfx[v].bits = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[v], src[v], FL_FU(s, v), off, bs, s->bits+(v == 2));
+         for (v = 0; v < 4; v++) sfx[v].bits = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[v], src[v], off, bs, s->bits+(v == 2));
          for (i = 0; i < 4; i++) costs[i] = sfx[use[i][0]].bits+sfx[use[i][1]].bits;
          for (i = 1; i < 4; i++)
             if (costs[i] < costs[m]) m = i;
@@ -13047,16 +13019,16 @@ static fl_u64 fl_block_cost(fl_flac_sink *s, fl_worker *wk, int off, int bs) {
          if (f2[use[v][0]]+f2[use[v][1]] < f2[use[m][0]]+f2[use[m][1]]) m = v;
       for (c = 0; c < 2; c++) {
          v = use[m][c];
-         cost += fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[v], src[v], FL_FU(s, v), off, bs, s->bits+(v == 2));
+         cost += fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[v], src[v], off, bs, s->bits+(v == 2));
       }
    } else if (fl_use_stereo(s, off, bs)) {
-      fl_u64 a = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[0], s->buf[0], FL_FU(s, 0), off, bs, s->bits);
-      fl_u64 b = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[1], s->buf[1], FL_FU(s, 1), off, bs, s->bits);
-      fl_u64 sc = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[2], s->side, FL_FU(s, 2), off, bs, s->bits+1);
-      fl_u64 m = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[3], s->mid, FL_FU(s, 3), off, bs, s->bits);
+      fl_u64 a = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[0], s->buf[0], off, bs, s->bits);
+      fl_u64 b = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[1], s->buf[1], off, bs, s->bits);
+      fl_u64 sc = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[2], s->side, off, bs, s->bits+1);
+      fl_u64 m = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[3], s->mid, off, bs, s->bits);
       cost += FL_MIN(FL_MIN(a+b, a+sc), FL_MIN(sc+b, m+sc));
    } else {
-      for (c = 0; c < s->C; c++) cost += fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[c], s->buf[c], FL_FU(s, c), off, bs, s->bits);
+      for (c = 0; c < s->C; c++) cost += fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[c], s->buf[c], off, bs, s->bits);
    }
    return cost;
 }
@@ -13491,7 +13463,6 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *e) {
 
 #define oe_opus_int8        signed char
 
-#define oe_opus_uint        unsigned int
 
 #define oe_opus_uint64      unsigned long long
 
@@ -13643,7 +13614,6 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *e) {
 
 #define oe_OPUS_UNIMPLEMENTED    -5
 
-#define oe_OPUS_INVALID_STATE    -6
 
 #define oe_OPUS_ALLOC_FAIL       -7
 
@@ -13789,17 +13759,13 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *e) {
 
 #define oe_OPUS_GET_FINAL_RANGE_REQUEST         4031
 
-#define oe_OPUS_GET_PITCH_REQUEST               4033
 
-#define oe_OPUS_SET_GAIN_REQUEST                4034
 
-#define oe_OPUS_GET_GAIN_REQUEST                4045
 
 #define oe_OPUS_SET_LSB_DEPTH_REQUEST           4036
 
 #define oe_OPUS_GET_LSB_DEPTH_REQUEST           4037
 
-#define oe_OPUS_GET_LAST_PACKET_DURATION_REQUEST 4039
 
 #define oe_OPUS_SET_EXPERT_FRAME_DURATION_REQUEST 4040
 
@@ -13815,25 +13781,17 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *e) {
 
 #define oe_OPUS_GET_IN_DTX_REQUEST              4049
 
-#define oe_OPUS_SET_DRED_DURATION_REQUEST 4050
 
-#define oe_OPUS_GET_DRED_DURATION_REQUEST 4051
 
-#define oe_OPUS_SET_DNN_BLOB_REQUEST 4052
 
-#define oe_OPUS_SET_OSCE_BWE_REQUEST 4054
 
-#define oe_OPUS_GET_OSCE_BWE_REQUEST 4055
 
 #define oe_OPUS_SET_QEXT_REQUEST 4056
 
 #define oe_OPUS_GET_QEXT_REQUEST 4057
 
-#define oe_OPUS_SET_IGNORE_EXTENSIONS_REQUEST 4058
 
-#define oe_OPUS_GET_IGNORE_EXTENSIONS_REQUEST 4059
 
-#define oe_OPUS_HAVE_OPUS_PROJECTION_H
 
 #define oe_opus_check_int(x) (((void)((x) == (oe_opus_int32)0)), (oe_opus_int32)(x))
 
@@ -13841,11 +13799,8 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *e) {
 
 #define oe_opus_check_uint_ptr(ptr) ((ptr) + ((ptr) - (oe_opus_uint32*)(ptr)))
 
-#define oe_opus_check_uint8_ptr(ptr) ((ptr) + ((ptr) - (oe_opus_uint8*)(ptr)))
 
-#define oe_opus_check_val16_ptr(ptr) ((ptr) + ((ptr) - (oe_opus_val16*)(ptr)))
 
-#define oe_opus_check_void_ptr(x) ((void)((void *)0 == (x)), (x))
 
 #define oe_OPUS_AUTO                           -1000
 
@@ -13897,11 +13852,9 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *e) {
 
 #define oe_OPUS_SET_COMPLEXITY(x) oe_OPUS_SET_COMPLEXITY_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_COMPLEXITY(x) oe_OPUS_GET_COMPLEXITY_REQUEST, oe_opus_check_int_ptr(x)
 
 #define oe_OPUS_SET_BITRATE(x) oe_OPUS_SET_BITRATE_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_BITRATE(x) oe_OPUS_GET_BITRATE_REQUEST, oe_opus_check_int_ptr(x)
 
 #define oe_OPUS_SET_VBR(x) oe_OPUS_SET_VBR_REQUEST, oe_opus_check_int(x)
 
@@ -13909,67 +13862,42 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *e) {
 
 #define oe_OPUS_SET_VBR_CONSTRAINT(x) oe_OPUS_SET_VBR_CONSTRAINT_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_VBR_CONSTRAINT(x) oe_OPUS_GET_VBR_CONSTRAINT_REQUEST, oe_opus_check_int_ptr(x)
 
 #define oe_OPUS_SET_FORCE_CHANNELS(x) oe_OPUS_SET_FORCE_CHANNELS_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_FORCE_CHANNELS(x) oe_OPUS_GET_FORCE_CHANNELS_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_SET_MAX_BANDWIDTH(x) oe_OPUS_SET_MAX_BANDWIDTH_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_MAX_BANDWIDTH(x) oe_OPUS_GET_MAX_BANDWIDTH_REQUEST, oe_opus_check_int_ptr(x)
 
 #define oe_OPUS_SET_BANDWIDTH(x) oe_OPUS_SET_BANDWIDTH_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_SET_SIGNAL(x) oe_OPUS_SET_SIGNAL_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_SIGNAL(x) oe_OPUS_GET_SIGNAL_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_SET_APPLICATION(x) oe_OPUS_SET_APPLICATION_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_APPLICATION(x) oe_OPUS_GET_APPLICATION_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_GET_LOOKAHEAD(x) oe_OPUS_GET_LOOKAHEAD_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_SET_INBAND_FEC(x) oe_OPUS_SET_INBAND_FEC_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_INBAND_FEC(x) oe_OPUS_GET_INBAND_FEC_REQUEST, oe_opus_check_int_ptr(x)
 
 #define oe_OPUS_SET_PACKET_LOSS_PERC(x) oe_OPUS_SET_PACKET_LOSS_PERC_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_PACKET_LOSS_PERC(x) oe_OPUS_GET_PACKET_LOSS_PERC_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_SET_DTX(x) oe_OPUS_SET_DTX_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_DTX(x) oe_OPUS_GET_DTX_REQUEST, oe_opus_check_int_ptr(x)
 
 #define oe_OPUS_SET_LSB_DEPTH(x) oe_OPUS_SET_LSB_DEPTH_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_LSB_DEPTH(x) oe_OPUS_GET_LSB_DEPTH_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_SET_EXPERT_FRAME_DURATION(x) oe_OPUS_SET_EXPERT_FRAME_DURATION_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_EXPERT_FRAME_DURATION(x) oe_OPUS_GET_EXPERT_FRAME_DURATION_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_SET_PREDICTION_DISABLED(x) oe_OPUS_SET_PREDICTION_DISABLED_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_PREDICTION_DISABLED(x) oe_OPUS_GET_PREDICTION_DISABLED_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_SET_DRED_DURATION(x) oe_OPUS_SET_DRED_DURATION_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_DRED_DURATION(x) oe_OPUS_GET_DRED_DURATION_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_SET_DNN_BLOB(data, len) oe_OPUS_SET_DNN_BLOB_REQUEST, oe_opus_check_void_ptr(data), oe_opus_check_int(len)
 
-#define oe_OPUS_SET_QEXT(x) oe_OPUS_SET_QEXT_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_QEXT(x) oe_OPUS_GET_QEXT_REQUEST, oe_opus_check_int_ptr(x)
 
 #define oe_OPUS_RESET_STATE 4028
 
 #define oe_OPUS_GET_FINAL_RANGE(x) oe_OPUS_GET_FINAL_RANGE_REQUEST, oe_opus_check_uint_ptr(x)
 
-#define oe_OPUS_GET_BANDWIDTH(x) oe_OPUS_GET_BANDWIDTH_REQUEST, oe_opus_check_int_ptr(x)
 
 #define oe_OPUS_GET_SAMPLE_RATE(x) oe_OPUS_GET_SAMPLE_RATE_REQUEST, oe_opus_check_int_ptr(x)
 
@@ -13977,23 +13905,14 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *e) {
 
 #define oe_OPUS_GET_PHASE_INVERSION_DISABLED(x) oe_OPUS_GET_PHASE_INVERSION_DISABLED_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_GET_IN_DTX(x) oe_OPUS_GET_IN_DTX_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_SET_GAIN(x) oe_OPUS_SET_GAIN_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_GAIN(x) oe_OPUS_GET_GAIN_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_GET_LAST_PACKET_DURATION(x) oe_OPUS_GET_LAST_PACKET_DURATION_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_GET_PITCH(x) oe_OPUS_GET_PITCH_REQUEST, oe_opus_check_int_ptr(x)
 
- #define oe_OPUS_SET_OSCE_BWE(x) oe_OPUS_SET_OSCE_BWE_REQUEST, oe_opus_check_int(x)
 
- #define oe_OPUS_GET_OSCE_BWE(x) oe_OPUS_GET_OSCE_BWE_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_SET_IGNORE_EXTENSIONS(x) oe_OPUS_SET_IGNORE_EXTENSIONS_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_IGNORE_EXTENSIONS(x) oe_OPUS_GET_IGNORE_EXTENSIONS_REQUEST, oe_opus_check_int_ptr(x)
 
 #endif
 
@@ -14027,13 +13946,11 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *e) {
 
 #define oe_CELT_SIG_SCALE 32768.f
 
-#define oe_CELT_FATAL(str) celt_fatal(str, __FILE__, __LINE__)
 
 #define oe_celt_assert(cond) ((void)(cond))
 
 #define oe_celt_assert2(cond, message) ((void)(cond))
 
-#define oe_MUST_SUCCEED(call) do {if((call) != oe_OPUS_OK) {oe_RESTORE_STACK; return oe_OPUS_INTERNAL_ERROR;} } while (0)
 
 #define oe_celt_sig_assert(cond) ((void)(cond))
 
@@ -14051,13 +13968,9 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *e) {
 
 #define oe_IMAX(a,b) ((a) > (b) ? (a) : (b))
 
-#define oe_FMIN(a,b) ((a) < (b) ? (a) : (b))
 
-#define oe_FMAX(a,b) ((a) > (b) ? (a) : (b))
 
-#define oe_UADD32(a,b) ((a)+(b))
 
-#define oe_USUB32(a,b) ((a)-(b))
 
 #define oe_MAXG(a,b) oe_MAX32(a, b)
 
@@ -14065,17 +13978,14 @@ FLDEF void fl_flac_frame_encoder_destroy(fl_flac_frame_encoder *e) {
 
 #if defined(__x86_64__) || defined(__LP64__) || defined(_WIN64) || 0
 
-#define oe_OPUS_FAST_INT64 1
 
 #else
 
-#define oe_OPUS_FAST_INT64 0
 
 #endif
 
 #define oe_ARG_FIXED(arg)
 
-#define oe_PRINT_MIPS(file)
 
 typedef float oe_opus_val16;
 typedef float oe_opus_val32;
@@ -14111,7 +14021,6 @@ typedef float oe_celt_coef;
 
 #define oe_VERY_SMALL 1e-30f
 
-#define oe_VERY_LARGE16 1e15f
 
 #define oe_Q15_ONE ((oe_opus_val16)1.f)
 
@@ -14127,7 +14036,6 @@ typedef float oe_celt_coef;
 
 #define oe_NEG16(x) (-(x))
 
-#define oe_NEG32(x) (-(x))
 
 #define oe_NEG32_ovflw(x) (-(x))
 
@@ -14137,7 +14045,6 @@ typedef float oe_celt_coef;
 
 #define oe_SHR16(a,shift) (a)
 
-#define oe_SHL16(a,shift) (a)
 
 #define oe_SHR32(a,shift) (a)
 
@@ -14149,15 +14056,11 @@ typedef float oe_celt_coef;
 
 #define oe_SHR64(a,shift) (a)
 
-#define oe_PSHR(a,shift)   (a)
 
-#define oe_SHR(a,shift)    (a)
 
-#define oe_SHL(a,shift)    (a)
 
 #define oe_SATURATE(x,a)   (x)
 
-#define oe_SATURATE16(x)   (x)
 
 #define oe_ROUND16(a,shift)  (a)
 
@@ -14179,11 +14082,8 @@ typedef float oe_celt_coef;
 
 #define oe_SUB32_ovflw(a,b) ((a)-(b))
 
-#define oe_SHL32_ovflw(a,shift) (a)
 
-#define oe_PSHR32_ovflw(a,shift) (a)
 
-#define oe_MULT16_16_16(a,b)     ((a)*(b))
 
 #define oe_MULT16_16(a,b)     ((oe_opus_val32)(a)*(oe_opus_val32)(b))
 
@@ -14193,37 +14093,25 @@ typedef float oe_celt_coef;
 
 #define oe_MULT16_32_Q16(a,b)     ((a)*(b))
 
-#define oe_MULT32_32_Q16(a,b)     ((a)*(b))
 
 #define oe_MULT32_32_Q31(a,b)     ((a)*(b))
 
-#define oe_MULT32_32_P31(a,b)     ((a)*(b))
 
-#define oe_MULT32_32_P31_ovflw(a,b) ((a)*(b))
 
 #define oe_MAC16_32_Q15(c,a,b)     ((c)+(a)*(b))
 
-#define oe_MAC16_32_Q16(c,a,b)     ((c)+(a)*(b))
 
-#define oe_MAC_COEF_32_ARM(c,a,b)     ((c)+(a)*(b))
 
-#define oe_MULT16_16_Q11_32(a,b)     ((a)*(b))
 
-#define oe_MULT16_16_Q11(a,b)     ((a)*(b))
 
-#define oe_MULT16_16_Q13(a,b)     ((a)*(b))
 
 #define oe_MULT16_16_Q14(a,b)     ((a)*(b))
 
 #define oe_MULT16_16_Q15(a,b)     ((a)*(b))
 
-#define oe_MULT16_16_P15(a,b)     ((a)*(b))
 
-#define oe_MULT16_16_P13(a,b)     ((a)*(b))
 
-#define oe_MULT16_16_P14(a,b)     ((a)*(b))
 
-#define oe_MULT16_32_P16(a,b)     ((a)*(b))
 
 #define oe_MULT_COEF_32(a, b)      ((a)*(b))
 
@@ -14235,19 +14123,13 @@ typedef float oe_celt_coef;
 
 #define oe_DIV32(a,b)     (((oe_opus_val32)(a))/(oe_opus_val32)(b))
 
-#define oe_SIG2RES(a)      ((1/oe_CELT_SIG_SCALE)*(a))
 
 #define oe_RES2INT16(a)    oe_FLOAT2INT16(a)
 
-#define oe_RES2INT24(a)    oe_float2int(32768.f*256.f*(a))
 
-#define oe_RES2FLOAT(a)    (a)
 
-#define oe_INT16TORES(a)   ((a)*(1/oe_CELT_SIG_SCALE))
 
-#define oe_INT24TORES(a)   ((1.f/32768.f/256.f)*(a))
 
-#define oe_ADD_RES(a, b)   oe_ADD32(a, b)
 
 #define oe_FLOAT2RES(a)    (a)
 
@@ -14259,9 +14141,7 @@ typedef float oe_celt_coef;
 
 #define oe_FLOAT2SIG(a)    ((a)*oe_CELT_SIG_SCALE)
 
-#define oe_INT16TOSIG(a)   ((float)(a))
 
-#define oe_INT24TOSIG(a)   ((float)(a)*(1.f/256.f))
 
 #define oe_MAX_ENCODING_DEPTH 24
 
@@ -14285,9 +14165,7 @@ typedef float oe_celt_coef;
 
 #define oe_OPUS_CUSTOM_H
 
-# define oe_OPUS_CUSTOM_EXPORT
 
-#  define oe_OPUS_CUSTOM_EXPORT_STATIC static oe_OPUS_INLINE
 
 typedef struct oe_OpusCustomEncoder oe_OpusCustomEncoder;
 
@@ -14489,7 +14367,6 @@ static oe_opus_uint32 oe_ec_dec_bits(oe_ec_dec *_this,unsigned _ftb);
 
 #define oe_CPU_SUPPORT_H
 
-#define oe_OPUS_ARCHMASK 0
 
 static oe_OPUS_INLINE int oe_opus_select_arch(void)
 {
@@ -14497,7 +14374,6 @@ static oe_OPUS_INLINE int oe_opus_select_arch(void)
 }
 #endif
 
-#define oe_KISS_FFT_MALLOC oe_opus_alloc
 
 # ifndef oe_kiss_fft_scalar
 
@@ -14505,7 +14381,6 @@ static oe_OPUS_INLINE int oe_opus_select_arch(void)
 
 #   define oe_kiss_twiddle_scalar float
 
-#   define oe_KF_SUFFIX _celt_single
 
 # endif
 
@@ -14548,13 +14423,10 @@ typedef struct oe_kiss_fft_state{
 static void oe_opus_fft_c(const oe_kiss_fft_state *cfg,const oe_kiss_fft_cpx *fin,oe_kiss_fft_cpx *fout);
 static void oe_opus_fft_impl(const oe_kiss_fft_state *st,oe_kiss_fft_cpx *fout oe_ARG_FIXED(int downshift));
 
-#define oe_opus_fft_alloc_arch(_st, arch)          ((void)(arch), oe_opus_fft_alloc_arch_c(_st))
 
-#define oe_opus_fft_free_arch(_st, arch)          ((void)(arch), oe_opus_fft_free_arch_c(_st))
 
 #define oe_opus_fft(_cfg, _fin, _fout, arch)          ((void)(arch), oe_opus_fft_c(_cfg, _fin, _fout))
 
-#define oe_opus_ifft(_cfg, _fin, _fout, arch)          ((void)(arch), oe_opus_ifft_c(_cfg, _fin, _fout))
 
 #endif
 
@@ -14562,11 +14434,9 @@ static void oe_opus_fft_impl(const oe_kiss_fft_state *st,oe_kiss_fft_cpx *fout o
 
 #define oe_CELTEncoder oe_OpusCustomEncoder
 
-#define oe_CELTDecoder oe_OpusCustomDecoder
 
 #define oe_CELTMode oe_OpusCustomMode
 
-#define oe_QEXT_EXTENSION_ID 124
 
 #define oe_LEAK_BANDS 19
 
@@ -14603,13 +14473,9 @@ typedef struct {
 
 #define oe_CELT_SET_PREDICTION(x) oe_CELT_SET_PREDICTION_REQUEST, oe_opus_check_int(x)
 
-#define oe_CELT_SET_INPUT_CLIPPING_REQUEST    10004
 
-#define oe_CELT_SET_INPUT_CLIPPING(x) oe_CELT_SET_INPUT_CLIPPING_REQUEST, oe_opus_check_int(x)
 
-#define oe_CELT_GET_AND_CLEAR_ERROR_REQUEST   10007
 
-#define oe_CELT_GET_AND_CLEAR_ERROR(x) oe_CELT_GET_AND_CLEAR_ERROR_REQUEST, oe_opus_check_int_ptr(x)
 
 #define oe_CELT_SET_CHANNELS_REQUEST    10008
 
@@ -14631,13 +14497,9 @@ typedef struct {
 
 #define oe_CELT_SET_SIGNALLING(x) oe_CELT_SET_SIGNALLING_REQUEST, oe_opus_check_int(x)
 
-#define oe_CELT_SET_TONALITY_REQUEST    10018
 
-#define oe_CELT_SET_TONALITY(x) oe_CELT_SET_TONALITY_REQUEST, oe_opus_check_int(x)
 
-#define oe_CELT_SET_TONALITY_SLOPE_REQUEST    10020
 
-#define oe_CELT_SET_TONALITY_SLOPE(x) oe_CELT_SET_TONALITY_SLOPE_REQUEST, oe_opus_check_int(x)
 
 #define oe_CELT_SET_ANALYSIS_REQUEST    10022
 
@@ -14668,9 +14530,7 @@ static int oe_celt_encoder_init(oe_CELTEncoder *st, oe_opus_int32 sampling_rate,
 
 #define oe_celt_encoder_ctl oe_opus_custom_encoder_ctl
 
-#define oe_celt_decoder_ctl oe_opus_custom_decoder_ctl
 
-#define oe_OPUS_CUSTOM_NOSTATIC static oe_OPUS_INLINE
 
 static const unsigned char oe_trim_icdf[11] = {126, 124, 119, 109, 87, 41, 19, 9, 4, 2, 0};
 static const unsigned char oe_spread_icdf[4] = {25, 23, 2, 0};
@@ -14680,7 +14540,6 @@ static const unsigned char oe_tapset_icdf[3]={2,1,0};
 
 #define oe_COMBFILTER_MINPERIOD 15
 
-#define oe_VALIDATE_CELT_DECODER(st)
 
 static int oe_resampling_factor(oe_opus_int32 rate);
 static void oe_celt_preemphasis(const oe_opus_res * oe_OPUS_RESTRICT pcmp, oe_celt_sig * oe_OPUS_RESTRICT inp,
@@ -14713,13 +14572,10 @@ static void oe_clt_mdct_forward_c(const oe_mdct_lookup *l, oe_kiss_fft_scalar *i
 
 #define oe_clt_mdct_forward(_l, _in, _out, _window, _overlap, _shift, _stride, _arch)    oe_clt_mdct_forward_c(_l, _in, _out, _window, _overlap, _shift, _stride, _arch)
 
-#define oe_clt_mdct_backward(_l, _in, _out, _window, _overlap, _shift, _stride, _arch)    oe_clt_mdct_backward_c(_l, _in, _out, _window, _overlap, _shift, _stride, _arch)
 
 #endif
 
-#define oe_MAX_PERIOD 1024
 
-#define oe_DEC_PITCH_BUF_SIZE 2048
 
 typedef struct {
    int size;
@@ -14826,7 +14682,6 @@ static oe_OPUS_INLINE oe_opus_val32 oe_celt_maxabs16(const oe_opus_val16 *x, int
 
 #define oe_celt_maxabs_res oe_celt_maxabs16
 
-#define oe_celt_maxabs32(x,len) oe_celt_maxabs16(x,len)
 
 static oe_OPUS_INLINE float oe_celt_atan_norm(float x)
 {
@@ -14901,15 +14756,10 @@ static oe_OPUS_INLINE float oe_celt_atan2p_norm(float y, float x)
 
 #define oe_celt_log2_db oe_celt_log2
 
-#define oe_celt_sin(x) oe_celt_cos_norm2((0.5f*oe_PI_mathops) * (x) - 1.0f)
 
-#define oe_celt_log(x) (oe_celt_log2(x) * 0.6931471805599453f)
 
-#define oe_celt_exp(x) (oe_celt_exp2((x) * 1.4426950408889634f))
 
-#define oe_celt_float2int16(in, out, cnt, arch) ((void)(arch), oe_celt_float2int16_c(in, out, cnt))
 
-#define oe_opus_limit2_checkwithin1(samples, cnt, arch) ((void)(arch), oe_opus_limit2_checkwithin1_c(samples, cnt))
 
 #endif
 
@@ -14969,13 +14819,9 @@ static void oe_ec_laplace_encode(oe_ec_enc *enc, int *value, unsigned fs, int de
 
 #define oe_ALLOC_NONE 0
 
-#define oe_OPUS_CHECK_ARRAY(ptr, len) oe__opus_false()
 
-#define oe_OPUS_CHECK_VALUE(value) oe__opus_false()
 
-#define oe_OPUS_PRINT_INT(value) do{}while(0)
 
-#define oe_OPUS_FPRINTF (void)
 
 #endif
 
@@ -14983,11 +14829,9 @@ static void oe_ec_laplace_encode(oe_ec_enc *enc, int *value, unsigned fs, int de
 
 #define oe_RATE_H
 
-#define oe_MAX_PSEUDO 40
 
 #define oe_LOG_MAX_PSEUDO 6
 
-#define oe_CELT_MAX_PULSES 128
 
 #define oe_MAX_FINE_BITS 8
 
@@ -16836,7 +16680,6 @@ static void oe_quant_all_bands(int encode, const oe_CELTMode *m, int start, int 
 
 /* celt/celt.c */
 
-#define oe_CELT_C
 
 #include <math.h>
 
@@ -16886,13 +16729,9 @@ static oe_OPUS_INLINE oe_opus_int32 oe_float2int(float flt)
 
 #elif 1 && defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
 
-#define oe__ISOC9X_SOURCE 1
 
-#define oe__ISOC99_SOURCE 1
 
-#define oe___USE_ISOC9X 1
 
-#define oe___USE_ISOC99 1
 
 #include <math.h>
 
@@ -16900,13 +16739,9 @@ static oe_OPUS_INLINE oe_opus_int32 oe_float2int(float flt)
 
 #elif 1 && defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
 
-#define oe__ISOC9X_SOURCE 1
 
-#define oe__ISOC99_SOURCE 1
 
-#define oe___USE_ISOC9X 1
 
-#define oe___USE_ISOC99 1
 
 #include <math.h>
 
@@ -16944,11 +16779,9 @@ static oe_OPUS_INLINE oe_opus_int16 oe_FLOAT2INT16(float x)
 
 #define oe_CELT_LPC_H
 
-#define oe_CELT_LPC_ORDER 24
 
 static void oe__celt_lpc(oe_opus_val16 *_lpc, const oe_opus_val32 *ac, int p);
 
-#define oe_celt_fir(x, num, y, N, ord, arch)     (oe_celt_fir_c(x, num, y, N, ord, arch))
 
 static int oe__celt_autocorr(const oe_opus_val16 *x, oe_opus_val32 *ac,
          const oe_celt_coef *window, int overlap, int lag, int n, int arch);
@@ -17097,7 +16930,6 @@ static void oe_init_caps(const oe_CELTMode *m,int *cap,int LM,int C)
 
 /* celt/celt_encoder.c */
 
-#define oe_CELT_ENCODER_C
 
 #include <math.h>
 
@@ -19356,33 +19188,21 @@ bad_request:
 
 /* celt/celt_decoder.c */
 
-#define oe_CELT_DECODER_C
 
 #include <math.h>
 
 #include <stdarg.h>
 
-#define oe_PLC_PITCH_LAG_MAX (720)
 
-#define oe_PLC_PITCH_LAG_MIN (100)
 
-#define oe_FRAME_NONE         0
 
-#define oe_FRAME_NORMAL       1
 
-#define oe_FRAME_PLC_NOISE    2
 
-#define oe_FRAME_PLC_PERIODIC 3
 
-#define oe_FRAME_PLC_NEURAL   4
 
-#define oe_FRAME_DRED         5
 
-#define oe_DECODE_BUFFER_SIZE oe_DEC_PITCH_BUF_SIZE
 
-#define oe_PLC_UPDATE_FRAMES 4
 
-#define oe_PLC_UPDATE_SAMPLES (oe_PLC_UPDATE_FRAMES*FRAME_SIZE)
 
 struct oe_OpusCustomDecoder {
    const oe_OpusCustomMode *mode;
@@ -19397,7 +19217,6 @@ struct oe_OpusCustomDecoder {
    int complexity;
    int arch;
 
-#define DECODER_RESET_START rng
 
    oe_opus_uint32 rng;
    int error;
@@ -20052,9 +19871,7 @@ static void oe_ec_enc_done(oe_ec_enc *_this){
 
 #define oe_KISS_FFT_GUTS_H
 
-#define oe_MIN(a,b) ((a)<(b) ? (a):(b))
 
-#define oe_MAX(a,b) ((a)>(b) ? (a):(b))
 
 #   define oe_S_MUL(a,b) ( (a)*(b) )
 
@@ -20062,11 +19879,8 @@ static void oe_ec_enc_done(oe_ec_enc *_this){
 
 #define oe_C_MUL(m,a,b)     do{ (m).r = (a).r*(b).r - (a).i*(b).i;        (m).i = (a).r*(b).i + (a).i*(b).r; }while(0)
 
-#define oe_C_MULC(m,a,b)     do{ (m).r = (a).r*(b).r + (a).i*(b).i;        (m).i = (a).i*(b).r - (a).r*(b).i; }while(0)
 
-#define oe_C_MUL4(m,a,b) oe_C_MUL(m,a,b)
 
-#   define oe_C_FIXDIV(c,div)
 
 #   define oe_C_MULBYSCALAR( c, s )     do{ (c).r *= (s);        (c).i *= (s); }while(0)
 
@@ -20084,19 +19898,14 @@ static void oe_ec_enc_done(oe_ec_enc *_this){
 
 #define oe_C_ADDTO( res , a)    do {             oe_CHECK_OVERFLOW_OP((res).r,+,(a).r)            oe_CHECK_OVERFLOW_OP((res).i,+,(a).i)            (res).r += (a).r;  (res).i += (a).i;    }while(0)
 
-#define oe_C_SUBFROM( res , a)    do {            oe_CHECK_OVERFLOW_OP((res).r,-,(a).r)            oe_CHECK_OVERFLOW_OP((res).i,-,(a).i)            (res).r -= (a).r;  (res).i -= (a).i;     }while(0)
 
 #endif
 
-#  define oe_KISS_FFT_COS(phase) (oe_kiss_fft_scalar) fl_cos(phase)
 
-#  define oe_KISS_FFT_SIN(phase) (oe_kiss_fft_scalar) fl_sin(phase)
 
 #  define oe_HALF_OF(x) ((x)*.5f)
 
-#define  oe_kf_cexp(x,phase)         do{                 (x)->r = oe_KISS_FFT_COS(phase);                (x)->i = oe_KISS_FFT_SIN(phase);        }while(0)
 
-#define  oe_kf_cexp2(x,phase)    do{       (x)->r = TRIG_UPSCALE*oe_celt_cos_norm((phase));      (x)->i = TRIG_UPSCALE*oe_celt_cos_norm((phase)-32768);}while(0)
 
 #endif
 
@@ -20600,7 +20409,6 @@ static const oe_opus_int16 oe_eband5ms[] = {
   0,  1,  2,  3,  4,  5,  6,  7,  8, 10, 12, 14, 16, 20, 24, 28, 34, 40, 48, 60, 78, 100
 };
 
-#define oe_BITALLOC_SIZE 11
 
 static const unsigned char oe_band_allocation[] = {
 
@@ -22339,9 +22147,7 @@ static int oe_clt_compute_allocation(const oe_CELTMode *m, int start, int end, c
 
 # define oe_silk_float_MAX  FLT_MAX
 
-#define oe_silk_int64_MAX   ((oe_opus_int64)0x7FFFFFFFFFFFFFFFLL)
 
-#define oe_silk_int64_MIN   ((oe_opus_int64)0x8000000000000000LL)
 
 #define oe_silk_int32_MAX   0x7FFFFFFF
 
@@ -22351,15 +22157,11 @@ static int oe_clt_compute_allocation(const oe_CELTMode *m, int start, int end, c
 
 #define oe_silk_int16_MIN   ((oe_opus_int16)0x8000)
 
-#define oe_silk_int8_MAX    0x7F
 
-#define oe_silk_int8_MIN    ((oe_opus_int8)0x80)
 
 #define oe_silk_uint8_MAX   0xFF
 
-#define oe_silk_TRUE        1
 
-#define oe_silk_FALSE       0
 
 #if (defined _WIN32 && !defined _WINCE && !defined(__GNUC__) && ! 0 )
 
@@ -22415,7 +22217,6 @@ typedef struct oe__silk_resampler_state_struct{
 
 #define oe_silk_SMLAWB(a32, b32, c32)       ((oe_opus_int32)((a32) + (((b32) * (oe_opus_int64)((oe_opus_int16)(c32))) >> 16)))
 
-#define oe_silk_SMULWT(a32, b32)            ((oe_opus_int32)(((a32) * (oe_opus_int64)((b32) >> 16)) >> 16))
 
 #define oe_silk_SMLAWT(a32, b32, c32)       ((oe_opus_int32)((a32) + (((b32) * ((oe_opus_int64)(c32) >> 16)) >> 16)))
 
@@ -22423,11 +22224,8 @@ typedef struct oe__silk_resampler_state_struct{
 
 #define oe_silk_SMLABB(a32, b32, c32)       ((a32) + ((oe_opus_int32)((oe_opus_int16)(b32))) * (oe_opus_int32)((oe_opus_int16)(c32)))
 
-#define oe_silk_SMULBT(a32, b32)            ((oe_opus_int32)((oe_opus_int16)(a32)) * ((b32) >> 16))
 
-#define oe_silk_SMLABT(a32, b32, c32)       ((a32) + ((oe_opus_int32)((oe_opus_int16)(b32))) * ((c32) >> 16))
 
-#define oe_silk_SMLAL(a64, b32, c32)        (oe_silk_ADD64((a64), ((oe_opus_int64)(b32) * (oe_opus_int64)(c32))))
 
 #define oe_silk_SMULWW(a32, b32)            ((oe_opus_int32)(((oe_opus_int64)(a32) * (b32)) >> 16))
 
@@ -22444,7 +22242,6 @@ static oe_OPUS_INLINE oe_opus_int32 oe_silk_CLZ32(oe_opus_int32 in32)
 
 #define oe_matrix_ptr(Matrix_base_adr, row, column, N)     (*((Matrix_base_adr) + ((row)*(N)+(column))))
 
-#define oe_matrix_adr(Matrix_base_adr, row, column, N)       ((Matrix_base_adr) + ((row)*(N)+(column)))
 
 #ifndef oe_matrix_c_ptr
 
@@ -22511,7 +22308,6 @@ static void oe_silk_ana_filt_bank_1(
     const oe_opus_int32            N
 );
 
-#define oe_silk_biquad_alt_stride2(in, B_Q28, A_Q28, S, out, len, arch) ((void)(arch), oe_silk_biquad_alt_stride2_c(in, B_Q28, A_Q28, S, out, len))
 
 #define oe_silk_LPC_inverse_pred_gain(A_Q12, order, arch)     ((void)(arch), oe_silk_LPC_inverse_pred_gain_c(A_Q12, order))
 
@@ -22598,17 +22394,12 @@ static oe_OPUS_INLINE oe_opus_int32 oe_silk_ROR32( oe_opus_int32 a32, oe_opus_in
 
 #define oe_silk_MUL(a32, b32)                  ((a32) * (b32))
 
-#define oe_silk_MUL_uint(a32, b32)             oe_silk_MUL(a32, b32)
 
 #define oe_silk_MLA(a32, b32, c32)             oe_silk_ADD32((a32),((b32) * (c32)))
 
-#define oe_silk_MLA_uint(a32, b32, c32)        oe_silk_MLA(a32, b32, c32)
 
-#define oe_silk_SMULTT(a32, b32)               (((a32) >> 16) * ((b32) >> 16))
 
-#define oe_silk_SMLATT(a32, b32, c32)          oe_silk_ADD32((a32),((b32) >> 16) * ((c32) >> 16))
 
-#define oe_silk_SMLALBB(a64, b16, c16)         oe_silk_ADD64((a64),(oe_opus_int64)((oe_opus_int32)(b16) * (oe_opus_int32)(c16)))
 
 #define oe_silk_SMULL(a32, b32)                ((oe_opus_int64)(a32) *  (b32))
 
@@ -22628,55 +22419,38 @@ static oe_OPUS_INLINE oe_opus_int32 oe_silk_ROR32( oe_opus_int32 a32, oe_opus_in
 
 #define oe_silk_ADD32(a, b)                    ((a) + (b))
 
-#define oe_silk_ADD64(a, b)                    ((a) + (b))
 
 #define oe_silk_SUB16(a, b)                    ((a) - (b))
 
 #define oe_silk_SUB32(a, b)                    ((a) - (b))
 
-#define oe_silk_SUB64(a, b)                    ((a) - (b))
 
-#define oe_silk_SAT8(a)                        ((a) > oe_silk_int8_MAX ? oe_silk_int8_MAX  :                                                   ((a) < oe_silk_int8_MIN ? oe_silk_int8_MIN  : (a)))
 
 #define oe_silk_SAT16(a)                       ((a) > oe_silk_int16_MAX ? oe_silk_int16_MAX :                                                  ((a) < oe_silk_int16_MIN ? oe_silk_int16_MIN : (a)))
 
-#define oe_silk_SAT32(a)                       ((a) > oe_silk_int32_MAX ? oe_silk_int32_MAX :                                                  ((a) < oe_silk_int32_MIN ? oe_silk_int32_MIN : (a)))
 
-#define oe_silk_CHECK_FIT8(a)                  (a)
 
-#define oe_silk_CHECK_FIT16(a)                 (a)
 
-#define oe_silk_CHECK_FIT32(a)                 (a)
 
 #define oe_silk_ADD_SAT16(a, b)                (oe_opus_int16)oe_silk_SAT16( oe_silk_ADD32( (oe_opus_int32)(a), (b) ) )
 
-#define oe_silk_ADD_SAT64(a, b)                ((((a) + (b)) & 0x8000000000000000LL) == 0 ?                                                                        ((((a) & (b)) & 0x8000000000000000LL) != 0 ? oe_silk_int64_MIN : (a)+(b)) :                                             ((((a) | (b)) & 0x8000000000000000LL) == 0 ? oe_silk_int64_MAX : (a)+(b)) )
 
-#define oe_silk_SUB_SAT16(a, b)                (oe_opus_int16)oe_silk_SAT16( oe_silk_SUB32( (oe_opus_int32)(a), (b) ) )
 
-#define oe_silk_SUB_SAT64(a, b)                ((((a)-(b)) & 0x8000000000000000LL) == 0 ?                                                                                           (( (a) & ((b)^0x8000000000000000LL) & 0x8000000000000000LL) ? oe_silk_int64_MIN : (a)-(b)) :                                             ((((a)^0x8000000000000000LL) & (b)  & 0x8000000000000000LL) ? oe_silk_int64_MAX : (a)-(b)) )
 
-#define oe_silk_POS_SAT32(a)                   ((a) > oe_silk_int32_MAX ? oe_silk_int32_MAX : (a))
 
-#define oe_silk_ADD_POS_SAT8(a, b)             ((((a)+(b)) & 0x80)                 ? oe_silk_int8_MAX  : ((a)+(b)))
 
-#define oe_silk_ADD_POS_SAT16(a, b)            ((((a)+(b)) & 0x8000)               ? oe_silk_int16_MAX : ((a)+(b)))
 
 #define oe_silk_ADD_POS_SAT32(a, b)            ((((oe_opus_uint32)(a)+(oe_opus_uint32)(b)) & 0x80000000) ? oe_silk_int32_MAX : ((a)+(b)))
 
-#define oe_silk_LSHIFT8(a, shift)              ((oe_opus_int8)((oe_opus_uint8)(a)<<(shift)))
 
 #define oe_silk_LSHIFT16(a, shift)             ((oe_opus_int16)((oe_opus_uint16)(a)<<(shift)))
 
 #define oe_silk_LSHIFT32(a, shift)             ((oe_opus_int32)((oe_opus_uint32)(a)<<(shift)))
 
-#define oe_silk_LSHIFT64(a, shift)             ((oe_opus_int64)((oe_opus_uint64)(a)<<(shift)))
 
 #define oe_silk_LSHIFT(a, shift)               oe_silk_LSHIFT32(a, shift)
 
-#define oe_silk_RSHIFT8(a, shift)              ((a)>>(shift))
 
-#define oe_silk_RSHIFT16(a, shift)             ((a)>>(shift))
 
 #define oe_silk_RSHIFT32(a, shift)             ((a)>>(shift))
 
@@ -22688,7 +22462,6 @@ static oe_OPUS_INLINE oe_opus_int32 oe_silk_ROR32( oe_opus_int32 a32, oe_opus_in
 
 #define oe_silk_LSHIFT_ovflw(a, shift)         ((oe_opus_int32)((oe_opus_uint32)(a) << (shift)))
 
-#define oe_silk_LSHIFT_uint(a, shift)          ((a) << (shift))
 
 #define oe_silk_RSHIFT_uint(a, shift)          ((a) >> (shift))
 
@@ -22696,7 +22469,6 @@ static oe_OPUS_INLINE oe_opus_int32 oe_silk_ROR32( oe_opus_int32 a32, oe_opus_in
 
 #define oe_silk_ADD_LSHIFT32(a, b, shift)      oe_silk_ADD32((a), oe_silk_LSHIFT32((b), (shift)))
 
-#define oe_silk_ADD_LSHIFT_uint(a, b, shift)   ((a) + oe_silk_LSHIFT_uint((b), (shift)))
 
 #define oe_silk_ADD_RSHIFT(a, b, shift)        ((a) + oe_silk_RSHIFT((b), (shift)))
 
@@ -22712,9 +22484,7 @@ static oe_OPUS_INLINE oe_opus_int32 oe_silk_ROR32( oe_opus_int32 a32, oe_opus_in
 
 #define oe_silk_RSHIFT_ROUND64(a, shift)       ((shift) == 1 ? ((a) >> 1) + ((a) & 1) : (((a) >> ((shift) - 1)) + 1) >> 1)
 
-#define oe_silk_NSHIFT_MUL_32_32(a, b)         ( -(31- (32-oe_silk_CLZ32(oe_silk_abs(a)) + (32-oe_silk_CLZ32(oe_silk_abs(b))))) )
 
-#define oe_silk_NSHIFT_MUL_16_16(a, b)         ( -(15- (16-oe_silk_CLZ16(oe_silk_abs(a)) + (16-oe_silk_CLZ16(oe_silk_abs(b))))) )
 
 #define oe_silk_min(a, b)                      (((a) < (b)) ? (a) : (b))
 
@@ -22743,19 +22513,14 @@ static oe_OPUS_INLINE oe_opus_int32 oe_silk_max_32(oe_opus_int32 a, oe_opus_int3
 
 #define oe_silk_LIMIT_int                      oe_silk_LIMIT
 
-#define oe_silk_LIMIT_16                       oe_silk_LIMIT
 
 #define oe_silk_LIMIT_32                       oe_silk_LIMIT
 
 #define oe_silk_abs(a)                         (((a) >  0)  ? (a) : -(a))
 
-#define oe_silk_abs_int(a)                     (((a) ^ ((a) >> (8 * sizeof(a) - 1))) - ((a) >> (8 * sizeof(a) - 1)))
 
-#define oe_silk_abs_int32(a)                   (((a) ^ ((a) >> 31)) - ((a) >> 31))
 
-#define oe_silk_abs_int64(a)                   (((a) >  0)  ? (a) : -(a))
 
-#define oe_silk_sign(a)                        ((a) > 0 ? 1 : ( (a) < 0 ? -1 : 0 ))
 
 #define oe_RAND_MULTIPLIER                     196314165
 
@@ -22765,9 +22530,7 @@ static oe_OPUS_INLINE oe_opus_int32 oe_silk_max_32(oe_opus_int32 a, oe_opus_int3
 
 #define oe_silk_SMMUL(a32, b32)                (oe_opus_int32)oe_silk_RSHIFT64(oe_silk_SMULL((a32), (b32)), 32)
 
-#define oe_silk_burg_modified(res_nrg, res_nrg_Q, A_Q16, x, minInvGain_Q30, subfr_length, nb_subfr, D, arch)     ((void)(arch), oe_silk_burg_modified_c(res_nrg, res_nrg_Q, A_Q16, x, minInvGain_Q30, subfr_length, nb_subfr, D, arch))
 
-#define oe_silk_inner_prod16(inVec1, inVec2, len, arch)     ((void)(arch),oe_silk_inner_prod16_c(inVec1, inVec2, len))
 
 #ifndef oe_SILK_FIX_INLINES_H
 
@@ -22884,9 +22647,7 @@ static oe_OPUS_INLINE oe_opus_int32 oe_silk_INVERSE32_varQ(
 
 #define oe_SIGPROCFIX_API_MACROCOUNT_H
 
-#define oe_varDefine
 
-#define oe_silk_SaveCount()
 
 #endif
 
@@ -23238,7 +22999,6 @@ static oe_opus_int32 oe_stereo_itheta(const oe_celt_norm *X, const oe_celt_norm 
 
 #define oe_SILK_ENC_PACKET_SIZE_NOT_SUPPORTED          -103
 
-#define oe_SILK_ENC_PAYLOAD_BUF_TOO_SHORT              -104
 
 #define oe_SILK_ENC_INVALID_LOSS_RATE                  -105
 
@@ -23250,17 +23010,12 @@ static oe_opus_int32 oe_stereo_itheta(const oe_celt_norm *X, const oe_celt_norm 
 
 #define oe_SILK_ENC_INVALID_CBR_SETTING                -109
 
-#define oe_SILK_ENC_INTERNAL_ERROR                     -110
 
 #define oe_SILK_ENC_INVALID_NUMBER_OF_CHANNELS_ERROR   -111
 
-#define oe_SILK_DEC_INVALID_SAMPLING_FREQUENCY         -200
 
-#define oe_SILK_DEC_PAYLOAD_TOO_LARGE                  -201
 
-#define oe_SILK_DEC_PAYLOAD_ERROR                      -202
 
-#define oe_SILK_DEC_INVALID_FRAME_SIZE                 -203
 
 #endif
 
@@ -23270,15 +23025,10 @@ static oe_opus_int32 oe_stereo_itheta(const oe_celt_norm *X, const oe_celt_norm 
 
 #define oe_MAX_FRAMES_PER_PACKET                   3
 
-#define oe_MIN_TARGET_RATE_BPS                     5000
 
-#define oe_MAX_TARGET_RATE_BPS                     80000
 
-#define oe_LBRR_NB_MIN_RATE_BPS                    12000
 
-#define oe_LBRR_MB_MIN_RATE_BPS                    14000
 
-#define oe_LBRR_WB_MIN_RATE_BPS                    16000
 
 #define oe_NB_SPEECH_FRAMES_BEFORE_DTX             10
 
@@ -23290,11 +23040,9 @@ static oe_opus_int32 oe_stereo_itheta(const oe_celt_norm *X, const oe_celt_norm 
 
 #define oe_VAD_NO_ACTIVITY                         0
 
-#define oe_VAD_ACTIVITY                            1
 
 #define oe_MAX_FS_KHZ                              16
 
-#define oe_MAX_API_FS_KHZ                          48
 
 #define oe_TYPE_NO_VOICE_ACTIVITY                  0
 
@@ -23392,9 +23140,7 @@ static oe_opus_int32 oe_stereo_itheta(const oe_celt_norm *X, const oe_celt_norm 
 
 #define oe_MAX_DEL_DEC_STATES                      4
 
-#define oe_LTP_BUF_LENGTH                          512
 
-#define oe_LTP_MASK                                ( oe_LTP_BUF_LENGTH - 1 )
 
 #define oe_DECISION_DELAY                          40
 
@@ -23408,7 +23154,6 @@ static oe_opus_int32 oe_stereo_itheta(const oe_celt_norm *X, const oe_celt_norm 
 
 #define oe_SILK_MAX_PULSES                         16
 
-#define oe_MAX_MATRIX_SIZE                         oe_MAX_LPC_ORDER
 
 # define oe_NSQ_LPC_BUF_LENGTH                     oe_MAX_LPC_ORDER
 
@@ -23432,7 +23177,6 @@ static oe_opus_int32 oe_stereo_itheta(const oe_celt_norm *X, const oe_celt_norm 
 
 #define oe_NLSF_W_Q                                2
 
-#define oe_NLSF_VQ_MAX_VECTORS                     32
 
 #define oe_NLSF_QUANT_MAX_AMPLITUDE                4
 
@@ -23456,15 +23200,10 @@ static oe_opus_int32 oe_stereo_itheta(const oe_celt_norm *X, const oe_celt_norm 
 
 #define oe_TRANSITION_INT_STEPS                    ( oe_TRANSITION_FRAMES  / ( oe_TRANSITION_INT_NUM - 1 ) )
 
-#define oe_BWE_AFTER_LOSS_Q16                      63570
 
-#define oe_CNG_BUF_MASK_MAX                        255
 
-#define oe_CNG_GAIN_SMTH_Q16                       4634
 
-#define oe_CNG_GAIN_SMTH_THRESHOLD_Q16             46396
 
-#define oe_CNG_NLSF_SMTH_Q16                       16348
 
 #endif
 
@@ -23671,7 +23410,6 @@ typedef struct {
 } oe_silk_CNG_struct;
 
 typedef struct {
-#define SILK_DECODER_STATE_RESET_START prev_gain_Q16
 
     oe_opus_int32                  prev_gain_Q16;
     oe_opus_int32                  exc_Q14[ oe_MAX_FRAME_LENGTH ];
@@ -23739,23 +23477,14 @@ typedef struct {
 
 #define oe_SILK_PLC_H
 
-#define oe_BWE_COEF                        0.99
 
-#define oe_V_PITCH_GAIN_START_MIN_Q14      11469
 
-#define oe_V_PITCH_GAIN_START_MAX_Q14      15565
 
-#define oe_MAX_PITCH_LAG_MS                18
 
-#define oe_RAND_BUF_SIZE                   128
 
-#define oe_RAND_BUF_MASK                   ( oe_RAND_BUF_SIZE - 1 )
 
-#define oe_LOG2_INV_LPC_GAIN_HIGH_THRES    3
 
-#define oe_LOG2_INV_LPC_GAIN_LOW_THRES     8
 
-#define oe_PITCH_DRIFT_FAC_Q16             655
 
 #endif
 
@@ -23763,11 +23492,8 @@ typedef struct {
 
 #define oe_SILK_CONTROL_H
 
-#define oe_FLAG_DECODE_NORMAL                      0
 
-#define oe_FLAG_PACKET_LOST                        1
 
-#define oe_FLAG_DECODE_LBRR                        2
 
 typedef struct {
 
@@ -23848,19 +23574,12 @@ typedef struct {
 
 #define oe_SILK_DEBUG_H
 
-#define oe_SILK_DEBUG 0
 
-#define oe_SILK_TIC_TOC 0
 
-#define oe_TIC(TAG_NAME)
 
-#define oe_TOC(TAG_NAME)
 
-#define oe_silk_TimerSave(FILE_NAME)
 
-#define oe_DEBUG_STORE_DATA(FILE_NAME, DATA_PTR, N_BYTES)
 
-#define oe_SILK_DEBUG_STORE_CLOSE_FILES
 
 #endif
 
@@ -24320,7 +24039,6 @@ static const oe_opus_uint8 oe_silk_sign_iCDF[ 42 ] = {
 
 #define oe_silk_enc_map(a)                  ( oe_silk_RSHIFT( (a), 15 ) + 1 )
 
-#define oe_silk_dec_map(a)                  ( oe_silk_LSHIFT( (a),  1 ) - 1 )
 
 static void oe_silk_encode_signs(
     oe_ec_enc                      *psRangeEnc,
@@ -25157,7 +24875,6 @@ typedef struct {
 
 #define oe_HARM_SNR_INCR_dB                                2.0f
 
-#define oe_SPARSE_SNR_INCR_dB                              2.0f
 
 #define oe_ENERGY_VARIATION_THRESHOLD_QNT_OFFSET           0.6f
 
@@ -25175,9 +24892,7 @@ typedef struct {
 
 #define oe_HARM_HP_NOISE_COEF                              0.35f
 
-#define oe_INPUT_TILT                                      0.05f
 
-#define oe_HIGH_RATE_INPUT_TILT                            0.1f
 
 #define oe_LOW_FREQ_SHAPING                                4.0f
 
@@ -25197,7 +24912,6 @@ typedef struct {
 
 #define oe_LAMBDA_QUANT_OFFSET                             0.8f
 
-#define oe_REDUCE_BITRATE_10_MS_BPS                        2200
 
 #define oe_MAX_BANDWIDTH_SWITCH_DELAY_MS                   5000
 
@@ -27670,7 +27384,6 @@ static oe_OPUS_INLINE void oe_silk_nsq_del_dec_scale_states(
 
 /* silk/PLC.c */
 
-#define oe_NB_ATT 2
 
 /* silk/shell_coder.c */
 
@@ -29057,11 +28770,8 @@ static oe_opus_int oe_silk_init_encoder(
 
 #define oe_PE_MAX_FRAME_LENGTH_MS      ( oe_PE_LTP_MEM_LENGTH_MS + oe_PE_MAX_NB_SUBFR * oe_PE_SUBFR_LENGTH_MS )
 
-#define oe_PE_MAX_FRAME_LENGTH         ( oe_PE_MAX_FRAME_LENGTH_MS * oe_PE_MAX_FS_KHZ )
 
-#define oe_PE_MAX_FRAME_LENGTH_ST_1    ( oe_PE_MAX_FRAME_LENGTH >> 2 )
 
-#define oe_PE_MAX_FRAME_LENGTH_ST_2    ( oe_PE_MAX_FRAME_LENGTH >> 1 )
 
 #define oe_PE_MAX_LAG_MS               18
 
@@ -29069,7 +28779,6 @@ static oe_opus_int oe_silk_init_encoder(
 
 #define oe_PE_MAX_LAG                  ( oe_PE_MAX_LAG_MS * oe_PE_MAX_FS_KHZ )
 
-#define oe_PE_MIN_LAG                  ( oe_PE_MIN_LAG_MS * oe_PE_MAX_FS_KHZ )
 
 #define oe_PE_D_SRCH_LENGTH            24
 
@@ -29904,7 +29613,6 @@ static oe_opus_int32 oe_silk_log2lin(
 
 /* silk/LPC_analysis_filter.c */
 
-#define oe_USE_CELT_FIR 0
 
 static void oe_silk_LPC_analysis_filter(
     oe_opus_int16                  *out,
@@ -32514,9 +32222,7 @@ static void oe_silk_process_gains_FLP(
 
 /* silk/float/residual_energy_FLP.c */
 
-#define oe_MAX_ITERATIONS_RESIDUAL_NRG         10
 
-#define oe_REGULARIZATION_FACTOR               1e-8f
 
 static void oe_silk_residual_energy_FLP(
     oe_silk_float                      nrgs[ oe_MAX_NB_SUBFR ],
@@ -33797,9 +33503,7 @@ typedef void (*oe_opus_copy_channel_out_func)(
 
 #define oe_OPUS_GET_VOICE_RATIO_REQUEST         11019
 
-#define oe_OPUS_SET_VOICE_RATIO(x) oe_OPUS_SET_VOICE_RATIO_REQUEST, oe_opus_check_int(x)
 
-#define oe_OPUS_GET_VOICE_RATIO(x) oe_OPUS_GET_VOICE_RATIO_REQUEST, oe_opus_check_int_ptr(x)
 
 #define oe_OPUS_SET_FORCE_MODE_REQUEST    11002
 
@@ -34092,7 +33796,6 @@ struct oe_OpusDecoder {
    int          ignore_extensions;
    int          arch;
 
-#define OPUS_DECODER_RESET_START stream_channels
 
    int          stream_channels;
 
@@ -34107,9 +33810,7 @@ struct oe_OpusDecoder {
    oe_opus_uint32  rangeFinal;
 };
 
-#define oe_VALIDATE_OPUS_DECODER(st)
 
-#define oe_OPTIONAL_CLIP_opus_decoder 1
 
 static int oe_opus_packet_get_nb_frames(const unsigned char packet[], oe_opus_int32 len)
 {
@@ -34133,7 +33834,6 @@ struct oe_OpusDREDDecoder {
    oe_opus_uint32 magic;
 };
 
-#define oe_VALIDATE_DRED_DECODER(st)
 
 /* src/opus_encoder.c */
 
@@ -37093,17 +36793,12 @@ static oe_opus_int32 oe_opus_packet_extensions_generate(unsigned char *data, oe_
 
 #define oe_OPUS_MULTISTREAM_H
 
-#define oe_opus_check_encstate_ptr(ptr) ((ptr) + ((ptr) - (oe_OpusEncoder**)(ptr)))
 
-#define oe_opus_check_decstate_ptr(ptr) ((ptr) + ((ptr) - (oe_OpusDecoder**)(ptr)))
 
 #define oe_OPUS_MULTISTREAM_GET_ENCODER_STATE_REQUEST 5120
 
-#define oe_OPUS_MULTISTREAM_GET_DECODER_STATE_REQUEST 5122
 
-#define oe_OPUS_MULTISTREAM_GET_ENCODER_STATE(x,y) oe_OPUS_MULTISTREAM_GET_ENCODER_STATE_REQUEST, oe_opus_check_int(x), oe_opus_check_encstate_ptr(y)
 
-#define oe_OPUS_MULTISTREAM_GET_DECODER_STATE(x,y) oe_OPUS_MULTISTREAM_GET_DECODER_STATE_REQUEST, oe_opus_check_int(x), oe_opus_check_decstate_ptr(y)
 
 typedef struct oe_OpusMSEncoder oe_OpusMSEncoder;
 
@@ -38254,9 +37949,7 @@ static int oe_opus_multistream_encoder_ctl(oe_OpusMSEncoder *st, int request, ..
 
 #include <stdarg.h>
 
-#define oe_VALIDATE_MS_DECODER(st)
 
-#define oe_OPTIONAL_CLIP_opus_multistream_decoder 1
 
 /* src/repacketizer.c */
 
@@ -38557,17 +38250,11 @@ static int oe_opus_packet_pad(unsigned char *data, oe_opus_int32 len, oe_opus_in
 
 #define oe_OPUS_PROJECTION_H
 
-#define oe_OPUS_PROJECTION_GET_DEMIXING_MATRIX_GAIN_REQUEST    6001
 
-#define oe_OPUS_PROJECTION_GET_DEMIXING_MATRIX_SIZE_REQUEST    6003
 
-#define oe_OPUS_PROJECTION_GET_DEMIXING_MATRIX_REQUEST         6005
 
-#define oe_OPUS_PROJECTION_GET_DEMIXING_MATRIX_GAIN(x) oe_OPUS_PROJECTION_GET_DEMIXING_MATRIX_GAIN_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_PROJECTION_GET_DEMIXING_MATRIX_SIZE(x) oe_OPUS_PROJECTION_GET_DEMIXING_MATRIX_SIZE_REQUEST, oe_opus_check_int_ptr(x)
 
-#define oe_OPUS_PROJECTION_GET_DEMIXING_MATRIX(x,y) oe_OPUS_PROJECTION_GET_DEMIXING_MATRIX_REQUEST, x, oe_opus_check_int(y)
 
 typedef struct oe_OpusProjectionEncoder oe_OpusProjectionEncoder;
 
@@ -38604,11 +38291,9 @@ struct oe_OpusProjectionDecoder
 
 };
 
-#define oe_OPTIONAL_CLIP_opus_projection_decoder 1
 
 /* src/mapping_matrix.c */
 
-#define oe_MATRIX_INDEX(nb_rows, row, col) (nb_rows * col + row)
 
 /* src/mlp_data.c */
 
@@ -39269,7 +38954,6 @@ static const oe_AnalysisDenseLayer oe_layer2 = {
 
 /* src/analysis.c */
 
-#define oe_ANALYSIS_C
 
 #define oe_TRANSITION_PENALTY 10
 
