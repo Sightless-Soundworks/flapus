@@ -11977,6 +11977,7 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
       }
       if (bo) {
          fl_search s;
+         int prec = FL_MIN(fl_default_prec(n, bps), fl_max_prec(bps, bo));
          memset(&s, 0, sizeof(s));
          s.cfg = cfg;
          s.ws = ws;
@@ -11985,7 +11986,9 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
          s.x = x;
          s.best_bits = best;
          s.cap = 1;
-         for (i = 0; i < n; i++) ws->xd[i] = x[i];
+         /* xd is only read by the double sums (mode 1) */
+         if (fl_lpc_mode(bps, prec, bo) == 1)
+            for (i = 0; i < n; i++) ws->xd[i] = x[i];
          fl_fill_x16(ws, x, n, bps);
          fl_try_lpc_float(&s, lp, bo, 0);
          best = s.best_bits;
