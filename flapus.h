@@ -41022,6 +41022,7 @@ typedef struct {
    fl_sink *inner;
    int borrowed;                /* the caller destroys inner */
    int bits, as_float, dither;  /* requested format */
+   int dithering;               /* 1 once dither has started: it goes on to the end */
    int in_bits, in_float, C;    /* source format; in_bits 0: passed on unchanged */
    float *clipmem, *f, *g;
    fl_shapestate *ss;           /* one per 8 channels */
@@ -41064,8 +41065,8 @@ static int fl_format_put(fl_sink *s, const fl_i32 *pcm, int n) {
       p->cap = p->f && p->g && p->v && p->s ? N : 0;
       if (!p->cap) return FL_ERR_ALLOC;
    }
-   if (!p->in_float && !p->as_float && p->bits < p->in_bits && p->bits == 16 && p->dither) {
-      /* no dither where the dropped bits are zero (16-bit audio in a wider file) */
+   if (!p->in_float && !p->as_float && p->bits < p->in_bits && p->bits == 16 && p->dither && !p->dithering) {
+      /* no dither while the dropped bits are zero (16-bit audio in a wider file) */
       fl_i32 any = 0, mask = (fl_i32)(((fl_i64)1<<(p->in_bits-16))-1);
       for (i = 0; i < N; i++) any |= pcm[i]&mask;
       if (!any) {
@@ -41102,6 +41103,7 @@ static int fl_format_put(fl_sink *s, const fl_i32 *pcm, int n) {
       for (i = 0; i < N; i++) p->v[i] = fl_float2int(FL_MAX(-32768, FL_MIN(p->f[i]*32768.f, 32767)));
    } else {
       /* opusdec's shaped dither, 8 channels at a time */
+      p->dithering = 1;
       for (c = 0; c < C; c += 8) {
          int m = FL_MIN(8, C-c);
          for (i = 0; i < n; i++)

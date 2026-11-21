@@ -181,8 +181,9 @@ Opus input)
 - `--bits N` sets the output bits: 16, 24 or 32. The default is 16 from Opus and the
   input's bit depth otherwise.
   - More bits than the input has are exact.
-  - Fewer bits are rounded. To 16 bits, opusdec's shaped dither is added, except where
+  - Fewer bits are rounded. To 16 bits, opusdec's shaped dither is added, except while
     the dropped bits are all zero (16-bit audio in a 24-bit file comes back exactly).
+    Once dither has started, it goes on to the end of the file.
   - From Opus, the decoded samples are soft-clipped first, as in opusdec. Above 16 bits
     they are rounded without dither; the rounding error is then far below audibility.
 - `--float` writes 32-bit float samples (WAV only, or Opus again): from Opus exactly as
