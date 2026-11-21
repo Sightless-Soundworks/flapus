@@ -8367,18 +8367,18 @@ static int fl_tag_is(const char *tag, const char *name) {
 
 /* Parses a Vorbis comment block (vendor first) into f->tags. Returns 0 or -1. */
 static int fl_parse_comments(fl_format *f, const unsigned char *p, long len) {
-   long pos = 4, n, i;
+   fl_u64 pos = 4, n, i;  /* 64 bits: long has only 32 on Windows */
    if (len < 8) return -1;
    pos += fl_get_le32(p);
-   if (pos+4 > len || pos < 4) return -1;
-   n = (long)fl_get_le32(p+pos);
+   if (pos+4 > (fl_u64)len) return -1;
+   n = fl_get_le32(p+pos);
    pos += 4;
    for (i = 0; i < n; i++) {
       fl_u32 l;
-      if (pos+4 > len) return -1;
+      if (pos+4 > (fl_u64)len) return -1;
       l = fl_get_le32(p+pos);
       pos += 4;
-      if (l > (fl_u32)(len-pos)) return -1;
+      if (l > (fl_u64)len-pos) return -1;
       if (fl_format_add_tag(f, (const char*)p+pos, (int)l) < 0) return -1;
       pos += l;
    }
