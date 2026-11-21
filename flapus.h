@@ -10948,6 +10948,8 @@ typedef struct {
    int order, wasted, prec, shift;
    fl_i32 coef[FL_FLAC_MAX_ORDER];
    fl_u64 bits;    /* exact size of the subframe */
+   int porder, method;
+   const int *k;   /* Rice plan of the residual (NULL = make it when writing) */
 } fl_sf;
 
 /* Per-thread work space for the subframe search. */
@@ -11677,14 +11679,16 @@ static void fl_irls(fl_search *s, const double *start, int order, int iters) {
 
 /* Full search for one channel of one block. Writes the best subframe to *out (exact bits).
    fu: the segment's fixed residuals of this channel (see fl_flac_sink) or NULL; the block
-   starts at segment position off. */
+   starts at segment position off. kbuf (or NULL): room for the Rice plan of the winner,
+   1<<cfg->max_porder entries. */
 static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc, const fl_i32 *x0, int n, int bps,
-                               fl_u32 *const *fu, const fl_prefix *pf, int off, fl_sf *out) {
+                               fl_u32 *const *fu, const fl_prefix *pf, int off, fl_sf *out, int *kbuf) {
    fl_search s;
    fl_i32 orv = 0, *x = ws->x;
    int i, wasted = 0, order, max_order;
    fl_u64 bits;
    for (i = 1; i < n && x0[i] == x0[0]; i++);
+   out->k = NULL;
    if (i == n) {
       out->type = 0;
       out->wasted = 0;
@@ -11872,6 +11876,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
    /* exact size of the winner */
    *out = s.best;
    out->wasted = wasted;
+   out->k = NULL;
    if (cfg->estimate) out->bits = s.best_bits;
    else if (s.best.type == 1) out->bits = 8+(fl_u64)n*bps;
    else {
@@ -11886,6 +11891,12 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
       if (out->bits >= 8+(fl_u64)n*bps) {
          out->type = 1;
          out->bits = 8+(fl_u64)n*bps;
+      } else if (kbuf) {
+         /* kept for fl_write_subframe, which would find the same plan */
+         out->porder = ws->plan.porder;
+         out->method = ws->plan.method;
+         memcpy(kbuf, ws->plan.k, sizeof(int)<<ws->plan.porder);
+         out->k = kbuf;
       }
    }
    if (wasted) out->bits += wasted;
@@ -11924,8 +11935,17 @@ static void fl_write_subframe(fl_bw *w, const fl_flac_cfg *cfg, fl_ws *ws, const
       fl_lpc_residual(x, n, order, sf->shift, fl_lpc_mode(bps, sf->prec, order), ws->acc, ws->u);
       for (i = order; i < n; i++) ws->res[i] = (fl_i32)(x[i]-(ws->acc[i]>>sf->shift));
    }
-   fl_rice_exact(&ws->plan, ws->ktmp, ws->rl, ws->rlor, ws->u, n, order, cfg->max_porder, bps > 14);
-   fl_rice_write(w, &ws->plan, ws->res, n, order);
+   if (sf->k) {
+      fl_rice_plan plan;
+      plan.porder = sf->porder;
+      plan.method = sf->method;
+      plan.k = (int*)sf->k;
+      plan.cap = 0;
+      fl_rice_write(w, &plan, ws->res, n, order);
+   } else {
+      fl_rice_exact(&ws->plan, ws->ktmp, ws->rl, ws->rlor, ws->u, n, order, cfg->max_porder, bps > 14);
+      fl_rice_write(w, &ws->plan, ws->res, n, order);
+   }
 }
 
 /* ---- Quick cost estimate for the block size search ---- */
@@ -12025,6 +12045,7 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
 /* Per-thread state. */
 typedef struct {
    fl_ws ws;
+   int *plans;        /* Rice plans of the frame's subframes, 8 of 1<<max_porder entries */
    fl_wcache wc;
    fl_flac_dec dec;   /* verification */
    fl_bw bw;          /* frames encoded by this thread in the current segment */
@@ -12321,7 +12342,8 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
       w->dec.si.channels = s->C;
       w->dec.si.bits = s->bits;
       w->dec.si.rate = s->rate;
-      if (fl_ws_alloc(&w->ws, s->cfg.max_block, s->cfg.max_porder) < 0 || fl_flac_dec_alloc(&w->dec, s->cfg.max_block) < 0)
+      if (fl_ws_alloc(&w->ws, s->cfg.max_block, s->cfg.max_porder) < 0 || fl_flac_dec_alloc(&w->dec, s->cfg.max_block) < 0 ||
+          !(w->plans = (int*)malloc(sizeof(int)*8<<s->cfg.max_porder)))
          return FL_ERR_ALLOC;
    }
    if (!s->f->seekable) {
@@ -12413,7 +12435,8 @@ static int fl_encode_frame(fl_flac_sink *s, fl_worker *wk, fl_frame_job *job, fl
       }
       for (v = 0; v < 4; v++)
          if (!s->cfg.one_mode || v == use[m][0] || v == use[m][1])
-            fl_search_subframe(&s->cfg, &wk->ws, &wk->wc, src[v]+off, bs, s->bits+(v == 2), FL_FU(s, v), NULL, off, &sfx[v]);
+            fl_search_subframe(&s->cfg, &wk->ws, &wk->wc, src[v]+off, bs, s->bits+(v == 2), FL_FU(s, v), NULL, off, &sfx[v],
+                               wk->plans+((size_t)v<<s->cfg.max_porder));
       if (!s->cfg.one_mode) {
          for (i = 0; i < 4; i++) costs[i] = sfx[use[i][0]].bits+sfx[use[i][1]].bits;
          for (i = 1; i < 4; i++)
@@ -12425,7 +12448,9 @@ static int fl_encode_frame(fl_flac_sink *s, fl_worker *wk, fl_frame_job *job, fl
       if (m >= 2) ch[0] = src[m == 2 ? 2 : 3]+off;
       if (m == 1 || m == 3) ch[1] = src[2]+off;
    } else {
-      for (c = 0; c < s->C; c++) fl_search_subframe(&s->cfg, &wk->ws, &wk->wc, ch[c], bs, s->bits, FL_FU(s, c), NULL, off, &sf[c]);
+      for (c = 0; c < s->C; c++)
+         fl_search_subframe(&s->cfg, &wk->ws, &wk->wc, ch[c], bs, s->bits, FL_FU(s, c), NULL, off, &sf[c],
+                            wk->plans+((size_t)c<<s->cfg.max_porder));
    }
    hl = fl_frame_header(s, h, bs, assignment, num);
    {
@@ -12473,13 +12498,13 @@ static fl_u64 fl_block_cost(fl_flac_sink *s, fl_worker *wk, int off, int bs) {
          src[2] = s->side;
          src[3] = s->mid;
          for (c = 0; c < 4; c++) {
-            fl_search_subframe(&s->dcfg, &wk->ws, &wk->wc, src[c]+off, bs, s->bits+(c == 2), FL_FU(s, c), &s->pf[c], off, &sf);
+            fl_search_subframe(&s->dcfg, &wk->ws, &wk->wc, src[c]+off, bs, s->bits+(c == 2), FL_FU(s, c), &s->pf[c], off, &sf, NULL);
             v[c] = sf.bits;
          }
          return cost+FL_MIN(FL_MIN(v[0]+v[1], v[0]+v[2]), FL_MIN(v[2]+v[1], v[3]+v[2]));
       }
       for (c = 0; c < s->C; c++) {
-         fl_search_subframe(&s->dcfg, &wk->ws, &wk->wc, s->buf[c]+off, bs, s->bits, FL_FU(s, c), &s->pf[c], off, &sf);
+         fl_search_subframe(&s->dcfg, &wk->ws, &wk->wc, s->buf[c]+off, bs, s->bits, FL_FU(s, c), &s->pf[c], off, &sf, NULL);
          cost += sf.bits;
       }
       return cost;
@@ -12755,6 +12780,7 @@ static void fl_flacenc_destroy(fl_sink *sk) {
    if (s->wk)
       for (c = 0; c < s->nthreads; c++) {
          fl_ws_free(&s->wk[c].ws);
+         free(s->wk[c].plans);
          fl_wcache_free(&s->wk[c].wc);
          fl_flac_dec_free(&s->wk[c].dec);
          free(s->wk[c].bw.buf);
