@@ -106,9 +106,9 @@ jobs:
           $env:PATH = "C:\w64devkit\bin;$env:PATH"
           $allowed = @("CloseHandle", "CreateThread", "DeleteCriticalSection", "EnterCriticalSection",
             "GetCPInfo", "GetLastError", "GetModuleHandleA", "GetProcAddress", "GetSystemInfo",
-            "InitializeCriticalSection", "LeaveCriticalSection", "MultiByteToWideChar",
-            "SetUnhandledExceptionFilter", "Sleep", "TlsGetValue", "VirtualProtect", "VirtualQuery",
-            "WaitForSingleObject", "WideCharToMultiByte")
+            "GetSystemTime", "InitializeCriticalSection", "LeaveCriticalSection", "MultiByteToWideChar",
+            "SetUnhandledExceptionFilter", "Sleep", "SystemTimeToFileTime", "TlsGetValue",
+            "VirtualProtect", "VirtualQuery", "WaitForSingleObject", "WideCharToMultiByte")
           $pe = & objdump -p flapus-${{ matrix.arch }}.exe
           $dll = $null; $dlls = @(); $k32 = @()
           foreach ($line in $pe) {

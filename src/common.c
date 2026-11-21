@@ -14,7 +14,11 @@
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>
+#include <process.h>
+#elif defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
 #endif
+#include <time.h>
 
 typedef signed char fl_i8;
 typedef unsigned char fl_u8;

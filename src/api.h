@@ -29,9 +29,7 @@
 
    Threads: there is no shared state between objects, so different conversions,
    decoders and encoders can run in different threads at the same time. One object
-   must not be used by two threads at once. The default Ogg serial number of Opus
-   output comes from rand(); set opt->serialno if the C library's rand() is not
-   thread-safe.
+   must not be used by two threads at once.
 
    More documentation: README.md in https://github.com/Sightless-Soundworks/flapus
 
@@ -113,7 +111,7 @@ typedef struct {
    int downmix;        /* 0 = auto (surround is downmixed below 16 kbps per channel), 1 = mono, 2 = stereo */
    const char *comment_options; /* value of the ENCODER_OPTIONS tag (NULL = none) */
    int padding;        /* free bytes reserved after the Opus tags: 512 (default), 0 = none */
-   long long serialno; /* Ogg serial number of Opus output, 0..4294967295; -1 (default) = from rand() */
+   long long serialno; /* Ogg serial number of Opus output, 0..4294967295; -1 (default) = random */
    /* Progress during fl_convert_file (NULL = none). done: 0..1 (-1 if the length is unknown),
       ratio: output size / input PCM size so far (-1 for WAV output). Called with done = 1
       when the conversion has finished. */

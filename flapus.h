@@ -29,9 +29,7 @@
 
    Threads: there is no shared state between objects, so different conversions,
    decoders and encoders can run in different threads at the same time. One object
-   must not be used by two threads at once. The default Ogg serial number of Opus
-   output comes from rand(); set opt->serialno if the C library's rand() is not
-   thread-safe.
+   must not be used by two threads at once.
 
    More documentation: README.md in https://github.com/Sightless-Soundworks/flapus
 
@@ -113,7 +111,7 @@ typedef struct {
    int downmix;        /* 0 = auto (surround is downmixed below 16 kbps per channel), 1 = mono, 2 = stereo */
    const char *comment_options; /* value of the ENCODER_OPTIONS tag (NULL = none) */
    int padding;        /* free bytes reserved after the Opus tags: 512 (default), 0 = none */
-   long long serialno; /* Ogg serial number of Opus output, 0..4294967295; -1 (default) = from rand() */
+   long long serialno; /* Ogg serial number of Opus output, 0..4294967295; -1 (default) = random */
    /* Progress during fl_convert_file (NULL = none). done: 0..1 (-1 if the length is unknown),
       ratio: output size / input PCM size so far (-1 for WAV output). Called with done = 1
       when the conversion has finished. */
@@ -252,7 +250,11 @@ FLDEF int fl_opus_encode_float(fl_opus_encoder *enc, const float *pcm, unsigned 
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>
+#include <process.h>
+#elif defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
 #endif
+#include <time.h>
 
 typedef signed char fl_i8;
 typedef unsigned char fl_u8;
@@ -15658,6 +15660,22 @@ static void fl_run_analysis(fl_tonality_state *analysis, const float *pcm, int a
 /* ======== enc_front.c ======== */
 /* ---- Opus encoder front end: libopusenc buffering/resampling, Ogg output, opusenc main loop ---- */
 
+/* A 32-bit number that differs between calls, processes and runs (for Ogg serials). */
+static fl_u32 fl_random32(const void *salt) {
+   static fl_u32 counter;
+   fl_u64 x = (fl_u64)time(NULL);
+#ifdef _WIN32
+   x ^= (fl_u64)_getpid()<<32;
+#elif defined(__unix__) || defined(__APPLE__)
+   x ^= (fl_u64)getpid()<<32;
+#endif
+   x ^= (fl_u64)clock()<<16^(fl_u64)(size_t)salt^(fl_u64)(size_t)&x<<8^(fl_u64)++counter<<48;
+   /* splitmix64 finalizer */
+   x = (x^(x>>30))*0xbf58476d1ce4e5b9ULL;
+   x = (x^(x>>27))*0x94d049bb133111ebULL;
+   return (fl_u32)((x^(x>>31))>>32);
+}
+
 /* ---- libopusenc resampler: fl_resampler with the sinc table computed on the x87 ---- */
 /* sinc() with compute_func() as compiled in libopusenc (window KAISER10). */
 static float fl_ope_sinc(float cutoff, int i, fl_u32 den, int jterm, int N) {
@@ -16216,7 +16234,7 @@ static int fl_opus_start(fl_sink *s, const fl_format *f) {
    e->frame_size_request = fl_msenc_get_duration(e->st);
    e->frame_size = fl_frame_samples(e->frame_size_request);
    e->ogg.out = fl_fopen(o->path, "wb");
-   e->ogg.serialno = opt->serialno >= 0 ? (fl_i32)(fl_u32)opt->serialno : rand();
+   e->ogg.serialno = opt->serialno >= 0 ? (fl_i32)(fl_u32)opt->serialno : (fl_i32)fl_random32(e);
    e->ogg.muxing_delay = 48000;
    if (!e->ogg.out || !e->buffer || !e->packet || !e->st) {
       ret = e->ogg.out ? FL_ERR_ALLOC : FL_ERR_IO;
