@@ -9,10 +9,12 @@
 static void usage(FILE *f) {
    fprintf(f,
       "flapus - Opus and FLAC encoder/decoder\n"
-      "Usage: flapus [options] input output\n"
+      "Usage: flapus [options] input [output]\n"
       "       flapus --help | --version\n"
       "  The input format (WAV, FLAC, Ogg FLAC, Ogg Opus) is detected from the file.\n"
       "  The output format follows the extension: .wav, .flac or .opus.\n"
+      "  Without output, a FLAC or Opus file is converted onto itself (FLAC to FLAC,\n"
+      "  Opus to Opus); WAV input needs an output.\n"
       "  Use - for stdin or stdout (stdout needs --format).\n"
       "General:\n"
       "      --format F       output format: wav, flac or opus (overrides the extension)\n"
@@ -118,6 +120,45 @@ static void progress(void *user, double done, double ratio) {
    fflush(stderr);
 }
 
+/* Options without a value, and with one (--padding takes one only if it is a number). */
+static const char *const flag_opts[] = {"-s", "--silent", "-f", "--force", "--delete-input-file", "--lax", "--no-seektable",
+                                        "--no-timestamp", "--no-dither", "--float", "--vbr", "--cvbr", "--hard-cbr", "--music",
+                                        "--speech", "--no-phase-inv", "--downmix-mono", "--downmix-stereo", NULL};
+static const char *const value_opts[] = {"--format", "--level", "--threads", "--rate", "--bits", "--bitrate", "--comp",
+                                         "--framesize", "--quality", "--expect-loss", "--padding", "--serial", NULL};
+
+/* How many arguments option a takes, 0 or 1 (v: the next argument or NULL), or -1 if a
+   is not an option. */
+static int option_args(const char *a, const char *v) {
+   int k;
+   if (strcmp(a, "--padding") == 0) return v && *v && strspn(v, "0123456789") == strlen(v);
+   for (k = 0; flag_opts[k]; k++)
+      if (strcmp(a, flag_opts[k]) == 0) return 0;
+   for (k = 0; value_opts[k]; k++)
+      if (strcmp(a, value_opts[k]) == 0) return 1;
+   return -1;
+}
+
+/* Number of paths at the end of argv: what follows the leading options, 2 (input and
+   output) or 1 (input only). The last argument is never an option value. */
+static int count_paths(int argc, char **argv) {
+   int i = 1, n;
+   while (i < argc-1 && (n = option_args(argv[i], i+1 < argc-1 ? argv[i+1] : NULL)) >= 0) i += 1+n;
+   return argc-i >= 2 ? 2 : 1;
+}
+
+/* Detected format of the input file (FL_FORMAT_* or FL_ERR_*); *ogg: in an Ogg container. */
+static int input_format(const char *path, int *ogg) {
+   fl_inbuf in;
+   int fmt;
+   *ogg = 0;
+   if ((fmt = fl_inbuf_open(&in, path)) != FL_OK) return fmt;
+   fmt = fl_detect_format(&in);
+   *ogg = in.len-in.pos >= 4 && memcmp(in.buf+in.pos, "OggS", 4) == 0;
+   fl_inbuf_close(&in);
+   return fmt;
+}
+
 /* Parses a whole number in [lo, hi]. */
 static int get_int(const char *opt, const char *s, long lo, long hi, int *out) {
    char *end;
@@ -146,7 +187,8 @@ int main(int argc, char **argv) {
    fl_options opt;
    static char opts[256];
    progress_state ps;
-   int i, ret, last = argc-2, silent = 0, force = 0, delete_input = 0, padding_on = 0, to_stdout, in_place;
+   int i, ret, paths, last, silent = 0, force = 0, delete_input = 0, padding_on = 0, to_stdout, in_place;
+   const char *in_path, *out_path;
    double d;
    if (argc == 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)) {
       version();
@@ -156,10 +198,14 @@ int main(int argc, char **argv) {
       usage(stdout);
       return 0;
    }
-   if (argc < 3) {
+   if (argc < 2) {
       usage(stderr);
       return 1;
    }
+   paths = count_paths(argc, argv);
+   last = argc-paths;
+   in_path = argv[last];
+   out_path = argv[argc-1];
    fl_options_init(&opt);
    opt.keep_time = 1;  /* like flac */
    opt.threads = 0;  /* the command line tool uses every CPU (the library default is 1) */
@@ -210,10 +256,7 @@ int main(int argc, char **argv) {
          opt.downmix = a[10] == 'm' ? 1 : 2;
          note(opts, sizeof(opts), a, NULL);
          takes = 0;
-      } else if (strcmp(a, "--format") != 0 && strcmp(a, "--level") != 0 && strcmp(a, "--threads") != 0 &&
-                 strcmp(a, "--rate") != 0 && strcmp(a, "--bits") != 0 && strcmp(a, "--bitrate") != 0 && strcmp(a, "--comp") != 0 &&
-                 strcmp(a, "--framesize") != 0 && strcmp(a, "--quality") != 0 && strcmp(a, "--expect-loss") != 0 &&
-                 strcmp(a, "--padding") != 0 && strcmp(a, "--serial") != 0) {
+      } else if (option_args(a, v) != 1) {
          fprintf(stderr, "Error: unknown option %s (see flapus --help)\n", a);
          return 1;
       } else if (!v) {
@@ -281,37 +324,59 @@ int main(int argc, char **argv) {
       fprintf(stderr, "Error: --bitrate and --quality cannot be combined\n");
       return 1;
    }
-   if (padding_on) opt.padding = (opt.format ? opt.format : fl_format_from_name(argv[argc-1])) == FL_FORMAT_OPUS ? 512 : 8192;
-   to_stdout = strcmp(argv[argc-1], "-") == 0;
+   if (paths == 1) {
+      /* no output: FLAC to FLAC or Opus to Opus onto the input itself */
+      int ogg = 0, fmt = fl_is_std(in_path) ? FL_FORMAT_WAV : input_format(in_path, &ogg);
+      if (fmt == FL_FORMAT_WAV) {
+         usage(stderr);
+         return 1;
+      }
+      if (fmt < 0) {
+         fprintf(stderr, "Error: %s\n", fl_error_text(fmt));
+         return 1;
+      }
+      if (fmt == FL_FORMAT_FLAC && ogg) {
+         fprintf(stderr, "Error: Ogg FLAC input needs an output file (flapus writes native FLAC)\n");
+         return 1;
+      }
+      if (opt.format && opt.format != fmt) {
+         fprintf(stderr, "Error: without an output file, --format must be the input's format\n");
+         return 1;
+      }
+      opt.format = fmt;
+      force = 1;  /* the existing output is the input itself */
+   }
+   if (padding_on) opt.padding = (opt.format ? opt.format : fl_format_from_name(out_path)) == FL_FORMAT_OPUS ? 512 : 8192;
+   to_stdout = strcmp(out_path, "-") == 0;
    if (to_stdout && !opt.format) {
       fprintf(stderr, "Error: output to stdout needs --format\n");
       return 1;
    }
-   if (delete_input && strcmp(argv[argc-2], "-") == 0) {
+   if (delete_input && strcmp(in_path, "-") == 0) {
       fprintf(stderr, "Error: --delete-input-file needs an input file\n");
       return 1;
    }
-   if (!to_stdout && !force && fl_file_exists(argv[argc-1])) {
-      fprintf(stderr, "Error: %s exists (use -f to overwrite it)\n", argv[argc-1]);
+   if (!to_stdout && !force && fl_file_exists(out_path)) {
+      fprintf(stderr, "Error: %s exists (use -f to overwrite it)\n", out_path);
       return 1;
    }
-   in_place = fl_same_file(argv[argc-2], argv[argc-1]);
+   in_place = fl_same_file(in_path, out_path);
    if (delete_input && in_place) {
       fprintf(stderr, "Error: --delete-input-file would delete the output, which is the same file\n");
       return 1;
    }
    opt.comment_options = opts[0] ? opts : NULL;
    memset(&ps, 0, sizeof(ps));
-   ps.name = strcmp(argv[argc-2], "-") == 0 ? "stdin" : argv[argc-2];
+   ps.name = strcmp(in_path, "-") == 0 ? "stdin" : in_path;
    ps.ratio = -1;
    if (!silent) {
       opt.progress = progress;
       opt.progress_user = &ps;
    }
-   ret = fl_convert_file(argv[argc-2], argv[argc-1], &opt);
+   ret = fl_convert_file(in_path, out_path, &opt);
    if (!silent) {
       if (ret == FL_OK && ps.ratio >= 0 && !to_stdout)
-         fprintf(stderr, "\r%s: wrote %lld bytes, ratio=%.3f   \n", ps.name, (long long)fl_file_size(argv[argc-1]), ps.ratio);
+         fprintf(stderr, "\r%s: wrote %lld bytes, ratio=%.3f   \n", ps.name, (long long)fl_file_size(out_path), ps.ratio);
       else if (ret == FL_OK && ps.ratio >= 0) fprintf(stderr, "\r%s: done, ratio=%.3f   \n", ps.name, ps.ratio);
       else if (ret == FL_OK) fprintf(stderr, "\r%s: done              \n", ps.name);
       else if (ps.shown) fprintf(stderr, "\n");
@@ -322,8 +387,8 @@ int main(int argc, char **argv) {
       return 1;
    }
    /* only after success, like flac --delete-input-file */
-   if (delete_input && remove(argv[argc-2]) != 0) {
-      fprintf(stderr, "Error: cannot delete %s\n", argv[argc-2]);
+   if (delete_input && remove(in_path) != 0) {
+      fprintf(stderr, "Error: cannot delete %s\n", in_path);
       return 1;
    }
    return 0;

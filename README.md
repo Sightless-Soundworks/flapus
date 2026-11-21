@@ -95,11 +95,14 @@ To release a new version, change `FLAPUS_VERSION_MAJOR`, `FLAPUS_VERSION_MINOR` 
 ## Command line
 
 ```bash
-flapus [options] input output
+flapus [options] input [output]
 ```
 
 flapus detects the input format from the file content. The output format follows the
 file extension (`.wav`, `.flac`, `.opus`) unless `--format wav|flac|opus` is given.
+Without an output, a FLAC or Opus file is converted onto itself, FLAC to FLAC or Opus to
+Opus (Opus is encoded again, so it loses a little quality each time). WAV input, stdin
+and Ogg FLAC need an output.
 
 ```bash
 flapus music.wav music.flac                   # FLAC subset file (level 5)
@@ -109,6 +112,7 @@ flapus --bitrate 96 music.wav music.opus      # Opus at 96 kbit/s
 flapus music.opus music.flac                  # Opus -> FLAC
 flapus old.flac new.flac                      # recompress, tags and pictures are kept
 flapus -f music.flac music.flac               # recompress in place
+flapus --level 8 music.flac                   # the same without naming the output
 flapus --rate 48000 music.opus music48k.wav
 flapus --delete-input-file music.wav music.flac   # remove music.wav after success
 ffmpeg -i video.mkv -f wav - | flapus - audio.opus   # read from stdin
