@@ -10525,6 +10525,7 @@ FLDEF void fl_flac_frame_decoder_destroy(fl_flac_frame_decoder *dec) {
 #define FL_PI 3.14159265358979323846
 #define FL_SLACK 288   /* extra entries after every sample buffer */
 #define FL_EST_PORDER 4  /* partition order limit of the block cost estimates */
+#define FL_SEARCH_PORDER 6  /* partition order limit of the estimates that compare predictors */
 
 /* SSE2 versions of the hot loops (same results as the C code) */
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
@@ -12189,7 +12190,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
    s.x = x;
    s.x16 = ws->x16;
    s.x16l = ws->x16l;
-   s.porder = cfg->max_porder;
+   s.porder = FL_MIN(cfg->max_porder, FL_SEARCH_PORDER);
    /* the LPC candidates' own estimates matter only for the refinements */
    s.cap = !(cfg->ls || cfg->prec_range > 0 || cfg->irls || cfg->climb);
    /* verbatim */
@@ -12201,7 +12202,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
       bits = 8+(fl_u64)order*bps;
       if (pf && pf->has_u && !wasted) {
          /* block size search: from the prefix sums */
-         bits += fl_rice_estimate_sums(&ws->rws, pf->U[order]+off, 0, n, order, cfg->max_porder, bps > 16 ? 30 : 14,
+         bits += fl_rice_estimate_sums(&ws->rws, pf->U[order]+off, 0, n, order, s.porder, bps > 16 ? 30 : 14,
                                        fl_est_limit(s.best_bits, bits));
          if (bits < s.best_bits) {
             s.best_bits = bits;
@@ -12212,7 +12213,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
       }
       if (fu && !wasted) u = fu[order]+off;
       else if (!fl_fixed_residual(x, n, order, bps, ws->res, ws->u, ws->avx2)) continue;
-      bits += fl_rice_estimate(&ws->rws, u, n, order, cfg->max_porder, bps > 16 ? 30 : 14, fl_est_limit(s.best_bits, bits));
+      bits += fl_rice_estimate(&ws->rws, u, n, order, s.porder, bps > 16 ? 30 : 14, fl_est_limit(s.best_bits, bits));
       if (bits < s.best_bits) {
          s.best_bits = bits;
          s.best.type = 2;

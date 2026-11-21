@@ -133,7 +133,9 @@ Refinements, applied to the best candidate:
 Residual coding:
 
 - Candidates are compared with a fast Rice estimate: partition sums with a correction
-  for the floor; escapes included.
+  for the floor; escapes included. It looks at partition orders up to 6
+  (`FL_SEARCH_PORDER`): the finer ones were a tenth of the time at level 5 and changed
+  the files by less than 0.001 %.
 - The winner gets the exact plan: every partition order, the exact parameter per
   partition, Rice vs Rice2, and escape codes (including 0-bit escapes for silent
   partitions).
