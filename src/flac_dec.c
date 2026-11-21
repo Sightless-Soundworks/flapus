@@ -241,9 +241,12 @@ static int fl_flac_residual(fl_br *b, fl_i64 *r, int n, int order) {
    return 0;
 }
 
-/* Decodes one subframe of n samples with bps bits into x. Returns 0 or -1. */
+/* Decodes one subframe of n samples with bps bits into x. Returns 0 or -1. Samples
+   outside bps bits make the subframe invalid, which also keeps the sums in range. */
+#define FL_OUT(v) ((v) < lo || (v) > hi)
 static int fl_flac_subframe(fl_br *b, fl_i64 *x, int n, int bps) {
    int type, wasted = 0, i, j;
+   fl_i64 lo, hi;
    if (fl_br_bits(b, 1)) return -1;
    type = (int)fl_br_bits(b, 6);
    if (fl_br_bits(b, 1)) {
@@ -252,6 +255,8 @@ static int fl_flac_subframe(fl_br *b, fl_i64 *x, int n, int bps) {
       wasted = (int)w+1;
       bps -= wasted;
    }
+   hi = ((fl_i64)1<<(bps-1))-1;
+   lo = -hi-1;
    if (type == 0) {
       fl_i64 v = fl_br_sbits(b, bps);
       for (i = 0; i < n; i++) x[i] = v;
@@ -263,11 +268,11 @@ static int fl_flac_subframe(fl_br *b, fl_i64 *x, int n, int bps) {
       for (i = 0; i < order; i++) x[i] = fl_br_sbits(b, bps);
       if (fl_flac_residual(b, x, n, order) < 0) return -1;
       switch (order) {
-      case 1: for (i = 1; i < n; i++) x[i] += x[i-1]; break;
-      case 2: for (i = 2; i < n; i++) x[i] += 2*x[i-1]-x[i-2]; break;
-      case 3: for (i = 3; i < n; i++) x[i] += 3*(x[i-1]-x[i-2])+x[i-3]; break;
-      case 4: for (i = 4; i < n; i++) x[i] += 4*(x[i-1]+x[i-3])-6*x[i-2]-x[i-4]; break;
-      default: break;
+      case 0: for (i = 0; i < n; i++) if (FL_OUT(x[i])) return -1; break;
+      case 1: for (i = 1; i < n; i++) { x[i] += x[i-1]; if (FL_OUT(x[i])) return -1; } break;
+      case 2: for (i = 2; i < n; i++) { x[i] += 2*x[i-1]-x[i-2]; if (FL_OUT(x[i])) return -1; } break;
+      case 3: for (i = 3; i < n; i++) { x[i] += 3*(x[i-1]-x[i-2])+x[i-3]; if (FL_OUT(x[i])) return -1; } break;
+      default: for (i = 4; i < n; i++) { x[i] += 4*(x[i-1]+x[i-3])-6*x[i-2]-x[i-4]; if (FL_OUT(x[i])) return -1; } break;
       }
    } else if (type >= 32) {
       int order = type-31, prec, shift;
@@ -284,12 +289,14 @@ static int fl_flac_subframe(fl_br *b, fl_i64 *x, int n, int bps) {
          const fl_i64 *h = x+i-1;
          for (j = 0; j < order; j++) s += c[j]*h[-j];
          x[i] += s>>shift;
+         if (FL_OUT(x[i])) return -1;
       }
    } else return -1;
    if (wasted)
       for (i = 0; i < n; i++) x[i] = (fl_i64)((fl_u64)x[i]<<wasted);
    return 0;
 }
+#undef FL_OUT
 
 typedef struct {
    fl_streaminfo si;

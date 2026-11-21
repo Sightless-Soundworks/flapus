@@ -3,7 +3,7 @@
 typedef struct {
    unsigned char *data;
    int len;
-   fl_i64 granule;  /* granule of the page the packet ends on, -1 if none */
+   fl_i64 granule;  /* granule of the page the packet ends on, -1 if none, -2 if damaged */
    int eos;
 } fl_ogg_packet;
 
@@ -55,8 +55,12 @@ static int fl_ogg_parse(const unsigned char *buf, long size, const char *magic, 
       nseg = buf[pos+26];
       hdr = 27+nseg;
       if (pos+hdr > size) break;
-      granule = 0;
-      for (i = 7; i >= 0; i--) granule = (granule<<8)|buf[pos+6+i];
+      {
+         /* -1: no packet ends here; -2: damaged (beyond 2^62) */
+         fl_u64 g = 0;
+         for (i = 7; i >= 0; i--) g = (g<<8)|buf[pos+6+i];
+         granule = g == ~(fl_u64)0 ? -1 : g < (fl_u64)1<<62 ? (fl_i64)g : -2;
+      }
       ser = buf[pos+14]|(buf[pos+15]<<8)|(buf[pos+16]<<16)|((fl_u32)buf[pos+17]<<24);
       bos = (buf[pos+5]&2) != 0;
       body = pos+hdr;
@@ -558,10 +562,11 @@ static int fl_run_opus(fl_inbuf *in, int rate, int dither, fl_sink *sink) {
       for (li = 0; li < nlinks; li++)
          for (i = links[li].count-1; i >= 2; i--)
             if (links[li].pk[i].granule >= 0) {
-               total += FL_MAX(0, links[li].pk[i].granule-heads[li].pre_skip);
+               /* clamped, so that damaged granules cannot overflow */
+               total = FL_MIN(total+FL_MAX(0, links[li].pk[i].granule-heads[li].pre_skip), (fl_i64)1<<50);
                break;
             }
-      fmt.frames = total*rate/48000;
+      fmt.frames = total/48000*rate+total%48000*rate/48000;
    }
    fl_parse_comments(&fmt, links[0].pk[1].data+8, links[0].pk[1].len-8);
    if ((ret = sink->start(sink, &fmt)) != FL_OK) goto done;
@@ -588,6 +593,10 @@ static int fl_run_opus(fl_inbuf *in, int rate, int dither, fl_sink *sink) {
             total += d > 0 ? d : 0;
          }
          page_gp = s->pk[last].granule;
+         if (page_gp < -1) {
+            ret = FL_ERR_BAD_FILE;
+            goto done;
+         }
          if (prev_gp == -1) {
             /* first audio page; if it is also the last one and holds more audio than its
                granule position, the stream starts at 0 and the end is trimmed (opusfile) */
