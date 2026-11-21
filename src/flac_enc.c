@@ -1082,9 +1082,10 @@ typedef struct {
 
 /* fu: the segment's fixed residuals of this channel (see fl_flac_sink) or NULL. quick: P and
    U[2] (quick estimate); light: U of every order (light search). An encoder always passes
-   the same flags. */
-static int fl_prefix_build(fl_prefix *pf, const fl_i32 *x, fl_u32 *const *fu, int len, int bps, int quick, int light) {
-   int k, i, sh = bps > 20 ? bps-20 : 0;
+   the same flags. Blocks start and end at multiples of step or at len, and the quick
+   estimate reads P only within FL_DP_ORDER of them, so only those entries are stored. */
+static int fl_prefix_build(fl_prefix *pf, const fl_i32 *x, fl_u32 *const *fu, int len, int bps, int quick, int light, int step) {
+   int k, i, m, c, sh = bps > 20 ? bps-20 : 0;
    if (len+1 > pf->cap) {
       for (k = 0; k <= FL_DP_ORDER && quick; k++) {
          free(pf->P[k]);
@@ -1104,11 +1105,16 @@ static int fl_prefix_build(fl_prefix *pf, const fl_i32 *x, fl_u32 *const *fu, in
       for (i = 0; i+k < len; i++) pf->U[k][i+1] = pf->U[k][i]+fu[k][i];
    }
    for (k = 0; k <= FL_DP_ORDER && quick; k++) {
-      fl_i64 *P = pf->P[k], acc = 0;
+      fl_i64 *P = pf->P[k], acc = 0;  /* acc = P[m] */
       for (i = 0; i <= k && i <= len; i++) P[i] = 0;
-      for (i = k; i < len; i++) {
-         acc += (fl_i64)(x[i]>>sh)*(x[i-k]>>sh);
-         P[i+1] = acc;
+      for (m = k, c = 0; m < len; c = c+step < len ? c+step : len) {
+         int lo = FL_MAX(c-FL_DP_ORDER, m), hi = FL_MIN(c+FL_DP_ORDER, len);
+         for (; m < lo; m++) acc += (fl_i64)(x[m]>>sh)*(x[m-k]>>sh);
+         if (m <= hi) P[m] = acc;
+         for (; m < hi; m++) {
+            acc += (fl_i64)(x[m]>>sh)*(x[m-k]>>sh);
+            P[m+1] = acc;
+         }
       }
    }
    return 0;
@@ -2156,13 +2162,14 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
    if (s->cfg.unit || (s->cfg.one_mode && s->stereo)) {
       /* for the block costs and quick estimates */
       int fail = 0, l = s->cfg.unit && s->cfg.dp_search, q = !l || (s->cfg.one_mode && s->stereo);
+      int step = s->cfg.unit ? s->cfg.unit : s->cfg.fixed_block;
       if (s->stereo) {
-         fail |= fl_prefix_build(&s->pf[0], s->buf[0], FL_FU(s, 0), len, s->bits, q, l);
-         fail |= fl_prefix_build(&s->pf[1], s->buf[1], FL_FU(s, 1), len, s->bits, q, l);
-         fail |= fl_prefix_build(&s->pf[2], s->side, FL_FU(s, 2), len, s->bits+1, q, l);
-         fail |= fl_prefix_build(&s->pf[3], s->mid, FL_FU(s, 3), len, s->bits, q, l);
+         fail |= fl_prefix_build(&s->pf[0], s->buf[0], FL_FU(s, 0), len, s->bits, q, l, step);
+         fail |= fl_prefix_build(&s->pf[1], s->buf[1], FL_FU(s, 1), len, s->bits, q, l, step);
+         fail |= fl_prefix_build(&s->pf[2], s->side, FL_FU(s, 2), len, s->bits+1, q, l, step);
+         fail |= fl_prefix_build(&s->pf[3], s->mid, FL_FU(s, 3), len, s->bits, q, l, step);
       } else
-         for (c = 0; c < s->C; c++) fail |= fl_prefix_build(&s->pf[c], s->buf[c], FL_FU(s, c), len, s->bits, q, l);
+         for (c = 0; c < s->C; c++) fail |= fl_prefix_build(&s->pf[c], s->buf[c], FL_FU(s, c), len, s->bits, q, l, step);
       if (fail) return FL_ERR_ALLOC;
    }
    if (!s->cfg.unit) {
