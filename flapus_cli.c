@@ -18,7 +18,7 @@ static void usage(FILE *f) {
       "      --format F       output format: wav, flac or opus (overrides the extension)\n"
       "      --padding [N]    free bytes after the tags, so tags can be edited later:\n"
       "                       N, or without N 8192 for FLAC and 512 for Opus\n"
-      "      --no-padding     no free bytes (the default)\n"
+      "                       (default: none)\n"
       "      --no-timestamp   do not give the output the input's modification time (and,\n"
       "                       FLAC to FLAC or Opus to Opus, its creation time)\n"
       "  -f, --force          overwrite an existing output file\n"
@@ -223,9 +223,6 @@ int main(int argc, char **argv) {
       } else if (strcmp(a, "--no-timestamp") == 0) {
          opt.keep_time = 0;
          takes = 0;
-      } else if (strcmp(a, "--no-padding") == 0) {
-         opt.padding = 0;
-         takes = 0;
       } else if (strcmp(a, "--padding") == 0 && (!v || !*v || strspn(v, "0123456789") != strlen(v))) {
          padding_on = 1;  /* without a number: the standard size */
          takes = 0;
@@ -301,6 +298,7 @@ int main(int argc, char **argv) {
          ok = get_int(a, v, 0, 100, &opt.expect_loss);
       } else if (strcmp(a, "--padding") == 0) {
          ok = get_int(a, v, 0, 0xFFFFFF, &opt.padding);
+         padding_on = 0;  /* the last --padding counts */
       } else if (strcmp(a, "--serial") == 0) {
          if ((ok = get_num(a, v, 0, 4294967295.0, &d)) && d != floor(d)) {
             fprintf(stderr, "Error: --serial must be a whole number\n");
