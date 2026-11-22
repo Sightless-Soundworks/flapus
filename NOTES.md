@@ -257,7 +257,9 @@ Speed and output:
   That made 24-bit audio about 13 % faster, and CD audio at level 5 (side channel)
   about 7 %.
 - With `threads` above 1, block costs and frames are computed in parallel (static
-  interleaving, per-thread work spaces). The output does not depend on the thread
+  interleaving, per-thread work spaces), and so are the fixed residuals and prefix sums
+  of the sources of a segment (one source per thread; they were about 8 % of the time at
+  level 5 with one thread). The output does not depend on the thread
   count. The library default is one thread; the command line tool uses one per CPU.
 - Subset limits apply unless `--lax`: partition order ≤ 8 at every rate, and up to
   48 kHz order ≤ 12 and blocks ≤ 4608. Above 48 kHz, blocks ≤ 16384.

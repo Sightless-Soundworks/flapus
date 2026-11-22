@@ -2333,8 +2333,9 @@ typedef struct {
    int *side_bad;     /* 32-bit audio: side samples beyond 32 bits before each position */
    fl_u32 *fu[8][5];    /* zigzag fixed residuals of the segment per source and order: fu[v][o][i-o]
                            for sample i >= o; computed once instead of per block (bits <= 26) */
-   fl_i32 *fres;
+   fl_i32 *fres[8];     /* per source: the residuals fl_fixed_residual also writes */
    int fu_ok;
+   int prep_prefix, prep_quick, prep_light, prep_step, prep_fail[8];  /* for fl_source_job */
    fl_u64 sample_pos, frame_no;
    fl_u32 min_frame, max_frame;
    int min_block, max_block, last_block;
@@ -2608,10 +2609,11 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
    s->fu_ok = s->bits <= 26;
    if (s->fu_ok) {
       int ns = s->stereo ? 4 : s->C, o;
-      if (!(s->fres = (fl_i32*)malloc(sizeof(fl_i32)*slen))) return FL_ERR_ALLOC;
-      for (c = 0; c < ns; c++)
+      for (c = 0; c < ns; c++) {
+         if (!(s->fres[c] = (fl_i32*)malloc(sizeof(fl_i32)*slen))) return FL_ERR_ALLOC;
          for (o = 0; o < 5; o++)
             if (!(s->fu[c][o] = (fl_u32*)malloc(sizeof(fl_u32)*slen))) return FL_ERR_ALLOC;
+      }
    }
    s->avx2 = fl_cpu_avx2();
    for (c = 0; c < 8; c++) s->pf[c].avx2 = s->avx2;
@@ -2871,9 +2873,24 @@ static void fl_frame_job_run(void *ctx, int t, int nt) {
    }
 }
 
-/* Side, mid and the fixed residuals of the first len buffered samples. */
-static void fl_flac_segment_prep(fl_flac_sink *s, int len) {
-   int c, i;
+/* Thread body: the fixed residuals and (with prep_prefix) the prefix sums of the sources
+   t, t+nt, ... of the segment. */
+static void fl_source_job(void *ctx, int t, int nt) {
+   fl_flac_sink *s = (fl_flac_sink*)ctx;
+   int v, o, len = s->seg_len;
+   for (v = t; v < (s->stereo ? 4 : s->C); v += nt) {
+      const fl_i32 *src = !s->stereo || v < 2 ? s->buf[v] : v == 2 ? s->side : s->mid;
+      int bps = s->bits+(s->stereo && v == 2);
+      for (o = 0; o <= 4 && o < len && s->fu_ok; o++) fl_fixed_residual(src, len, o, bps, s->fres[v], s->fu[v][o], s->avx2);
+      s->prep_fail[v] = s->prep_prefix &&
+                        fl_prefix_build(&s->pf[v], src, FL_FU(s, v), len, bps, s->prep_quick, s->prep_light, s->prep_step) < 0;
+   }
+}
+
+/* Side, mid, and in parallel the fixed residuals of the first len buffered samples and
+   (with prefix) their prefix sums. Returns 0 or -1. */
+static int fl_flac_segment_prep(fl_flac_sink *s, int len, int prefix) {
+   int c, i, ns = s->stereo ? 4 : s->C;
    s->seg_len = len;
    if (s->stereo) {
       const fl_i32 *l = s->buf[0], *r = s->buf[1];
@@ -2884,13 +2901,11 @@ static void fl_flac_segment_prep(fl_flac_sink *s, int len) {
          if (s->side_bad) s->side_bad[i+1] = s->side_bad[i]+(d != s->side[i]);
       }
    }
-   if (s->fu_ok) {
-      int ns = s->stereo ? 4 : s->C, o;
-      for (c = 0; c < ns; c++) {
-         const fl_i32 *src = !s->stereo || c < 2 ? s->buf[c] : c == 2 ? s->side : s->mid;
-         for (o = 0; o <= 4 && o < len; o++) fl_fixed_residual(src, len, o, s->bits+(s->stereo && c == 2), s->fres, s->fu[c][o], s->avx2);
-      }
-   }
+   s->prep_prefix = prefix;
+   fl_parallel(fl_source_job, s, FL_MIN(s->nthreads, ns));
+   for (c = 0; c < ns; c++)
+      if (s->prep_fail[c]) return -1;
+   return 0;
 }
 
 /* Encodes the first 'len' buffered samples and shifts the rest down. */
@@ -2898,20 +2913,11 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
    int ret = FL_OK, c, i, j, pos = 0;
    if (len <= 0) return FL_OK;
    s->njobs = 0;
-   fl_flac_segment_prep(s, len);
-   if (s->cfg.unit || (s->cfg.one_mode && s->stereo)) {
-      /* for the block costs and quick estimates */
-      int fail = 0, l = s->cfg.unit && s->cfg.dp_search, q = !l || (s->cfg.one_mode && s->stereo);
-      int step = s->cfg.unit ? s->cfg.unit : s->cfg.fixed_block;
-      if (s->stereo) {
-         fail |= fl_prefix_build(&s->pf[0], s->buf[0], FL_FU(s, 0), len, s->bits, q, l, step);
-         fail |= fl_prefix_build(&s->pf[1], s->buf[1], FL_FU(s, 1), len, s->bits, q, l, step);
-         fail |= fl_prefix_build(&s->pf[2], s->side, FL_FU(s, 2), len, s->bits+1, q, l, step);
-         fail |= fl_prefix_build(&s->pf[3], s->mid, FL_FU(s, 3), len, s->bits, q, l, step);
-      } else
-         for (c = 0; c < s->C; c++) fail |= fl_prefix_build(&s->pf[c], s->buf[c], FL_FU(s, c), len, s->bits, q, l, step);
-      if (fail) return FL_ERR_ALLOC;
-   }
+   /* prefix sums for the block costs and quick estimates */
+   s->prep_light = s->cfg.unit && s->cfg.dp_search;
+   s->prep_quick = !s->prep_light || (s->cfg.one_mode && s->stereo);
+   s->prep_step = s->cfg.unit ? s->cfg.unit : s->cfg.fixed_block;
+   if (fl_flac_segment_prep(s, len, s->cfg.unit || (s->cfg.one_mode && s->stereo)) < 0) return FL_ERR_ALLOC;
    if (!s->cfg.unit) {
       for (pos = 0; pos < len; pos += s->cfg.fixed_block) {
          s->jobs[s->njobs].off = pos;
@@ -3067,8 +3073,8 @@ static void fl_flacenc_destroy(fl_sink *sk) {
       free(s->buf[c]);
       fl_prefix_free(&s->pf[c]);
       for (o = 0; o < 5; o++) free(s->fu[c][o]);
+      free(s->fres[c]);
    }
-   free(s->fres);
    free(s->side);
    free(s->side_bad);
    free(s->seek);
@@ -3181,7 +3187,7 @@ FLDEF int fl_flac_frame_encode(fl_flac_frame_encoder *e, const int *pcm, int fra
       if (shift && (fl_i32)((fl_u32)pcm[i]<<shift)>>shift != pcm[i]) return FL_ERR_BAD_ARG;  /* beyond bits */
    for (c = 0; c < C; c++)
       for (i = 0; i < frames; i++) s->buf[c][i] = pcm[i*C+c];
-   fl_flac_segment_prep(s, frames);
+   fl_flac_segment_prep(s, frames, 0);
    memset(&job, 0, sizeof(job));
    job.len = frames;
    s->wk[0].bw.len = 0;

@@ -59,8 +59,8 @@ extern "C" {
 
 /* Version, set only here in src/api.h. FLAPUS_VERSION is "MAJOR.MINOR", plus ".PATCH"
    if PATCH is not 0. */
-#define FLAPUS_VERSION_MAJOR 1
-#define FLAPUS_VERSION_MINOR 1
+#define FLAPUS_VERSION_MAJOR 2
+#define FLAPUS_VERSION_MINOR 0
 #define FLAPUS_VERSION_PATCH 0
 
 #define FLAPUS_STR_(x) #x

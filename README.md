@@ -8,7 +8,7 @@ decoding.
 | Format | Encoder | Decoder |
 |--------|---------|---------|
 | Ogg Opus | libopus 1.6.1 itself, built in, for the **best possible encoding** | based on libopus 1.6.1 and opusfile 0.12, made for the **best possible decoding** |
-| FLAC | own encoder built for the **smallest files** (0.6-1.9 % below `flac -8` within the FLAC subset, 2-7 % with `--lax`) | complete RFC 9639 decoder, byte-identical WAV output to `flac -d` |
+| FLAC | own encoder built for the **smallest files** (0.8-1.0 % below `flac -8` within the FLAC subset, 1.5-2.3 % with `--lax` at level 8) | complete RFC 9639 decoder, byte-identical WAV output to `flac -d` |
 
 Any input converts to any output: WAV, FLAC, Ogg FLAC (input only) and Ogg Opus. That
 includes FLAC → Opus, Opus → FLAC and FLAC → FLAC (recompression).
@@ -172,19 +172,20 @@ file it links to, so the links stay.
 **FLAC output options**
 
 - `--level N` sets the effort: 0 (fastest) to 8 (smallest). The default is 5.
-- `--lax` allows streams outside the FLAC subset: LPC order up to 32 and blocks up to
-  16384 samples. The files are valid FLAC and decode with libFLAC and FFmpeg, but some
-  hardware players only support the subset. Bit depths other than 8, 12, 16, 20, 24 and
+- `--lax` allows streams outside the FLAC subset: LPC order up to 32, Rice partition
+  order up to 15 and blocks up to 16384 samples (32768 above 48 kHz). The files are
+  valid FLAC and decode with libFLAC and FFmpeg, but some hardware players only support
+  the subset. Bit depths other than 8, 12, 16, 20, 24 and
   32 and sample rates that a frame header cannot hold (such as 700 kHz) are outside the
   subset as well; without `--lax` they stop with an error, as with `flac`.
 - `-V` or `--verify` decodes every frame again and compares it with the input, as
   `flac -V` does; a mismatch stops with an error. It is off by default and makes level 5
-  about 10 % slower.
+  about 20 % slower.
 - `--no-seektable` leaves out the seek table (a point every 10 seconds by default).
 - `--padding` reserves 8192 free bytes for later tag edits, `--padding N` N bytes. By
   default there is no padding.
-- `--threads N` sets the number of encoder threads. The default is 0, one per CPU (in
-  the library, `threads` defaults to 1). The output does not depend on it.
+- `--threads N` sets the number of encoder threads, at most 64. The default is 0, one
+  per CPU (in the library, `threads` defaults to 1). The output does not depend on it.
 
 **Sample format options** (WAV and FLAC output from any input, and Opus output from
 Opus input)
@@ -236,55 +237,37 @@ downmixed to mono only, ReplayGain reference loudness in LUFS).
   multiply-add, the same `src/math.c` functions); `tools/build_ref_opusenc.sh` builds
   that opusenc from the opus, libopusenc, opus-tools and libogg sources. An opusenc
   built with SIMD (or with another libm) writes slightly different packets of the same
-  quality, because its sums are added in another order.
-
-Encoding speed for 3 minutes of 16-bit stereo music at 44.1 kHz (default bitrate,
-complexity 10, one core of an x86-64 server, GCC 13 `-O2`):
-
-| Encoder | Time |
-|---------|-----:|
-| opusenc, libopus with SSE4.1/AVX2 | 1.98 s |
-| opusenc, libopus plain C | 2.29 s |
-| flapus | 2.27 s |
+  quality, because its sums are added in another order. With only the plain C code
+  paths, the encoder is about as fast as such an opusenc, and somewhat slower than one
+  with SIMD.
 
 ### FLAC compression
 
 The table compares file sizes with `flac -8 --no-padding --no-seektable` (flac 1.4.3),
-both without padding and seek table. "CD music" is 100 seconds of 16-bit stereo music;
-"test corpus" is 190 seconds of music and test signals, 8-24 bits, mono to 6 channels,
-44.1-96 kHz.
+both without padding and seek table. The material is the audio of the 64 files in
+`subset/` of the IETF FLAC test files (<https://github.com/ietf-wg-cellar/flac-test-files>),
+decoded with `flac -d`: "CD audio" is the 16-bit stereo files at 44.1 and 48 kHz
+(32.5 MB as `flac -8`), "all" adds 8-24 bits, mono to 8 channels and 22-384 kHz (123 MB).
 
-| Material | level 4 | level 5 (default) | level 8 | level 8 `--lax` |
+| Material | level 2 | level 5 (default) | level 8 | level 8 `--lax` |
 |----------|--------:|------------------:|--------:|----------------:|
-| CD music | -0.45 % | -0.45 % | -0.50 % | -3.49 % |
-| test corpus | -2.54 % | -2.59 % | -2.71 % | -5.31 % |
+| CD audio | -0.49 % | -0.78 % | -0.89 % | -2.33 % |
+| all | -0.63 % | -0.87 % | -1.02 % | -1.46 % |
 
-The table below shows encoding speed for the CD music, as multiples of real time, on a
-2-core Xeon at 2.1 GHz. The command line tool uses every CPU by default. flac 1.4.3
-encodes the same music at 214x (`-8`) and 507x (`-5`) with one thread.
-
-| Level | 1 thread (`--threads 1`) | 2 threads |
-|-------|-------------------------:|----------:|
-| 0 | 131x | 186x |
-| 2 | 55x | 62x |
-| 3 | 25x | 35x |
-| 5 (default) | 19x | 29x |
-| 8 | 3.8x | 7.3x |
-
-Level 2 is already 0.26 % smaller than `flac -8` on the CD music. From level 5 to 8 the
-files shrink by about 0.1 %, at a fifth of the speed. Use `--level 8` when the last
-bytes matter more than time.
+With one thread on CD audio, level 2 takes about 1.5 times as long as `flac -8` and
+level 5 a little over twice as long; level 8 takes about 6 times as long as level 5 for
+about 0.1 % smaller files. Level 1 is about as large as `flac -8`, and level 0 about
+0.7 % larger. Use `--level 8` when the last bytes matter more than time. The command
+line tool uses every CPU by default.
 
 flapus is slower than flac mainly because it searches more: variable block sizes (each
-stretch of audio is costed in several block lengths before it is encoded) and every
-coefficient precision for the best predictor. The block size search alone gives about
+stretch of audio is costed in several block lengths before it is encoded) and several
+coefficient precisions for the best predictor. The block size search alone gives about
 0.4-1 %.
 
 Above 48 kHz the encoder uses LPC orders up to 32 and blocks up to 16384 samples (both
-within the subset there), and searches the block sizes on a coarser grid. At level 5 a
-96 kHz 24-bit stereo file then encodes at about 2.4x real time with one thread; 96 to
-384 kHz material from the IETF FLAC test files encoded 7.7 times faster than with the
-fine grid, with 0.06 % smaller files.
+within the subset there), and searches the block sizes on a coarser grid, which is 5-8
+times faster for about the same size (see NOTES.md).
 
 Like `flac`, flapus writes a seek table with a point every 10 seconds
 (`--no-seektable` leaves it out). Padding is off by default, so the file holds nothing
@@ -402,7 +385,8 @@ line.
 - **FLAC**: any bit depth from 4 to 32 bits, 1-8 channels, fixed or variable block
   size. Ogg FLAC and leading ID3v2 tags are accepted. The MD5 is checked, and a
   mismatch is reported as `FL_ERR_CHECKSUM`. A file that ends before the length in its
-  STREAMINFO is reported as damaged (`FL_ERR_BAD_FILE`), also without an MD5. Streams
+  STREAMINFO is reported as damaged (`FL_ERR_BAD_FILE`), also without an MD5; a file
+  with more samples is decoded to its end (`flac -d` stops at the length). Streams
   whose channel count, bit depth or sample rate changes between frames are not
   supported (`FL_ERR_UNSUPPORTED`); if the first frame already differs from the
   STREAMINFO, the file is reported as damaged.
@@ -416,8 +400,9 @@ line.
 **FLAC output**
 
 - FLAC takes integer PCM only, from 4 to 32 bits and 1-8 channels; float WAV input needs
-  `--bits`. Bit depths other than 8, 12, 16, 20, 24 and 32 need `--lax` (or `--bits`). 32-bit audio gets LPC and stereo decorrelation (33-bit side channel) like
-  any other bit depth.
+  `--bits`. Bit depths other than 8, 12, 16, 20, 24 and 32 need `--lax` (or `--bits`).
+  32-bit audio gets LPC and stereo decorrelation (33-bit side channel) like any other
+  bit depth.
 - Tags and pictures carry over between FLAC and Opus:
   - FLAC pictures become `METADATA_BLOCK_PICTURE` comments in Opus, and back.
   - On Opus → FLAC the Opus encoder tags are dropped.
@@ -484,7 +469,8 @@ the Opus output options); pass it in the `OPUSENC` variable. The scripts run
     them.
 - The FLAC decoder gives byte-identical WAV files to `flac -d` on 88 files encoded with
   different flac settings (`-0` to `-8ep`, `--lax -l 32 -b 16384`, block size 16 to
-  65535). FFmpeg decodes flapus FLAC files exactly as well.
+  65535) and on the 64 files in `subset/` of the IETF FLAC test files. FFmpeg decodes
+  flapus FLAC files exactly as well.
 - `run_dec.sh` decodes the Opus test files (`mand*.opus`) and compares with opusdec's
   WAV files (`mand*.wav`), which must be in the folder above the project.
 - `test/api`: a two-file program using only the public API. It also checks that reading
