@@ -483,8 +483,38 @@ static fl_u64 fl_rice_part_best_L(const fl_u64 *L, int B, fl_u32 m, fl_u32 n, in
    return best;
 }
 
+/* L[b] = sum of (u mod 2^b) for b < B and L[B] = sum of u (all u < 2^B), from the number of
+   u with bit j set: L[b] = sum over j < b of count_j*2^j. */
+static void fl_masked_sums(const fl_u32 *u, int n, int B, fl_u64 *L) {
+   fl_u32 cnt[32];
+   fl_u64 acc = 0;
+   int i = 0, b;
+#ifdef FL_FLAC_SSE2
+   __m128i vc[32], one = _mm_set1_epi32(1);
+   for (b = 0; b < B; b++) vc[b] = _mm_setzero_si128();
+   for (; i+3 < n; i += 4) {
+      __m128i v = _mm_loadu_si128((const __m128i*)(u+i));
+      for (b = 0; b < B; b++) vc[b] = _mm_add_epi32(vc[b], _mm_and_si128(_mm_srli_epi32(v, b), one));
+   }
+   for (b = 0; b < B; b++) {
+      fl_u32 t[4];
+      _mm_storeu_si128((__m128i*)t, vc[b]);
+      cnt[b] = t[0]+t[1]+t[2]+t[3];
+   }
+#else
+   for (b = 0; b < B; b++) cnt[b] = 0;
+#endif
+   for (; i < n; i++)
+      for (b = 0; b < B; b++) cnt[b] += u[i]>>b&1;
+   for (b = 0; b < B; b++) {
+      L[b] = acc;
+      acc += (fl_u64)cnt[b]<<b;
+   }
+   L[B] = acc;
+}
+
 /* Exact plan: best partition order and parameters (method 0 and 1 compared). With room in
-   L (FL_RICE_L entries), the masked sums of the finest partitions (one pass per bit) give
+   L (FL_RICE_L entries), the masked sums of the finest partitions (fl_masked_sums) give
    every parameter of every partition order without another pass. */
 #define FL_RICE_L (2*256*33)
 static fl_u64 fl_rice_exact(fl_rice_plan *plan, int *tmp, fl_u64 *L, fl_u32 *lor, const fl_u32 *u, int n, int order,
@@ -495,6 +525,8 @@ static fl_u64 fl_rice_exact(fl_rice_plan *plan, int *tmp, fl_u64 *L, fl_u32 *lor
    int i, B, fparts = 1<<pmax;
    for (i = 0; i < n-order; i++) all |= u[i];
    B = fl_bitlen(all);
+   /* below 2^15, k = 14 costs at most as much as any larger k, so Rice2 cannot win */
+   if (B <= 15) allow_rice2 = 0;
    if (2*fparts <= 512 && 2*fparts*(B+1) <= FL_RICE_L) {
       /* heap order: level p starts at 2^p-1, the halves of j are 2j+1 and 2j+2 */
       int psize = n>>pmax, b;
@@ -505,13 +537,7 @@ static fl_u64 fl_rice_exact(fl_rice_plan *plan, int *tmp, fl_u64 *L, fl_u32 *lor
          fl_u32 o = 0;
          for (i = 0; i < cnt; i++) o |= q[i];
          lor[at] = o;
-         for (b = 0; b <= B; b++) {
-            fl_u64 sum = 0;
-            fl_u32 mask = b == 32 ? 0xFFFFFFFFu : (fl_u32)(((fl_u64)1<<b)-1);
-            if (b == B) mask = 0xFFFFFFFFu;
-            for (i = 0; i < cnt; i++) sum += q[i]&mask;
-            Lj[b] = sum;
-         }
+         fl_masked_sums(q, cnt, B, Lj);
          q += cnt;
       }
       for (j = fparts-2; j >= 0; j--) {
