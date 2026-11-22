@@ -53,5 +53,18 @@ for f in files:
     t = read(f)
     for m in re.finditer(r'^(?:silk_DWORD_ALIGN\s+)?(?:static\s+)?const\s+[\w ]+?\s*(?:\*\s*const\s+)?\b(\w+)\s*(?:\[[^\]]*\]\s*)*=', t, re.M):
         emit(silk, f, m.group(1))
-txt = '\n'.join(silk)
+# only the tables the decoder uses, directly or through another kept table (the rest is
+# encoder data)
+def used_only(tables, code):
+    keep = []
+    while True:
+        text = code + ''.join(keep)
+        more = [t for t in tables if t not in keep and
+                re.search(r'\b' + re.search(r'(\w+)\s*(?:\[[^\]]*\])*\s*=', t).group(1) + r'\b', text)]
+        if not more: break
+        keep += more
+    return [t for t in tables if t in keep]
+code = ''.join(open(os.path.join(OUT, f), encoding='utf-8').read() for f in os.listdir(OUT)
+               if f.endswith('.c') and f != 'tables_silk.c')
+txt = '\n'.join(used_only(silk, code))
 open(os.path.join(OUT, 'tables_silk.c'), 'w').write('/* SILK constant tables (from the Opus reference). */\n' + txt)

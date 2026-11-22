@@ -2357,16 +2357,6 @@ static const fl_u32 *const fl_pvq_u_row[15] = {
 #define CELT_PVQ_V(n,k) (CELT_PVQ_U(n,k)+CELT_PVQ_U(n,(k)+1))
 
 /* FLOAT_APPROX versions of log2/exp2 (libopus default on x86). */
-static const float fl_log2_x_norm_coeff[8] = {
-   1.000000000000000000000000000f, 8.88888895511627197265625e-01f,
-   8.00000000000000000000000e-01f, 7.27272748947143554687500e-01f,
-   6.66666686534881591796875e-01f, 6.15384638309478759765625e-01f,
-   5.71428596973419189453125e-01f, 5.33333361148834228515625e-01f};
-static const float fl_log2_y_norm_coeff[8] = {
-   0.0000000000000000000000000000f, 1.699250042438507080078125e-01f,
-   3.219280838966369628906250e-01f, 4.594316184520721435546875e-01f,
-   5.849624872207641601562500e-01f, 7.004396915435791015625000e-01f,
-   8.073549270629882812500000e-01f, 9.068905711174011230468750e-01f};
 static float fl_celt_exp2(float x) {
    fl_i32 integer;
    float frac;
@@ -4671,21 +4661,8 @@ static const fl_u8 fl_LTP_gain_iCDF_2[32] = {
         24, 20, 16, 12, 9, 5, 2, 0
 };
 
-static const fl_u8 fl_LTP_gain_BITS_Q5_0[8] = {
-        15, 131, 138, 138, 155, 155, 173, 173
-};
 
-static const fl_u8 fl_LTP_gain_BITS_Q5_1[16] = {
-        69, 93, 115, 118, 131, 138, 141, 138,
-       150, 150, 155, 150, 155, 160, 166, 160
-};
 
-static const fl_u8 fl_LTP_gain_BITS_Q5_2[32] = {
-       131, 128, 134, 141, 141, 141, 145, 145,
-       145, 150, 155, 155, 155, 155, 160, 160,
-       160, 160, 166, 166, 173, 173, 182, 192,
-       182, 192, 192, 192, 205, 192, 205, 224
-};
 
 static const fl_u8 *const fl_LTP_gain_iCDF_ptrs[NB_LTP_CBKS] = {
     fl_LTP_gain_iCDF_0,
@@ -4693,11 +4670,6 @@ static const fl_u8 *const fl_LTP_gain_iCDF_ptrs[NB_LTP_CBKS] = {
     fl_LTP_gain_iCDF_2
 };
 
-static const fl_u8 *const fl_LTP_gain_BITS_Q5_ptrs[NB_LTP_CBKS] = {
-    fl_LTP_gain_BITS_Q5_0,
-    fl_LTP_gain_BITS_Q5_1,
-    fl_LTP_gain_BITS_Q5_2
-};
 
 static const fl_i8 fl_LTP_gain_vq_0[8][5] = {
 {
@@ -4882,31 +4854,10 @@ static const fl_i8 *const fl_LTP_vq_ptrs_Q7[NB_LTP_CBKS] = {
     (fl_i8 *)&fl_LTP_gain_vq_2[0][0]
 };
 
-static const fl_u8 fl_LTP_gain_vq_0_gain[8] = {
-      46, 2, 90, 87, 93, 91, 82, 98
-};
 
-static const fl_u8 fl_LTP_gain_vq_1_gain[16] = {
-     109, 120, 118, 12, 113, 115, 117, 119,
-      99, 59, 87, 111, 63, 111, 112, 80
-};
 
-static const fl_u8 fl_LTP_gain_vq_2_gain[32] = {
-     126, 124, 125, 124, 129, 121, 126, 23,
-     132, 127, 127, 127, 126, 127, 122, 133,
-     130, 134, 101, 118, 119, 145, 126, 86,
-     124, 120, 123, 119, 170, 173, 107, 109
-};
 
-static const fl_u8 *const fl_LTP_vq_gain_ptrs_Q7[NB_LTP_CBKS] = {
-    &fl_LTP_gain_vq_0_gain[0],
-    &fl_LTP_gain_vq_1_gain[0],
-    &fl_LTP_gain_vq_2_gain[0]
-};
 
-static const fl_i8 fl_LTP_vq_sizes[NB_LTP_CBKS] = {
-    8, 16, 32
-};
 
 static const fl_u8 fl_NLSF_CB1_NB_MB_Q8[320] = {
         12, 35, 60, 83, 108, 132, 157, 180,
@@ -5347,21 +5298,7 @@ static const fl_u8 fl_uniform8_iCDF[8] = { 224, 192, 160, 128, 96, 64, 32, 0 };
 
 static const fl_u8 fl_NLSF_EXT_iCDF[7] = { 100, 40, 16, 7, 3, 1, 0 };
 
-static const fl_i32 fl_Transition_LP_B_Q28[TRANSITION_INT_NUM][TRANSITION_NB] = {
-{ 250767114, 501534038, 250767114 },
-{ 209867381, 419732057, 209867381 },
-{ 170987846, 341967853, 170987846 },
-{ 131531482, 263046905, 131531482 },
-{ 89306658, 178584282, 89306658 }
-};
 
-static const fl_i32 fl_Transition_LP_A_Q28[TRANSITION_INT_NUM][TRANSITION_NA] = {
-{ 506393414, 239854379 },
-{ 411067935, 169683996 },
-{ 306733530, 116694253 },
-{ 185807084, 77959395 },
-{ 35497197, 57401098 }
-};
 
 static const fl_u8 fl_pitch_lag_iCDF[2*(PITCH_EST_MAX_LAG_MS-PITCH_EST_MIN_LAG_MS)] = {
        253, 250, 244, 233, 212, 182, 150, 131,
@@ -5398,9 +5335,6 @@ static const fl_u8 fl_pitch_contour_10_ms_NB_iCDF[3] = {
        113, 63, 0
 };
 
-static const fl_u8 fl_max_pulses_table[4] = {
-         8, 10, 12, 16
-};
 
 static const fl_u8 fl_pulses_per_block_iCDF[10][18] = {
 {
@@ -5455,53 +5389,6 @@ static const fl_u8 fl_pulses_per_block_iCDF[10][18] = {
 }
 };
 
-static const fl_u8 fl_pulses_per_block_BITS_Q5[9][18] = {
-{
-        31, 57, 107, 160, 205, 205, 255, 255,
-       255, 255, 255, 255, 255, 255, 255, 255,
-       255, 255
-},
-{
-        69, 47, 67, 111, 166, 205, 255, 255,
-       255, 255, 255, 255, 255, 255, 255, 255,
-       255, 255
-},
-{
-        82, 74, 79, 95, 109, 128, 145, 160,
-       173, 205, 205, 205, 224, 255, 255, 224,
-       255, 224
-},
-{
-       125, 74, 59, 69, 97, 141, 182, 255,
-       255, 255, 255, 255, 255, 255, 255, 255,
-       255, 255
-},
-{
-       173, 115, 85, 73, 76, 92, 115, 145,
-       173, 205, 224, 224, 255, 255, 255, 255,
-       255, 255
-},
-{
-       166, 134, 113, 102, 101, 102, 107, 118,
-       125, 138, 145, 155, 166, 182, 192, 192,
-       205, 150
-},
-{
-       224, 182, 134, 101, 83, 79, 85, 97,
-       120, 145, 173, 205, 224, 255, 255, 255,
-       255, 255
-},
-{
-       255, 224, 192, 150, 120, 101, 92, 89,
-        93, 102, 118, 134, 160, 182, 192, 224,
-       224, 224
-},
-{
-       255, 224, 224, 182, 155, 134, 118, 109,
-       104, 102, 106, 111, 118, 131, 145, 160,
-       173, 131
-}
-};
 
 static const fl_u8 fl_rate_levels_iCDF[2][9] = {
 {
@@ -5514,16 +5401,6 @@ static const fl_u8 fl_rate_levels_iCDF[2][9] = {
 }
 };
 
-static const fl_u8 fl_rate_levels_BITS_Q5[2][9] = {
-{
-       131, 74, 141, 79, 80, 138, 95, 104,
-       134
-},
-{
-        95, 99, 91, 125, 93, 76, 123, 115,
-       123
-}
-};
 
 static const fl_u8 fl_shell_code_table0[152] = {
        128, 0, 214, 42, 0, 235, 128, 21,
@@ -5638,10 +5515,6 @@ static const fl_i8 fl_CB_lags_stage3_10_ms[PE_MAX_NB_SUBFR>>1][PE_NB_CBKS_STAGE3
     { 0, 1, 0, 1,-1, 2,-1, 2,-2, 3,-2, 3}
 };
 
-static const fl_i8 fl_Lag_range_stage3_10_ms[PE_MAX_NB_SUBFR>>1][2] = {
-    {-3, 7},
-    {-2, 7}
-};
 
 static const fl_i8 fl_CB_lags_stage2[PE_MAX_NB_SUBFR][PE_NB_CBKS_STAGE2_EXT] = {
     {0, 2,-1,-1,-1, 0, 0, 1, 1, 0, 1},
@@ -5657,32 +5530,7 @@ static const fl_i8 fl_CB_lags_stage3[PE_MAX_NB_SUBFR][PE_NB_CBKS_STAGE3_MAX] = {
     {0, 1, 0, 0, 1, 0, 1,-1, 2,-1, 2,-1, 2, 3,-2, 3,-2,-2, 4, 4,-3, 5,-3,-4, 6,-4, 6, 5,-5, 8,-6,-5,-7, 9}
 };
 
-static const fl_i8 fl_Lag_range_stage3[SILK_PE_MAX_COMPLEX+1][PE_MAX_NB_SUBFR][2] = {
-    {
-        {-5,8},
-        {-1,6},
-        {-1,6},
-        {-4,10}
-    },
-    {
-        {-6,10},
-        {-2,6},
-        {-1,6},
-        {-5,10}
-    },
-    {
-        {-9,12},
-        {-3,7},
-        {-2,7},
-        {-7,13}
-    }
-};
 
-static const fl_i8 fl_nb_cbk_searchs_stage3[SILK_PE_MAX_COMPLEX+1] = {
-    PE_NB_CBKS_STAGE3_MIN,
-    PE_NB_CBKS_STAGE3_MID,
-    PE_NB_CBKS_STAGE3_MAX
-};
 
 static const fl_i16 fl_LSFCosTab_FIX_Q12[LSF_COS_TAB_SZ_FIX+1] = {
             8192, 8190, 8182, 8170,
@@ -5753,11 +5601,6 @@ static const fl_i16 fl_Resampler_1_6_COEFS[2+RESAMPLER_DOWN_ORDER_FIR2/2] = {
         17, 12, 8, 1, -10, -22, -30, -32, -22, 3, 44, 100, 168, 243, 317, 381, 429, 455,
 };
 
-static const fl_i16 fl_Resampler_2_3_COEFS_LQ[2+2*2] = {
-     -2797, -6507,
-      4697, 10739,
-      1567, 8276,
-};
 
 static const fl_i16 fl_resampler_frac_FIR_12[12][RESAMPLER_ORDER_FIR_12/2] = {
     { 189, -600, 617, 30567 },
