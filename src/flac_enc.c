@@ -1569,6 +1569,9 @@ typedef struct {
    fl_sf best;
    int cap;            /* LPC estimates are only compared with best_bits (see fl_est_limit) */
    int porder;         /* partition order limit of the estimates */
+   /* per precision, what the last fl_try_lpc_float got (0: not tried, ~0: not usable), and
+      the same for the best LPC candidate so far */
+   fl_u64 tried[16], best_tried[16];
 } fl_search;
 
 /* Highest coefficient precision that keeps 32-bit decoding for <= 17 bits (libFLAC rule). */
@@ -1611,29 +1614,45 @@ static fl_u64 fl_try_lpc(fl_search *s, const fl_i32 *q, int order, int prec, int
    return bits;
 }
 
-/* Quantizes at precision prec and evaluates; returns 1 if the result is below *best. */
-static int fl_try_lpc_prec(fl_search *s, const double *lp, int order, int prec, fl_u64 *best) {
+/* Quantizes at precision prec and evaluates; returns 1 if the result is below *best. A
+   precision in known (fl_search.best_tried of the same coefficients) is not evaluated
+   again: fl_try_lpc would return min(known, max(best_bits, header)), as estimates stop at
+   best_bits. */
+static int fl_try_lpc_prec(fl_search *s, const double *lp, int order, int prec, fl_u64 *best, const fl_u64 *known) {
    fl_i32 q[FL_FLAC_MAX_ORDER];
    int shift;
    fl_u64 b;
-   if (!fl_quantize(lp, order, prec, q, &shift) || (b = fl_try_lpc(s, q, order, prec, shift)) >= *best) return 0;
+   if (known && known[prec]) {
+      fl_u64 h = 8+(fl_u64)order*s->bps+4+5+(fl_u64)order*prec;
+      if (known[prec] == ~(fl_u64)0) return 0;
+      b = FL_MIN(known[prec], FL_MAX(s->best_bits, h));
+   } else if (!fl_quantize(lp, order, prec, q, &shift)) {
+      s->tried[prec] = ~(fl_u64)0;
+      return 0;
+   } else s->tried[prec] = b = fl_try_lpc(s, q, order, prec, shift);
+   if (b >= *best) return 0;
    *best = b;
    return 1;
 }
 
 /* Quantizes at the default precision and nearby ones and evaluates. range 99: outward
    from the default, each way until two precisions in a row bring nothing. */
-static fl_u64 fl_try_lpc_float(fl_search *s, const double *lp, int order, int range) {
+static fl_u64 fl_try_lpc_float_known(fl_search *s, const double *lp, int order, int range, const fl_u64 *known) {
    int p0 = FL_MIN(fl_default_prec(s->n, s->bps), fl_max_prec(s->bps, order)), prec, miss;
    fl_u64 best = ~(fl_u64)0;
    int pmax = fl_max_prec(s->bps, order);
+   memset(s->tried, 0, sizeof(s->tried));
    if (range < 99) {
-      for (prec = FL_MAX(5, p0-range); prec <= FL_MIN(pmax, p0+range); prec++) fl_try_lpc_prec(s, lp, order, prec, &best);
+      for (prec = FL_MAX(5, p0-range); prec <= FL_MIN(pmax, p0+range); prec++) fl_try_lpc_prec(s, lp, order, prec, &best, known);
       return best;
    }
-   for (prec = p0, miss = 0; prec <= pmax && miss < 2; prec++) miss = fl_try_lpc_prec(s, lp, order, prec, &best) ? 0 : miss+1;
-   for (prec = p0-1, miss = 0; prec >= 5 && miss < 2; prec--) miss = fl_try_lpc_prec(s, lp, order, prec, &best) ? 0 : miss+1;
+   for (prec = p0, miss = 0; prec <= pmax && miss < 2; prec++) miss = fl_try_lpc_prec(s, lp, order, prec, &best, known) ? 0 : miss+1;
+   for (prec = p0-1, miss = 0; prec >= 5 && miss < 2; prec--) miss = fl_try_lpc_prec(s, lp, order, prec, &best, known) ? 0 : miss+1;
    return best;
+}
+
+static fl_u64 fl_try_lpc_float(fl_search *s, const double *lp, int order, int range) {
+   return fl_try_lpc_float_known(s, lp, order, range, NULL);
 }
 
 /* Hill climb on the quantized coefficients of the current best LPC candidate. */
@@ -1867,6 +1886,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
                best_lp_bits = b;
                best_order = pick[k];
                memcpy(best_lp, lpc[pick[k]-1], sizeof(double)*pick[k]);
+               memcpy(s.best_tried, s.tried, sizeof(s.tried));
             }
          }
       }
@@ -1883,12 +1903,13 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
                best_lp_bits = b;
                best_order = o;
                memcpy(best_lp, a, sizeof(double)*o);
+               memcpy(s.best_tried, s.tried, sizeof(s.tried));
             }
          }
       }
       s.cap = 1;
       if (best_order) {
-         if (cfg->prec_range > 0) fl_try_lpc_float(&s, best_lp, best_order, cfg->prec_range);
+         if (cfg->prec_range > 0) fl_try_lpc_float_known(&s, best_lp, best_order, cfg->prec_range, s.best_tried);
          if (cfg->irls && n > 64) fl_irls(&s, best_lp, best_order, cfg->irls);
          if (cfg->climb) fl_climb(&s, cfg->climb);
       }
