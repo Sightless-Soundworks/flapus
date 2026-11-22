@@ -754,7 +754,7 @@ static int fl_wav_header(fl_wav_sink *w, fl_u64 data_bytes) {
       db = 0xFFFFFFFFu;
    } else {
       memcpy(h, "RIFF", 4);
-      fl_put_le32(h+4, db+n-8);
+      fl_put_le32(h+4, db+(db&1)+n-8);  /* with the pad byte after odd data, as flac */
       memcpy(h+8, "WAVE", 4);
    }
    memcpy(q+12, "fmt ", 4);
