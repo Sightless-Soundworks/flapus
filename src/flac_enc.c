@@ -16,6 +16,8 @@
 #define FL_EST_PORDER 4  /* partition order limit of the block cost estimates */
 #define FL_SEARCH_PORDER 6  /* partition order limit of the estimates that compare predictors */
 #define FL_WCOV_BLOCK 128  /* samples per block of fl_wcov */
+#define FL_SCREEN_PARTS 4  /* parts of a block for the energy estimate of window candidates */
+#define FL_MAX_CAND 96     /* window candidates of a subframe: 27 windows, 3 orders each */
 
 /* SSE2 versions of the hot loops (same results as the C code) */
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
@@ -167,22 +169,23 @@ typedef struct {
    int dp_search;     /* block costs: 0 = quick estimate from prefix sums, 1 = light search */
    int refine;        /* second search near the first one's block boundaries: distance in units */
    int thin;          /* first search without the blocks of 3*2^a units (needs refine) */
+   int screen;        /* window candidates tried, those with the lowest energy estimate (0 = all) */
    int one_mode;      /* stereo: full search only for the decorrelation the quick estimate picks */
    int estimate;      /* report the estimated instead of the exact subframe size */
 } fl_flac_cfg;
 
 static void fl_flac_level(fl_flac_cfg *c, int level, int lax, int rate) {
    static const fl_flac_cfg levels[9] = {
-      /* order porder block unit fixed sub picks prec ls irls climb dp refine thin one */
-      {8, 6, 4608, 0, 4096, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-      {12, 8, 4608, 0, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 1024, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 512, 4096, 3, 1, 99, 0, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 256, 4096, 3, 1, 99, 0, 0, 0, 0, 1, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 4, 1, 99, 0, 0, 0, 0, 1, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 5, 1, 99, 0, 4, 0, 0, 1, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 5, 3, 99, 0, 4, 0, 0, 1, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 5, 3, 99, 1, 8, 8, 0, 1, 0, 0, 0}};
+      /* order porder block unit fixed sub picks prec ls irls climb dp refine thin screen one */
+      {8, 6, 4608, 0, 4096, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      {12, 8, 4608, 0, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 1024, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 512, 4096, 3, 1, 99, 0, 0, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 256, 4096, 3, 1, 99, 0, 0, 0, 0, 1, 1, 0, 1, 0},
+      {12, 8, 4608, 256, 4096, 4, 1, 99, 0, 0, 0, 0, 1, 1, 3, 1, 0},
+      {12, 8, 4608, 256, 4096, 5, 1, 99, 0, 4, 0, 0, 1, 1, 3, 1, 0},
+      {12, 8, 4608, 256, 4096, 5, 3, 99, 0, 4, 0, 0, 1, 1, 0, 1, 0},
+      {12, 8, 4608, 256, 4096, 5, 3, 99, 1, 8, 8, 0, 1, 0, 0, 0, 0}};
    *c = levels[level];
    if (lax) {
       if (c->max_order > 8) c->max_order = 32;
@@ -636,6 +639,8 @@ typedef struct {
    fl_u64 *rl;     /* fl_rice_exact's masked sums */
    fl_u32 *rlor;
    double *wcov;   /* fl_lpc_ls's work space */
+   double *scov;   /* covariance matrices of the parts of the block (screening) */
+   double *cand;   /* window candidates (screening) */
    int avx2;       /* use the AVX2 versions */
 } fl_ws;
 
@@ -657,6 +662,8 @@ static void fl_ws_free(fl_ws *w) {
    free(w->rl);
    free(w->rlor);
    free(w->wcov);
+   free(w->scov);
+   free(w->cand);
    memset(w, 0, sizeof(*w));
 }
 
@@ -683,8 +690,11 @@ static int fl_ws_alloc(fl_ws *w, int n, int max_porder) {
    w->rl = (fl_u64*)malloc(sizeof(fl_u64)*FL_RICE_L);
    w->rlor = (fl_u32*)malloc(sizeof(fl_u32)*512);
    w->wcov = (double*)malloc(sizeof(double)*FL_FLAC_MAX_ORDER*FL_WCOV_BLOCK);
+   w->scov = (double*)malloc(sizeof(double)*FL_SCREEN_PARTS*(FL_FLAC_MAX_ORDER+1)*(FL_FLAC_MAX_ORDER+1));
+   w->cand = (double*)malloc(sizeof(double)*FL_MAX_CAND*FL_FLAC_MAX_ORDER);
    return w->x && w->x16 && w->x16l && w->res && w->u && w->acc && w->xd && w->wx && w->wt && w->e &&
-          w->rws.sum && w->rws.umax && w->plan.k && w->ktmp && w->rl && w->rlor && w->wcov ? 0 : -1;
+          w->rws.sum && w->rws.umax && w->plan.k && w->ktmp && w->rl && w->rlor && w->wcov && w->scov &&
+          w->cand ? 0 : -1;
 }
 
 /* ---- Prediction ---- */
@@ -1841,6 +1851,74 @@ static void fl_irls(fl_search *s, const double *start, int order, int iters) {
    }
 }
 
+#ifdef FL_FLAC_AVX2
+/* fl_dot for n >= 4: the same lanes and sums. */
+static FL_AVX2_FN double fl_dot_avx2(const double *a, const double *b, int n) {
+   __m256d s = _mm256_setzero_pd();
+   double t[4];
+   int i;
+   for (i = 0; i+3 < n; i += 4) s = _mm256_add_pd(s, _mm256_mul_pd(_mm256_loadu_pd(a+i), _mm256_loadu_pd(b+i)));
+   _mm256_storeu_pd(t, s);
+   for (; i < n; i++) t[0] += a[i]*b[i];
+   return (t[0]+t[1])+(t[2]+t[3]);
+}
+#endif
+
+/* Sum of a[i]*b[i] in 4 lanes (i mod 4, the last n%4 products in lane 0), added as
+   (0+1)+(2+3). */
+static double fl_dot(const double *a, const double *b, int n, int avx2) {
+   double s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+   int i;
+#ifdef FL_FLAC_AVX2
+   if (avx2 && n >= 4) return fl_dot_avx2(a, b, n);
+#else
+   (void)avx2;
+#endif
+   for (i = 0; i+3 < n; i += 4) {
+      s0 += a[i]*b[i];
+      s1 += a[i+1]*b[i+1];
+      s2 += a[i+2]*b[i+2];
+      s3 += a[i+3]*b[i+3];
+   }
+   for (; i < n; i++) s0 += a[i]*b[i];
+   return (s0+s1)+(s2+s3);
+}
+
+/* Covariance matrices of (x[t], x[t-1], ..., x[t-P]) over FL_SCREEN_PARTS parts of t =
+   P..n-1 (P+1 by P+1, row stride P+1), from the first row with the shift recursion. */
+static void fl_screen_cov(const double *x, int n, int P, double *A, int avx2) {
+   int p, i, j, m = P+1;
+   for (p = 0; p < FL_SCREEN_PARTS; p++, A += m*m) {
+      int a = P+(n-P)*p/FL_SCREEN_PARTS, b = P+(n-P)*(p+1)/FL_SCREEN_PARTS;
+      for (j = 0; j <= P; j++) A[j] = fl_dot(x+a, x+a-j, b-a, avx2);
+      for (i = 1; i <= P; i++)
+         for (j = i; j <= P; j++) A[i*m+j] = A[(i-1)*m+j-1]+x[a-i]*x[a-j]-x[b-i]*x[b-j];
+      for (i = 1; i <= P; i++)
+         for (j = 0; j < i; j++) A[i*m+j] = A[j*m+i];
+   }
+}
+
+/* Estimated bits of LPC coefficients lp of order o: from the prediction error energy in
+   each part of the block (see fl_screen_cov), as the order estimates of the windows. */
+static double fl_screen_est(const double *A, int n, int P, const double *lp, int o, int bps) {
+   double c[FL_FLAC_MAX_ORDER+1], est = o*(bps+fl_default_prec(n, bps));
+   int p, i, j, m = P+1;
+   c[0] = 1;
+   for (i = 0; i < o; i++) c[i+1] = -lp[i];
+   for (p = 0; p < FL_SCREEN_PARTS; p++, A += m*m) {
+      int len = P+(n-P)*(p+1)/FL_SCREEN_PARTS-(P+(n-P)*p/FL_SCREEN_PARTS);
+      double e = 0;
+      if (len == 0) continue;
+      for (i = 0; i <= o; i++) {
+         double r = 0;
+         for (j = 0; j <= o; j++) r += A[i*m+j]*c[j];
+         e += c[i]*r;
+      }
+      est += len*0.5*fl_log(FL_MAX(e, 0)/len+1e-9)/FL_LN2;
+   }
+   return est;
+}
+
 /* Full search for one channel of one block. Writes the best subframe to *out (exact bits).
    fu: the segment's fixed residuals of this channel (see fl_flac_sink) or NULL; the block
    starts at segment position off. kbuf (or NULL): room for the Rice plan of the winner,
@@ -1940,8 +2018,12 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
       int win, best_order = 0;
       fl_u64 best_lp_bits = ~(fl_u64)0;
       double Rroot[FL_FLAC_MAX_ORDER+1];
-      int nw = 1, d = 1, c = 0, k;
+      int nw = 1, d = 1, c = 0, k, ncand = 0, screen, cand_order[FL_MAX_CAND];
+      double cand_est[FL_MAX_CAND];
       for (k = 2; k <= cfg->subdiv; k++) nw += k == 2 ? 2 : 2*k;
+      /* with more candidates than cfg->screen, only the best by an energy estimate are tried */
+      screen = cfg->screen && nw*FL_MIN(cfg->picks, 3) > cfg->screen;
+      if (screen) fl_screen_cov(ws->xd, n, max_order, ws->scov, ws->avx2);
       for (win = 0; win < nw; win++) {
          double est[FL_FLAC_MAX_ORDER+1];
          int got, o, pick[3] = {0, 0, 0};
@@ -1994,6 +2076,12 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
          for (k = 0; k < 3; k++) {
             fl_u64 b;
             if (!pick[k]) continue;
+            if (screen) {
+               cand_order[ncand] = pick[k];
+               cand_est[ncand] = fl_screen_est(ws->scov, n, max_order, lpc[pick[k]-1], pick[k], bps);
+               memcpy(ws->cand+ncand++*FL_FLAC_MAX_ORDER, lpc[pick[k]-1], sizeof(double)*pick[k]);
+               continue;
+            }
             b = fl_try_lpc_float(&s, lpc[pick[k]-1], pick[k], 0);
             if (b < best_lp_bits) {
                best_lp_bits = b;
@@ -2002,6 +2090,21 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
                memcpy(s.best_tried, s.tried, sizeof(s.tried));
             }
          }
+      }
+      for (k = 0; k < cfg->screen && screen; k++) {
+         int j, m = -1;
+         fl_u64 b;
+         for (j = 0; j < ncand; j++)
+            if (cand_order[j] && (m < 0 || cand_est[j] < cand_est[m])) m = j;
+         if (m < 0) break;
+         b = fl_try_lpc_float(&s, ws->cand+m*FL_FLAC_MAX_ORDER, cand_order[m], 0);
+         if (b < best_lp_bits) {
+            best_lp_bits = b;
+            best_order = cand_order[m];
+            memcpy(best_lp, ws->cand+m*FL_FLAC_MAX_ORDER, sizeof(double)*best_order);
+            memcpy(s.best_tried, s.tried, sizeof(s.tried));
+         }
+         cand_order[m] = 0;
       }
       if (cfg->ls && n > 64) {
          /* exact least squares for the best order and its neighbours */

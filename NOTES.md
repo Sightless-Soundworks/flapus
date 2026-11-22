@@ -119,7 +119,10 @@ Candidates:
   plus the block without that d-th. As in libFLAC, "without" costs nothing: its
   autocorrelation is the whole block's minus the part's. So the 17 windows of N = 4 cost
   about four autocorrelations of the block. Each window gives the order (or the 3 orders)
-  with the lowest estimate from the prediction error;
+  with the lowest estimate from the prediction error. Levels 5 and 6 then try only the 3
+  candidates with the lowest estimate from their error energy in four parts of the block
+  (covariance matrices, then a quadratic form per candidate): 12-14 % faster, 0.006-0.01 %
+  larger files. With 3 orders per window (level 7) this chose worse than level 6;
 - LPC from the covariance method (exact least squares; all orders are solved from one
   matrix built with the shift recursion).
 
