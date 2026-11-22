@@ -180,7 +180,7 @@ static void fl_flac_level(fl_flac_cfg *c, int level, int lax, int rate) {
       {12, 8, 4608, 256, 4096, 5, 1, 99, 0, 4, 0, 0, 1, 1, 0},
       {12, 8, 4608, 256, 4096, 5, 3, 99, 0, 4, 0, 0, 1, 1, 0},
       {12, 8, 4608, 256, 4096, 5, 3, 99, 1, 8, 8, 0, 1, 0, 0}};
-   *c = levels[level < 0 ? 0 : level > 8 ? 8 : level];
+   *c = levels[level];
    if (lax) {
       if (c->max_order > 8) c->max_order = 32;
       c->max_porder = 15;
@@ -191,8 +191,6 @@ static void fl_flac_level(fl_flac_cfg *c, int level, int lax, int rate) {
    if (rate > 48000) {
       if (c->max_order == 12) c->max_order = 32;
    }
-   /* long blocks: keep the search affordable */
-   if (c->unit && c->max_block > 4608 && c->unit < 256) c->unit = 256;
    if (c->unit && rate > 48000) {
       /* a coarser grid above 48 kHz: 5-8 times faster, the size changes by about 0.01 % */
       int u = c->max_block/(level >= 7 ? 16 : 8);

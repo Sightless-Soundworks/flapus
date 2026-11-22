@@ -2336,7 +2336,6 @@ static const signed char fl_tf_select_table[4][8] = {
 static const float fl_preemph[4] = {0.85000610f, 0.0f, 1.0f, 1.0f};
 
 typedef struct {
-   int nfft;
    float scale;
    int shift;
    fl_i16 factors[16];
@@ -2344,10 +2343,10 @@ typedef struct {
 } fl_fft_state;
 
 static const fl_fft_state fl_fft_states[4] = {
-   {480, 0.0020833334f, -1, {5, 96, 3, 32, 4, 8, 2, 4, 4, 1, 0, 0, 0, 0, 0, 0}, fl_fft_bitrev480},
-   {240, 0.0041666669f, 1, {5, 48, 3, 16, 4, 4, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0}, fl_fft_bitrev240},
-   {120, 0.0083333338f, 2, {5, 24, 3, 8, 2, 4, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0}, fl_fft_bitrev120},
-   {60, 0.016666668f, 3, {5, 12, 3, 4, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, fl_fft_bitrev60}};
+   {0.0020833334f, -1, {5, 96, 3, 32, 4, 8, 2, 4, 4, 1, 0, 0, 0, 0, 0, 0}, fl_fft_bitrev480},
+   {0.0041666669f, 1, {5, 48, 3, 16, 4, 4, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0}, fl_fft_bitrev240},
+   {0.0083333338f, 2, {5, 24, 3, 8, 2, 4, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0}, fl_fft_bitrev120},
+   {0.016666668f, 3, {5, 12, 3, 4, 4, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, fl_fft_bitrev60}};
 
 static const fl_u32 *const fl_pvq_u_row[15] = {
    fl_pvq_u_data+0, fl_pvq_u_data+176, fl_pvq_u_data+351, fl_pvq_u_data+525, fl_pvq_u_data+698,
@@ -10579,7 +10578,7 @@ static void fl_flac_level(fl_flac_cfg *c, int level, int lax, int rate) {
       {12, 8, 4608, 256, 4096, 5, 1, 99, 0, 4, 0, 0, 1, 1, 0},
       {12, 8, 4608, 256, 4096, 5, 3, 99, 0, 4, 0, 0, 1, 1, 0},
       {12, 8, 4608, 256, 4096, 5, 3, 99, 1, 8, 8, 0, 1, 0, 0}};
-   *c = levels[level < 0 ? 0 : level > 8 ? 8 : level];
+   *c = levels[level];
    if (lax) {
       if (c->max_order > 8) c->max_order = 32;
       c->max_porder = 15;
@@ -10590,8 +10589,6 @@ static void fl_flac_level(fl_flac_cfg *c, int level, int lax, int rate) {
    if (rate > 48000) {
       if (c->max_order == 12) c->max_order = 32;
    }
-   /* long blocks: keep the search affordable */
-   if (c->unit && c->max_block > 4608 && c->unit < 256) c->unit = 256;
    if (c->unit && rate > 48000) {
       /* a coarser grid above 48 kHz: 5-8 times faster, the size changes by about 0.01 % */
       int u = c->max_block/(level >= 7 ? 16 : 8);
