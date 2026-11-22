@@ -40739,7 +40739,7 @@ static int fl_stream_at(const unsigned char *b, size_t n) {
       int minb = b[8]<<8|b[9], maxb = b[10]<<8|b[11];
       return minb >= 16 && maxb >= minb && (b[18]|b[19]|(b[20]>>4)) ? FL_FORMAT_FLAC : 0;
    }
-   if (n >= 27 && memcmp(b, "OggS", 4) == 0 && b[4] == 0 && (b[5]&2) && b[26]) {
+   if (n >= 27 && memcmp(b, "OggS", 4) == 0 && b[4] == 0 && (b[5]&2) && b[26] && n >= (size_t)27+b[26]) {
       size_t len = 27+b[26], i;
       unsigned char h[27];
       for (i = 0; i < b[26]; i++) len += b[27+i];
