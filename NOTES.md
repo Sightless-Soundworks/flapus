@@ -243,6 +243,9 @@ Speed and output:
   This made level 2 about 12 % and level 5 about 5 % faster on CD audio, and both about
   20 % faster at 96 kHz; AVX2 Rice sums gave nothing and were left out. `FLAPUS_NO_AVX2` builds without them, and the CI
   checks that such a build gives the same files.
+- The IRLS sums (the weighted covariance matrix) are added in 4 lanes, in blocks of 128
+  samples, by the C code and with AVX2 alike, so both give the same coefficients. Level 8
+  became about 20 % faster.
 - The double prediction sums become integers in the registers (adding 1.5*2^52 is exact
   below 2^51), and with AVX2 the residuals from 64-bit sums are computed 4 at a time.
   That made 24-bit audio about 13 % faster, and CD audio at level 5 (side channel)

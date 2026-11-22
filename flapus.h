@@ -10413,6 +10413,7 @@ FLDEF void fl_flac_frame_decoder_destroy(fl_flac_frame_decoder *dec) {
 #define FL_SLACK 288   /* extra entries after every sample buffer */
 #define FL_EST_PORDER 4  /* partition order limit of the block cost estimates */
 #define FL_SEARCH_PORDER 6  /* partition order limit of the estimates that compare predictors */
+#define FL_WCOV_BLOCK 128  /* samples per block of fl_wcov */
 
 /* SSE2 versions of the hot loops (same results as the C code) */
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
@@ -11031,6 +11032,7 @@ typedef struct {
    int *ktmp;
    fl_u64 *rl;     /* fl_rice_exact's masked sums */
    fl_u32 *rlor;
+   double *wcov;   /* fl_lpc_ls's work space */
    int avx2;       /* use the AVX2 versions */
 } fl_ws;
 
@@ -11051,6 +11053,7 @@ static void fl_ws_free(fl_ws *w) {
    free(w->ktmp);
    free(w->rl);
    free(w->rlor);
+   free(w->wcov);
    memset(w, 0, sizeof(*w));
 }
 
@@ -11076,8 +11079,9 @@ static int fl_ws_alloc(fl_ws *w, int n, int max_porder) {
    w->ktmp = (int*)malloc(sizeof(int)*parts);
    w->rl = (fl_u64*)malloc(sizeof(fl_u64)*FL_RICE_L);
    w->rlor = (fl_u32*)malloc(sizeof(fl_u32)*512);
+   w->wcov = (double*)malloc(sizeof(double)*FL_FLAC_MAX_ORDER*FL_WCOV_BLOCK);
    return w->x && w->x16 && w->x16l && w->res && w->u && w->acc && w->xd && w->wx && w->wt && w->e &&
-          w->rws.sum && w->rws.umax && w->plan.k && w->ktmp && w->rl && w->rlor ? 0 : -1;
+          w->rws.sum && w->rws.umax && w->plan.k && w->ktmp && w->rl && w->rlor && w->wcov ? 0 : -1;
 }
 
 /* ---- Prediction ---- */
@@ -11782,24 +11786,103 @@ static int fl_cholesky_solve(double phi[][FL_FLAC_MAX_ORDER], const double *psi,
    return 1;
 }
 
-/* Weighted covariance-method LPC of the given order (weights wt). */
-static int fl_lpc_ls(const double *x, const double *wt, int n, int order, double *a) {
-   double phi[FL_FLAC_MAX_ORDER][FL_FLAC_MAX_ORDER], psi[FL_FLAC_MAX_ORDER];
-   int i, j, t;
-   if (n <= order*2) return 0;
-   for (i = 0; i < order; i++) {
-      psi[i] = 0;
-      for (j = 0; j <= i; j++) phi[i][j] = 0;
-   }
-   for (t = order; t < n; t++) {
-      double w = wt[t];
-      const double *h = x+t-1;
+/* fl_lpc_ls's sums psi[i] = sum wt[t]*x[t-1-i]*x[t] and phi[i][j] = sum
+   wt[t]*x[t-1-i]*x[t-1-j] (j <= i), t = order..n-1, in blocks of FL_WCOV_BLOCK samples (wx:
+   wt[t]*x[t-1-i] of the block). Each sum is added in 4 lanes (t-order mod 4) and then as
+   (0+1)+(2+3), so the C and AVX2 code give the same results. */
+#ifdef FL_FLAC_AVX2
+static FL_AVX2_FN void fl_wcov_avx2(const double *x, const double *wt, int n, int order, double *wx,
+                                    double phi[][FL_FLAC_MAX_ORDER], double *psi) {
+   __m256d ap[FL_FLAC_MAX_ORDER*(FL_FLAC_MAX_ORDER+1)/2], aq[FL_FLAC_MAX_ORDER];
+   int i, j, k, t0, m;
+   for (i = 0; i < order; i++) aq[i] = _mm256_setzero_pd();
+   for (k = 0; k < order*(order+1)/2; k++) ap[k] = _mm256_setzero_pd();
+   for (t0 = order; t0 < n; t0 += FL_WCOV_BLOCK) {
+      int len = FL_MIN(FL_WCOV_BLOCK, n-t0), L = (len+3)&~3;
       for (i = 0; i < order; i++) {
-         double wi = w*h[-i];
-         psi[i] += wi*x[t];
-         for (j = 0; j <= i; j++) phi[i][j] += wi*h[-j];
+         double *r = wx+i*FL_WCOV_BLOCK;
+         for (m = 0; m < len; m++) r[m] = wt[t0+m]*x[t0+m-1-i];
+         for (; m < L; m++) r[m] = 0;
+      }
+      for (i = 0, k = 0; i < order; i++) {
+         const double *r = wx+i*FL_WCOV_BLOCK;
+         __m256d q = aq[i];
+         for (m = 0; m < L; m += 4) q = _mm256_add_pd(q, _mm256_mul_pd(_mm256_loadu_pd(r+m), _mm256_loadu_pd(x+t0+m)));
+         aq[i] = q;
+         for (j = 0; j <= i; j++, k++) {
+            const double *xj = x+t0-1-j;
+            __m256d a = ap[k];
+            for (m = 0; m < L; m += 4) a = _mm256_add_pd(a, _mm256_mul_pd(_mm256_loadu_pd(r+m), _mm256_loadu_pd(xj+m)));
+            ap[k] = a;
+         }
       }
    }
+   for (i = 0, k = 0; i < order; i++) {
+      double t4[4];
+      _mm256_storeu_pd(t4, aq[i]);
+      psi[i] = (t4[0]+t4[1])+(t4[2]+t4[3]);
+      for (j = 0; j <= i; j++, k++) {
+         _mm256_storeu_pd(t4, ap[k]);
+         phi[i][j] = (t4[0]+t4[1])+(t4[2]+t4[3]);
+      }
+   }
+}
+#endif
+
+static void fl_wcov(const double *x, const double *wt, int n, int order, double *wx, double phi[][FL_FLAC_MAX_ORDER],
+                    double *psi, int avx2) {
+   double ap[FL_FLAC_MAX_ORDER*(FL_FLAC_MAX_ORDER+1)/2][4], aq[FL_FLAC_MAX_ORDER][4];
+   int i, j, k, l, t0, m;
+#ifdef FL_FLAC_AVX2
+   if (avx2) {
+      fl_wcov_avx2(x, wt, n, order, wx, phi, psi);
+      return;
+   }
+#else
+   (void)avx2;
+#endif
+   memset(ap, 0, sizeof(ap[0])*(order*(order+1)/2));
+   memset(aq, 0, sizeof(aq[0])*order);
+   for (t0 = order; t0 < n; t0 += FL_WCOV_BLOCK) {
+      int len = FL_MIN(FL_WCOV_BLOCK, n-t0), L = (len+3)&~3;
+      for (i = 0; i < order; i++) {
+         double *r = wx+i*FL_WCOV_BLOCK;
+         for (m = 0; m < len; m++) r[m] = wt[t0+m]*x[t0+m-1-i];
+         for (; m < L; m++) r[m] = 0;
+      }
+      for (i = 0, k = 0; i < order; i++) {
+         const double *r = wx+i*FL_WCOV_BLOCK;
+         for (m = 0; m < L; m += 4)
+            for (l = 0; l < 4; l++) aq[i][l] += r[m+l]*x[t0+m+l];
+         for (j = 0; j <= i; j++, k++) {
+            const double *xj = x+t0-1-j;
+            double a0 = ap[k][0], a1 = ap[k][1], a2 = ap[k][2], a3 = ap[k][3];
+            for (m = 0; m < L; m += 4) {
+               a0 += r[m]*xj[m];
+               a1 += r[m+1]*xj[m+1];
+               a2 += r[m+2]*xj[m+2];
+               a3 += r[m+3]*xj[m+3];
+            }
+            ap[k][0] = a0;
+            ap[k][1] = a1;
+            ap[k][2] = a2;
+            ap[k][3] = a3;
+         }
+      }
+   }
+   for (i = 0, k = 0; i < order; i++) {
+      psi[i] = (aq[i][0]+aq[i][1])+(aq[i][2]+aq[i][3]);
+      for (j = 0; j <= i; j++, k++) phi[i][j] = (ap[k][0]+ap[k][1])+(ap[k][2]+ap[k][3]);
+   }
+}
+
+/* Weighted covariance-method LPC of the given order (weights wt); wx: work space of
+   FL_FLAC_MAX_ORDER*FL_WCOV_BLOCK doubles. x is read up to 3 entries past n. */
+static int fl_lpc_ls(const double *x, const double *wt, int n, int order, double *a, double *wx, int avx2) {
+   double phi[FL_FLAC_MAX_ORDER][FL_FLAC_MAX_ORDER], psi[FL_FLAC_MAX_ORDER];
+   int i, j;
+   if (n <= order*2) return 0;
+   fl_wcov(x, wt, n, order, wx, phi, psi, avx2);
    for (i = 0; i < order; i++)
       for (j = i+1; j < order; j++) phi[i][j] = phi[j][i];
    return fl_cholesky_solve(phi, psi, order, a);
@@ -12147,7 +12230,7 @@ static void fl_irls(fl_search *s, const double *start, int order, int iters) {
          m = m/(end-i)+0.5;
          for (k = i; k < end; k++) w->wt[k] = 1.0/((w->e[k]+0.5)*m);
       }
-      if (!fl_lpc_ls(w->xd, w->wt, n, order, a)) return;
+      if (!fl_lpc_ls(w->xd, w->wt, n, order, a, w->wcov, w->avx2)) return;
       fl_try_lpc_float(s, a, order, s->cfg->prec_range >= 99 ? 99 : 1);
    }
 }
