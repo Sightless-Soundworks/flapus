@@ -1117,6 +1117,55 @@ static int fl_lpc_residual(const fl_i32 *x, int n, int order, int shift, int mod
    return bad == 0;
 }
 
+#ifdef FL_FLAC_AVX2
+/* fl_lpc_sums_avx2 and fl_lpc_residual_avx2 in one pass, for modes 3 and 4 and shift >= 1
+   (the same values, without acc). */
+static FL_AVX2_FN void fl_lpc_residual_direct_avx2(const fl_i32 *x, const fl_i16 *x16, const fl_i16 *x16l, int n,
+                                                   const fl_i32 *c, int order, int mode, int shift, fl_u32 *u) {
+   __m256i cv[FL_FLAC_MAX_ORDER/2+1], z = _mm256_setzero_si256();
+   __m128i sh = _mm_cvtsi32_si128(shift);
+   int i, j, np = order/2;
+   for (j = 0; j < np; j++) cv[j] = _mm256_set1_epi32((fl_i32)((fl_u32)(fl_u16)c[2*j+1]<<16|(fl_u16)c[2*j]));
+   if (order&1) cv[np] = _mm256_set1_epi32((fl_i32)(fl_u16)c[order-1]);
+   for (i = order; i < n; i += 16) {
+      __m256i h0 = z, h1 = z, l0 = z, l1 = z, va, vb, v;
+      for (j = 0; j < np; j++) {
+         const fl_i16 *ph = x16+i-1-2*j;
+         va = _mm256_loadu_si256((const __m256i*)ph);
+         vb = _mm256_loadu_si256((const __m256i*)(ph-1));
+         h0 = _mm256_add_epi32(h0, _mm256_madd_epi16(_mm256_unpacklo_epi16(va, vb), cv[j]));
+         h1 = _mm256_add_epi32(h1, _mm256_madd_epi16(_mm256_unpackhi_epi16(va, vb), cv[j]));
+         if (mode == 4) {
+            const fl_i16 *pl = x16l+i-1-2*j;
+            va = _mm256_loadu_si256((const __m256i*)pl);
+            vb = _mm256_loadu_si256((const __m256i*)(pl-1));
+            l0 = _mm256_add_epi32(l0, _mm256_madd_epi16(_mm256_unpacklo_epi16(va, vb), cv[j]));
+            l1 = _mm256_add_epi32(l1, _mm256_madd_epi16(_mm256_unpackhi_epi16(va, vb), cv[j]));
+         }
+      }
+      if (order&1) {
+         va = _mm256_loadu_si256((const __m256i*)(x16+i-order));
+         h0 = _mm256_add_epi32(h0, _mm256_madd_epi16(_mm256_unpacklo_epi16(va, z), cv[np]));
+         h1 = _mm256_add_epi32(h1, _mm256_madd_epi16(_mm256_unpackhi_epi16(va, z), cv[np]));
+         if (mode == 4) {
+            va = _mm256_loadu_si256((const __m256i*)(x16l+i-order));
+            l0 = _mm256_add_epi32(l0, _mm256_madd_epi16(_mm256_unpacklo_epi16(va, z), cv[np]));
+            l1 = _mm256_add_epi32(l1, _mm256_madd_epi16(_mm256_unpackhi_epi16(va, z), cv[np]));
+         }
+      }
+      if (mode == 4) {
+         h0 = _mm256_add_epi32(_mm256_slli_epi32(h0, 15), l0);
+         h1 = _mm256_add_epi32(_mm256_slli_epi32(h1, 15), l1);
+      }
+      /* h0 holds the sums 0-3 and 8-11, h1 the sums 4-7 and 12-15 */
+      v = _mm256_sub_epi32(_mm256_loadu_si256((const __m256i*)(x+i)), _mm256_sra_epi32(_mm256_permute2x128_si256(h0, h1, 0x20), sh));
+      _mm256_storeu_si256((__m256i*)(u+i-order), _mm256_xor_si256(_mm256_slli_epi32(v, 1), _mm256_srai_epi32(v, 31)));
+      v = _mm256_sub_epi32(_mm256_loadu_si256((const __m256i*)(x+i+8)), _mm256_sra_epi32(_mm256_permute2x128_si256(h0, h1, 0x31), sh));
+      _mm256_storeu_si256((__m256i*)(u+i+8-order), _mm256_xor_si256(_mm256_slli_epi32(v, 1), _mm256_srai_epi32(v, 31)));
+   }
+}
+#endif
+
 /* Levinson-Durbin: lpc[o-1][0..o-1] for every order o <= max_order; err[o] prediction error. */
 static int fl_levinson(const double *R, int max_order, double lpc[][FL_FLAC_MAX_ORDER], double *err) {
    double a[FL_FLAC_MAX_ORDER+1], t[FL_FLAC_MAX_ORDER+1], e = R[0];
@@ -1540,8 +1589,15 @@ static int fl_default_prec(int n, int bps) {
 static fl_u64 fl_try_lpc(fl_search *s, const fl_i32 *q, int order, int prec, int shift) {
    fl_ws *w = s->ws;
    fl_u64 bits = 8+(fl_u64)order*s->bps+4+5+(fl_u64)order*prec;
-   fl_lpc_sums(s->x, w->xd, s->x16, s->x16l, s->n, q, order, fl_lpc_mode(s->bps, prec, order), w->acc, w->avx2);
-   if (!fl_lpc_residual(s->x, s->n, order, shift, fl_lpc_mode(s->bps, prec, order), w->acc, w->u, w->avx2)) return ~(fl_u64)0;
+   int mode = fl_lpc_mode(s->bps, prec, order);
+#ifdef FL_FLAC_AVX2
+   if (w->avx2 && mode >= 3 && shift >= 1) fl_lpc_residual_direct_avx2(s->x, s->x16, s->x16l, s->n, q, order, mode, shift, w->u);
+   else
+#endif
+   {
+      fl_lpc_sums(s->x, w->xd, s->x16, s->x16l, s->n, q, order, mode, w->acc, w->avx2);
+      if (!fl_lpc_residual(s->x, s->n, order, shift, mode, w->acc, w->u, w->avx2)) return ~(fl_u64)0;
+   }
    bits += fl_rice_estimate(&w->rws, w->u, s->n, order, s->porder, s->bps > 16 ? 30 : 14,
                             s->cap ? fl_est_limit(s->best_bits, bits) : ~(fl_u64)0);
    if (bits < s->best_bits) {
