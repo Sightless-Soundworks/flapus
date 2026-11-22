@@ -146,9 +146,12 @@ static int fl_inbuf_seek(fl_inbuf *b, fl_i64 off) {
    return fl_inbuf_tell(b) == off ? 0 : -1;
 }
 
-/* Skips n bytes. */
+/* Skips n bytes; past the end of the input, to the end (memory input cannot seek there). */
 static void fl_inbuf_skip(fl_inbuf *b, fl_u64 n) {
-   if (n > (fl_u64)1<<62 || fl_inbuf_seek(b, fl_inbuf_tell(b)+(fl_i64)n) != 0) b->eof = 1;
+   if (n > (fl_u64)1<<62 || fl_inbuf_seek(b, fl_inbuf_tell(b)+(fl_i64)n) != 0) {
+      b->pos = b->len;
+      b->eof = 1;
+   }
 }
 
 /* Input that cannot seek is read into memory, so that it can be scanned twice. */
