@@ -480,7 +480,10 @@ the Opus output options); pass it in the `OPUSENC` variable. The scripts run
   is found.
 - `test/math.c`: the `src/math.c` functions against libm's long double versions at
   200000 arguments each, plus large arguments of `sin`/`cos` (up to 2^1024, among them
-  the double closest to a multiple of pi/2) and the special values of C99 Annex F.
+  the double closest to a multiple of pi/2) and the special values of C99 Annex F. Where
+  libm reduces large arguments of `sinl` and `cosl` inexactly (MinGW uses x87 `fsin` and
+  `fcos`), the test reduces the arguments up to 2^30 itself and checks larger ones by
+  `sin(1e22)` only.
 - `test/bitreader.c`: unary codes that end exactly on the last bit of a full 64-bit
   cache. Such a code used to shift the cache by 64 (undefined in C; on x86 the bit
   stayed put), which flipped a bit 64 positions later. A real FLAC file with a Rice
