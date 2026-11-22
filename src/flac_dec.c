@@ -444,7 +444,8 @@ static int fl_flac_frame_out(fl_flac_src *s, fl_sink *sink, int n) {
 }
 
 /* End of the stream: fewer samples than STREAMINFO says means a truncated file, also
-   without an MD5 (more are no error, as in flac). */
+   without an MD5. More are no error and are all output (flac -d stops at the length, but
+   its MD5 check covers them too). */
 static void fl_flac_end(fl_flac_src *s) {
    if (!s->check) s->base.end_status = FL_OK;
    else if (s->d.si.total && s->decoded < s->d.si.total) s->base.end_status = FL_ERR_BAD_FILE;
