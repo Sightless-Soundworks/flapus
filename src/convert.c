@@ -41,12 +41,8 @@ static int fl_stream_at(const unsigned char *b, size_t n) {
    }
    if (n >= 27 && memcmp(b, "OggS", 4) == 0 && b[4] == 0 && (b[5]&2) && b[26] && n >= (size_t)27+b[26]) {
       size_t len = 27+b[26], i;
-      unsigned char h[27];
       for (i = 0; i < b[26]; i++) len += b[27+i];
-      if (len > n || len < (size_t)27+b[26]+8) return 0;
-      memcpy(h, b, 27);
-      memset(h+22, 0, 4);
-      if (fl_ogg_crc(fl_ogg_crc(0, h, 27), b+27, len-27) != fl_get_le32(b+22)) return 0;
+      if (len > n || len < (size_t)27+b[26]+8 || fl_ogg_page_crc(b, len) != fl_get_le32(b+22)) return 0;
       if (memcmp(b+27+b[26], "OpusHead", 8) == 0) return FL_FORMAT_OPUS;
       if (memcmp(b+27+b[26], "\177FLAC", 5) == 0) return FL_FORMAT_FLAC;
    }

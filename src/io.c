@@ -367,15 +367,24 @@ static void fl_md5_samples(fl_md5 *m, const fl_i32 *pcm, size_t n, int bits) {
    }
 }
 
-/* Ogg page CRC (polynomial 0x04c11db7) bit by bit: no table that threads would share,
-   and the pages of an Opus file are small. */
+/* Ogg page CRC (polynomial 0x04c11db7), four bits at a time. */
 static fl_u32 fl_ogg_crc(fl_u32 crc, const unsigned char *p, size_t n) {
-   int k;
+   static const fl_u32 tab[16] = {0x00000000, 0x04c11db7, 0x09823b6e, 0x0d4326d9, 0x130476dc, 0x17c56b6b,
+                                  0x1a864db2, 0x1e475005, 0x2608edb8, 0x22c9f00f, 0x2f8ad6d6, 0x2b4bcb61,
+                                  0x350c9b64, 0x31cd86d3, 0x3c8ea00a, 0x384fbdbd};
    while (n--) {
-      crc ^= (fl_u32)*p++<<24;
-      for (k = 0; k < 8; k++) crc = (crc&0x80000000U) ? (crc<<1)^0x04c11db7U : crc<<1;
+      crc = crc<<4^tab[crc>>28^*p>>4];
+      crc = crc<<4^tab[crc>>28^(*p++&15)];
    }
    return crc;
+}
+
+/* CRC of the Ogg page of len bytes at p, with its CRC field taken as zero. */
+static fl_u32 fl_ogg_page_crc(const unsigned char *p, size_t len) {
+   unsigned char h[27];
+   memcpy(h, p, 27);
+   memset(h+22, 0, 4);
+   return fl_ogg_crc(fl_ogg_crc(0, h, 27), p+27, len-27);
 }
 
 /* ---- base64 (METADATA_BLOCK_PICTURE comments) ---- */

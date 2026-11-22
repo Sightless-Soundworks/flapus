@@ -410,7 +410,8 @@ line.
   files.
 - A stream that does not start the file is found up to 64 KB in (`--search`).
 - Ogg files are read page by page, so memory use does not grow with the file size (from
-  stdin they are first read into memory, since they are scanned twice).
+  stdin they are first read into memory, since they are scanned twice). Pages with a wrong
+  CRC are skipped, and a packet that a missing page cuts is dropped, as with libogg.
 
 **FLAC output**
 

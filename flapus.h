@@ -8302,15 +8302,24 @@ static void fl_md5_samples(fl_md5 *m, const fl_i32 *pcm, size_t n, int bits) {
    }
 }
 
-/* Ogg page CRC (polynomial 0x04c11db7) bit by bit: no table that threads would share,
-   and the pages of an Opus file are small. */
+/* Ogg page CRC (polynomial 0x04c11db7), four bits at a time. */
 static fl_u32 fl_ogg_crc(fl_u32 crc, const unsigned char *p, size_t n) {
-   int k;
+   static const fl_u32 tab[16] = {0x00000000, 0x04c11db7, 0x09823b6e, 0x0d4326d9, 0x130476dc, 0x17c56b6b,
+                                  0x1a864db2, 0x1e475005, 0x2608edb8, 0x22c9f00f, 0x2f8ad6d6, 0x2b4bcb61,
+                                  0x350c9b64, 0x31cd86d3, 0x3c8ea00a, 0x384fbdbd};
    while (n--) {
-      crc ^= (fl_u32)*p++<<24;
-      for (k = 0; k < 8; k++) crc = (crc&0x80000000U) ? (crc<<1)^0x04c11db7U : crc<<1;
+      crc = crc<<4^tab[crc>>28^*p>>4];
+      crc = crc<<4^tab[crc>>28^(*p++&15)];
    }
    return crc;
+}
+
+/* CRC of the Ogg page of len bytes at p, with its CRC field taken as zero. */
+static fl_u32 fl_ogg_page_crc(const unsigned char *p, size_t len) {
+   unsigned char h[27];
+   memcpy(h, p, 27);
+   memset(h+22, 0, 4);
+   return fl_ogg_crc(fl_ogg_crc(0, h, 27), p+27, len-27);
 }
 
 /* ---- base64 (METADATA_BLOCK_PICTURE comments) ---- */
@@ -8873,7 +8882,8 @@ static void fl_mem_destroy(fl_sink *s) { free(s); }
    packets are appended to a queue. A page's granule belongs to the last packet completed
    on it, if the page ends at a packet boundary; an EOS page marks the last completed
    packet. Only that packet can still change, so the consumer leaves it in the queue until
-   a later packet completes or its link has ended. */
+   a later packet completes or its link has ended. Pages with a wrong CRC are skipped, and
+   a gap in the page numbers drops the packet it cuts (like libogg). */
 typedef struct {
    unsigned char *data;
    int len, idx, link;  /* idx: packet number within its link */
@@ -8890,8 +8900,8 @@ typedef struct {
 typedef struct {
    fl_inbuf *in;
    const char *magic;
-   fl_u32 serial;
-   int have_serial, prev_bos, links, npk, ended;
+   fl_u32 serial, seq;  /* seq: number of the last page read of the followed stream */
+   int have_serial, have_seq, prev_bos, links, npk, ended;
    unsigned char *cur;
    int cur_len;
    fl_ogg_queue q;
@@ -8950,9 +8960,9 @@ static int fl_ogg_page(fl_ogg_reader *r) {
    int mlen = (int)strlen(r->magic);
    for (;;) {
       const unsigned char *h;
-      int nseg, i, hdr, bos, body;
+      int nseg, i, hdr, bos, body, len, cut, added;
       fl_i64 granule;
-      fl_u32 ser;
+      fl_u32 ser, seq;
       if (r->ended) return 0;
       if (fl_inbuf_need(b, 27) < 0) return FL_ERR_ALLOC;
       if (b->len-b->pos < 27) break;
@@ -8966,12 +8976,20 @@ static int fl_ogg_page(fl_ogg_reader *r) {
       if (fl_inbuf_need(b, hdr+255*255) < 0) return FL_ERR_ALLOC;
       h = b->buf+b->pos;
       if (b->len-b->pos < (size_t)hdr) break;
+      for (i = 0, len = hdr; i < nseg; i++) len += h[27+i];
+      /* a truncated page ends the readable input */
+      if (b->len-b->pos < (size_t)len) break;
+      if (fl_ogg_page_crc(h, len) != fl_get_le32(h+22)) {
+         b->pos++;  /* damaged: on to the next page */
+         continue;
+      }
       {
          fl_u64 g = 0;
          for (i = 7; i >= 0; i--) g = (g<<8)|h[6+i];
          granule = g == ~(fl_u64)0 ? -1 : g < (fl_u64)1<<62 ? (fl_i64)g : -2;
       }
-      ser = h[14]|(h[15]<<8)|(h[16]<<16)|((fl_u32)h[17]<<24);
+      ser = fl_get_le32(h+14);
+      seq = fl_get_le32(h+18);
       bos = (h[5]&2) != 0;
       body = hdr;
       if (bos) {
@@ -8984,6 +9002,7 @@ static int fl_ogg_page(fl_ogg_reader *r) {
             r->link_start = fl_inbuf_tell(b);
             r->links++;
             r->npk = 0;
+            r->have_seq = 0;
             free(r->cur);
             r->cur = NULL;
             r->cur_len = 0;
@@ -8991,19 +9010,32 @@ static int fl_ogg_page(fl_ogg_reader *r) {
       }
       r->prev_bos = bos;
       if (!r->have_serial || ser != r->serial) {
-         fl_i64 skip = 0;
-         for (i = 0; i < nseg; i++) skip += h[27+i];
-         fl_inbuf_skip(b, (fl_u64)(hdr+skip));
+         b->pos += len;
          continue;
       }
-      for (i = 0; i < nseg; i++) {
+      i = 0;
+      cut = 0;
+      added = r->q.count;
+      if (r->have_seq && seq != r->seq+1) {
+         /* pages are missing: drop the packet they cut */
+         free(r->cur);
+         r->cur = NULL;
+         r->cur_len = 0;
+      }
+      r->seq = seq;
+      r->have_seq = 1;
+      if ((h[5]&1) && r->cur_len == 0)
+         /* the start of the continued packet is missing */
+         for (cut = 1; i < nseg; i++) {
+            body += h[27+i];
+            if (h[27+i] < 255) {
+               i++;
+               break;
+            }
+         }
+      for (; i < nseg; i++) {
          int l = h[27+i];
          unsigned char *t;
-         if (b->len-b->pos < (size_t)(body+l)) {
-            /* truncated page: the end of the readable input */
-            r->ended = 1;
-            return 0;
-         }
          if (!(t = (unsigned char*)realloc(r->cur, r->cur_len+l+1))) return FL_ERR_ALLOC;
          r->cur = t;
          memcpy(r->cur+r->cur_len, h+body, l);
@@ -9011,7 +9043,8 @@ static int fl_ogg_page(fl_ogg_reader *r) {
          body += l;
          if (l < 255 && fl_ogg_add_packet(r) < 0) return FL_ERR_ALLOC;
       }
-      if (r->npk > 0 && r->q.count > 0 && r->q.pk[r->q.count-1].link == r->links-1) {
+      /* not after a page that only ends a cut packet: its granule is that packet's */
+      if (r->npk > 0 && r->q.count > 0 && r->q.pk[r->q.count-1].link == r->links-1 && !(cut && r->q.count == added)) {
          fl_ogg_packet *last = &r->q.pk[r->q.count-1];
          if (r->cur_len == 0) {
             last->granule = granule;
@@ -40741,12 +40774,8 @@ static int fl_stream_at(const unsigned char *b, size_t n) {
    }
    if (n >= 27 && memcmp(b, "OggS", 4) == 0 && b[4] == 0 && (b[5]&2) && b[26] && n >= (size_t)27+b[26]) {
       size_t len = 27+b[26], i;
-      unsigned char h[27];
       for (i = 0; i < b[26]; i++) len += b[27+i];
-      if (len > n || len < (size_t)27+b[26]+8) return 0;
-      memcpy(h, b, 27);
-      memset(h+22, 0, 4);
-      if (fl_ogg_crc(fl_ogg_crc(0, h, 27), b+27, len-27) != fl_get_le32(b+22)) return 0;
+      if (len > n || len < (size_t)27+b[26]+8 || fl_ogg_page_crc(b, len) != fl_get_le32(b+22)) return 0;
       if (memcmp(b+27+b[26], "OpusHead", 8) == 0) return FL_FORMAT_OPUS;
       if (memcmp(b+27+b[26], "\177FLAC", 5) == 0) return FL_FORMAT_FLAC;
    }
