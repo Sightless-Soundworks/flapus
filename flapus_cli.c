@@ -419,7 +419,7 @@ int main(int argc, char **argv) {
       return 1;
    }
    /* only after success, like flac --delete-input-file */
-   if (delete_input && remove(in_path) != 0) {
+   if (delete_input && fl_remove(in_path) != 0) {
       fprintf(stderr, "Error: cannot delete %s\n", in_path);
       return 1;
    }
