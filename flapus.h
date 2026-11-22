@@ -10564,22 +10564,23 @@ typedef struct {
    int climb;         /* hill climbing passes */
    int dp_search;     /* block costs: 0 = quick estimate from prefix sums, 1 = light search */
    int refine;        /* second search near the first one's block boundaries: distance in units */
+   int thin;          /* first search without the blocks of 3*2^a units (needs refine) */
    int one_mode;      /* stereo: full search only for the decorrelation the quick estimate picks */
    int estimate;      /* report the estimated instead of the exact subframe size */
 } fl_flac_cfg;
 
 static void fl_flac_level(fl_flac_cfg *c, int level, int lax, int rate) {
    static const fl_flac_cfg levels[9] = {
-      /* order porder block unit fixed sub picks prec ls irls climb dp refine one */
-      {8, 6, 4608, 0, 4096, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0},
-      {12, 8, 4608, 0, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 1024, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 512, 4096, 3, 1, 99, 0, 0, 0, 0, 0, 1, 0},
-      {12, 8, 4608, 256, 4096, 3, 1, 99, 0, 0, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 4, 1, 99, 0, 0, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 5, 1, 99, 0, 4, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 5, 3, 99, 0, 4, 0, 0, 1, 1, 0},
-      {12, 8, 4608, 256, 4096, 5, 3, 99, 1, 8, 8, 0, 1, 0, 0}};
+      /* order porder block unit fixed sub picks prec ls irls climb dp refine thin one */
+      {8, 6, 4608, 0, 4096, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+      {12, 8, 4608, 0, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 1024, 4096, 2, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 512, 4096, 3, 1, 99, 0, 0, 0, 0, 0, 0, 1, 0},
+      {12, 8, 4608, 256, 4096, 3, 1, 99, 0, 0, 0, 0, 1, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 4, 1, 99, 0, 0, 0, 0, 1, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 5, 1, 99, 0, 4, 0, 0, 1, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 5, 3, 99, 0, 4, 0, 0, 1, 1, 1, 0},
+      {12, 8, 4608, 256, 4096, 5, 3, 99, 1, 8, 8, 0, 1, 0, 0, 0}};
    *c = levels[level];
    if (lax) {
       if (c->max_order > 8) c->max_order = 32;
@@ -13116,10 +13117,11 @@ static fl_u64 fl_block_cost(fl_flac_sink *s, fl_worker *wk, int off, int bs) {
 
 /* Blocks of the first search: k = 2^a units from every k/2-th unit, k = 3*2^a units from
    every 2^a-th unit, and the longest blocks (K units) from every (K&-K)-th unit. With a
-   refinement to follow and 3 dividing K, every K/3-th is enough (they still chain). */
-static int fl_dp_first(int K, int i, int k, int refine) {
+   refinement to follow, every K/3-th longest block is enough if 3 divides K (they still
+   chain), and with thin the 3*2^a blocks are left to the refinement. */
+static int fl_dp_first(int K, int i, int k, int refine, int thin) {
    int low = k&-k;
-   if (k != K && k != low && k != 3*low) return 0;
+   if (k != K && k != low && (k != 3*low || thin)) return 0;
    if (k == K && refine && K%3 == 0) return i%(K/3) == 0;
    return i%(k == low && k > 1 ? k/2 : low) == 0;
 }
@@ -13222,7 +13224,7 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
          for (k = 1; k <= K && i+k <= M; k++) {
             int x = i*K+k-1;
             s->cost[x] = ~(fl_u64)0;
-            if (fl_dp_first(K, i, k, r) || i+k == M) s->cand[s->ncand++] = x;
+            if (fl_dp_first(K, i, k, r, s->cfg.thin) || i+k == M) s->cand[s->ncand++] = x;
          }
       fl_parallel(fl_cost_job, s, FL_MIN(s->nthreads, s->ncand));
       fl_dp_path(s, M, K);

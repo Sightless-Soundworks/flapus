@@ -175,7 +175,9 @@ lengths up to the maximum) was 99 % of the encoding time, so the search has two 
   units from every 2^a-th unit, and the longest blocks. That is about 5 blocks per unit
   instead of 18, and the long ones, which cost the most, are the rarest. With a
   refinement to follow, the longest blocks (18 units at 4608 samples) start only at
-  every sixth unit: 4-5 % faster at level 5, 0.005 % larger files.
+  every sixth unit: 4-5 % faster at level 5, 0.005 % larger files. The refinement also
+  finds the 3*2^a blocks near the boundaries, so levels 4-7 leave them out of the first
+  pass: level 5 about 12 % faster, 0.005 % larger files.
 - Then, with `refine` r, every block whose start and end both lie within r units of a
   boundary of the first result, and the dynamic programming once more.
 
