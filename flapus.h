@@ -10409,6 +10409,7 @@ FLDEF void fl_flac_frame_decoder_destroy(fl_flac_frame_decoder *dec) {
 #define FL_FLAC_SEGMENT 65536   /* samples per channel analysed at once */
 #define FL_FLAC_MAX_ORDER 32
 #define FL_PI 3.14159265358979323846
+#define FL_LN2 0.69314718055994530942  /* the same double as fl_log(2.0) */
 #define FL_SLACK 288   /* extra entries after every sample buffer */
 #define FL_EST_PORDER 4  /* partition order limit of the block cost estimates */
 #define FL_SEARCH_PORDER 6  /* partition order limit of the estimates that compare predictors */
@@ -12189,7 +12190,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
          /* the orders with the lowest estimated cost from the prediction error */
          for (o = 1; o <= got; o++) {
             double e = err[o] > 0 ? err[o]/n : 1e-9;
-            est[o] = (n-o)*0.5*fl_log(e+1e-9)/fl_log(2.0)+o*(bps+fl_default_prec(n, bps));
+            est[o] = (n-o)*0.5*fl_log(e+1e-9)/FL_LN2+o*(bps+fl_default_prec(n, bps));
          }
          for (k = 0; k < FL_MIN(cfg->picks, 3); k++) {
             double bv = 1e300;
@@ -12370,7 +12371,7 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
          e -= y[i]*y[i];
          o = i+1;
          {
-            double est = (n-o)*0.5*fl_log(FL_MAX(e, 0)/(n-P)+1e-9)/fl_log(2.0)+o*(bps+fl_default_prec(n, bps));
+            double est = (n-o)*0.5*fl_log(FL_MAX(e, 0)/(n-P)+1e-9)/FL_LN2+o*(bps+fl_default_prec(n, bps));
             if (est < bv) {
                bv = est;
                bo = o;
