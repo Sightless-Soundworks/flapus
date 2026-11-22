@@ -1812,13 +1812,15 @@ static void fl_climb(fl_search *s, int passes) {
 }
 
 /* Partition-aware IRLS: weights 1/(|e| * mean |e| of its neighbourhood) approximate the
-   Rice cost, starting from the given coefficients. */
+   Rice cost, starting from the given coefficients. Stops after two iterations that bring
+   nothing. */
 static void fl_irls(fl_search *s, const double *start, int order, int iters) {
    fl_ws *w = s->ws;
-   int n = s->n, it, i, j, seg = FL_MAX(32, n>>4);
+   int n = s->n, it, i, j, seg = FL_MAX(32, n>>4), miss = 0;
    double a[FL_FLAC_MAX_ORDER];
    memcpy(a, start, sizeof(double)*order);
-   for (it = 0; it < iters; it++) {
+   for (it = 0; it < iters && miss < 2; it++) {
+      fl_u64 before = s->best_bits;
       /* residual of the float predictor */
       for (i = order; i < n; i++) {
          double p = 0;
@@ -1834,6 +1836,7 @@ static void fl_irls(fl_search *s, const double *start, int order, int iters) {
       }
       if (!fl_lpc_ls(w->xd, w->wt, n, order, a, w->wcov, w->avx2)) return;
       fl_try_lpc_float(s, a, order, s->cfg->prec_range >= 99 ? 99 : 1);
+      miss = s->best_bits < before ? 0 : miss+1;
    }
 }
 

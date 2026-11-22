@@ -135,7 +135,8 @@ Refinements, applied to the best candidate:
   the default precision only; ±1 for each of them was 14 % of the time at level 5 for
   0.02 % smaller files.
 - **IRLS**: the weights are `1/(|e|*mean|e| of the neighbourhood)`. For Laplacian
-  residuals within Rice partitions this approximates minimizing the Rice cost.
+  residuals within Rice partitions this approximates minimizing the Rice cost. It stops
+  after two iterations that bring nothing: level 8 a third faster, 0.005 % larger files.
 - **Hill climb**: ±1 on each quantized coefficient, evaluated incrementally (O(n) per
   try).
 
