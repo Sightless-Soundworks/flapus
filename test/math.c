@@ -51,8 +51,9 @@ static double ulps(double got, long double ref) {
 static void check(const char *name, double x, double y, double got, long double ref, double limit) {
    double u = ulps(got, ref);
    if (!(u <= limit+!wide)) {
-      printf("FAIL %s(%.17g%s%.17g): %.17g, want %.17Lg (%.2f ulp)\n", name, x, y == y ? ", " : "",
-             y == y ? y : 0.0, got, ref, u);
+      /* ref as double: printf of long double does not work with every C library (msvcrt) */
+      if (y == y) printf("FAIL %s(%.17g, %.17g): %.17g, want %.17g (%.2f ulp)\n", name, x, y, got, (double)ref, u);
+      else printf("FAIL %s(%.17g): %.17g, want %.17g (%.2f ulp)\n", name, x, got, (double)ref, u);
       fails++;
    }
 }
@@ -68,8 +69,9 @@ static void special(const char *what, double got, double want) {
 int main(void) {
    fl_u32 seed = 1;
    double nan = NAN, x, y;
+   volatile long double big = 1e22L;  /* volatile: GCC would compute sinl(1e22) exactly itself */
    int i;
-   trig_exact = !wide || fabsl(sinl(1e22L)+0.85220084976718880177270589375302937L) < 1e-18L;
+   trig_exact = !wide || fabsl(sinl(big)+0.85220084976718880177270589375302937L) < 1e-18L;
    for (i = 0; i < 200000; i++) {
       /* arguments spread over many binades, plus the ranges the encoders use */
       seed = seed*1664525u+1013904223u;
