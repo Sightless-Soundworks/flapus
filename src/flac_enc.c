@@ -1544,6 +1544,8 @@ typedef struct {
    fl_i16 *x16, *x16l;
    fl_i32 *sor, *sfirst;
    char *seq;
+   fl_i16 *x16d;   /* 17-27 bits: the samples as 16 bits, valid where fits16 */
+   char *fits16;   /* per step: 17-27 bits, all samples fit in 16 bits */
    int step;
 } fl_prefix;
 
@@ -1612,6 +1614,11 @@ static int fl_prefix_build(fl_prefix *pf, const fl_i32 *x, fl_u32 *const *fu, in
          free(pf->sor);
          free(pf->sfirst);
          free(pf->seq);
+         free(pf->x16d);
+         free(pf->fits16);
+         pf->x16d = (fl_i16*)calloc(len+FL_SLACK, sizeof(fl_i16));
+         pf->fits16 = (char*)malloc(ns);
+         if (!pf->x16d || !pf->fits16) return -1;
          pf->x16 = (fl_i16*)calloc(len+FL_SLACK, sizeof(fl_i16));
          pf->x16l = (fl_i16*)calloc(len+FL_SLACK, sizeof(fl_i16));
          pf->sor = (fl_i32*)malloc(sizeof(fl_i32)*ns);
@@ -1625,14 +1632,18 @@ static int fl_prefix_build(fl_prefix *pf, const fl_i32 *x, fl_u32 *const *fu, in
       /* once per segment instead of once per block */
       pf->step = step;
       fl_fill_x16_parts(pf->x16, pf->x16l, x, len, bps);
+      if (bps > 16 && bps <= 27) fl_fill_x16_parts(pf->x16d, NULL, x, len, 16);
       for (k = 0, i = 0; i < len; k++, i += step) {
          int end = FL_MIN(len, i+step);
-         fl_i32 o = 0, v = x[i];
+         fl_i32 o = 0, v = x[i], lo = 0, hi = 0;
          char eq = 1;
          for (m = i; m < end; m++) {
             o |= x[m];
             eq &= x[m] == v;
+            lo = FL_MIN(lo, x[m]);
+            hi = FL_MAX(hi, x[m]);
          }
+         pf->fits16[k] = bps > 16 && bps <= 27 && lo >= -32768 && hi <= 32767;
          pf->sor[k] = o;
          pf->sfirst[k] = v;
          pf->seq[k] = eq;
@@ -1676,6 +1687,8 @@ static void fl_prefix_free(fl_prefix *pf) {
    free(pf->sor);
    free(pf->sfirst);
    free(pf->seq);
+   free(pf->x16d);
+   free(pf->fits16);
 }
 
 /* ---- Subframe search ---- */
@@ -1686,6 +1699,7 @@ typedef struct {
    int bps, n;
    const fl_i32 *x;
    const fl_i16 *x16, *x16l;  /* x in 16-bit parts (see fl_fill_x16) */
+   int abps;           /* bits for fl_lpc_mode: 16 if all samples fit in 16 bits, else bps */
    fl_u64 best_bits;   /* estimated */
    fl_sf best;
    int cap;            /* LPC estimates are only compared with best_bits (see fl_est_limit) */
@@ -1713,7 +1727,7 @@ static int fl_default_prec(int n, int bps) {
 static fl_u64 fl_try_lpc(fl_search *s, const fl_i32 *q, int order, int prec, int shift) {
    fl_ws *w = s->ws;
    fl_u64 bits = 8+(fl_u64)order*s->bps+4+5+(fl_u64)order*prec;
-   int mode = fl_lpc_mode(s->bps, prec, order);
+   int mode = fl_lpc_mode(s->abps, prec, order);
 #ifdef FL_FLAC_AVX2
    if (w->avx2 && mode >= 3 && shift >= 1) fl_lpc_residual_direct_avx2(s->x, s->x16, s->x16l, s->n, q, order, mode, shift, w->u);
    else
@@ -1788,7 +1802,7 @@ static void fl_climb(fl_search *s, int passes) {
    qmax = (1<<(prec-1))-1;
    qmin = -qmax-1;
    memcpy(q, s->best.coef, sizeof(q[0])*order);
-   fl_lpc_sums(x, w->xd, s->x16, s->x16l, n, q, order, fl_lpc_mode(s->bps, prec, order), w->acc, w->avx2);
+   fl_lpc_sums(x, w->xd, s->x16, s->x16l, n, q, order, fl_lpc_mode(s->abps, prec, order), w->acc, w->avx2);
    cur = s->best_bits;
    for (pass = 0; pass < passes; pass++) {
       int improved = 0;
@@ -1928,7 +1942,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
                                fl_u32 *const *fu, const fl_prefix *pf, int off, fl_sf *out, int *kbuf) {
    fl_search s;
    fl_i32 orv = 0, *x = ws->x;
-   int i, wasted = 0, order, max_order;
+   int i, wasted = 0, order, max_order, abps;
    fl_u64 bits;
    for (i = 1; i < n && x0[i] == x0[0]; i++);
    out->k = NULL;
@@ -1971,12 +1985,23 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
       ws->xd[i] = x[i];
    }
    bps -= wasted;
-   fl_fill_x16(ws, x, n, bps);
+   /* 16-bit sums for samples that fit, such as most side channels: the same results */
+   abps = bps;
+   if (bps > 16 && bps <= 27) {
+      fl_i32 lo = 0, hi = 0;
+      for (i = 0; i < n; i++) {
+         lo = FL_MIN(lo, x[i]);
+         hi = FL_MAX(hi, x[i]);
+      }
+      if (lo >= -32768 && hi <= 32767) abps = 16;
+   }
+   fl_fill_x16(ws, x, n, abps);
    memset(&s, 0, sizeof(s));
    s.cfg = cfg;
    s.ws = ws;
    s.wc = wc;
    s.bps = bps;
+   s.abps = abps;
    s.n = n;
    s.x = x;
    s.x16 = ws->x16;
@@ -2141,8 +2166,8 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
       int ord = s.best.order;
       if (s.best.type == 2) fl_fixed_residual(x, n, ord, bps, ws->res, ws->u, ws->avx2);
       else {
-         fl_lpc_sums(x, ws->xd, ws->x16, ws->x16l, n, s.best.coef, ord, fl_lpc_mode(bps, s.best.prec, ord), ws->acc, ws->avx2);
-         fl_lpc_residual(x, n, ord, s.best.shift, fl_lpc_mode(bps, s.best.prec, ord), ws->acc, ws->u, ws->avx2);
+         fl_lpc_sums(x, ws->xd, ws->x16, ws->x16l, n, s.best.coef, ord, fl_lpc_mode(abps, s.best.prec, ord), ws->acc, ws->avx2);
+         fl_lpc_residual(x, n, ord, s.best.shift, fl_lpc_mode(abps, s.best.prec, ord), ws->acc, ws->u, ws->avx2);
       }
       out->bits = 8+(fl_u64)ord*bps+(s.best.type == 3 ? 9+(fl_u64)ord*s.best.prec : 0)+
                   fl_rice_exact(&ws->plan, ws->ktmp, ws->rl, ws->rlor, ws->u, n, ord, cfg->max_porder, bps > 14);
@@ -2285,16 +2310,24 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
          memset(&s, 0, sizeof(s));
          s.cfg = cfg;
          s.ws = ws;
-         s.bps = bps;
+         s.bps = s.abps = bps;
          s.n = n;
          s.x = x;
          s.x16 = wasted ? ws->x16 : pf->x16+off;
          s.x16l = wasted ? ws->x16l : pf->x16l+off;
+         if (!wasted && bps > 16 && bps <= 27) {
+            int f16 = 1;
+            for (i = k0; i < k1; i++) f16 &= pf->fits16[i];
+            if (f16) {
+               s.abps = 16;
+               s.x16 = pf->x16d+off;
+            }
+         }
          s.best_bits = best;
          s.cap = 1;
          s.porder = porder;
          /* xd is only read by the double sums (mode 1) */
-         if (fl_lpc_mode(bps, prec, bo) == 1)
+         if (fl_lpc_mode(s.abps, prec, bo) == 1)
             for (i = 0; i < n; i++) ws->xd[i] = x[i];
          if (wasted) fl_fill_x16(ws, x, n, bps);
          fl_try_lpc_float(&s, lp, bo, 0);
