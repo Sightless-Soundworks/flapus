@@ -12134,12 +12134,15 @@ static int fl_lpc_ls_all(const double *x, int n, int P, double a[][FL_FLAC_MAX_O
    segment: P[k][i] = sum over m < i of y[m]*y[m-k], y = x scaled to at most 20 bits. Rice
    estimates of the fixed residuals come from U[o][i] = sum over m < i of fu[o][m]. */
 #define FL_DP_ORDER 12  /* order limit of the quick estimate; fl_prefix_p_avx2 assumes 12 */
+#define FL_DP_SLOT (2*FL_DP_ORDER+1)
 
 typedef struct {
+   /* P only within FL_DP_ORDER of the block boundaries (multiples of step, and len): one
+      slot of FL_DP_SLOT entries per boundary, see fl_prefix_slot */
    fl_i64 *P[FL_DP_ORDER+1];
    fl_u64 *U[5];
-   fl_i64 *y;   /* y for the AVX2 code, after 16 zeros */
-   int cap, has_u, avx2;
+   fl_i64 *y;   /* y after 16 zeros */
+   int cap, has_u, avx2, len, nb;
    /* quick estimate: the samples in 16-bit parts (fl_fill_x16), and per step the OR of the
       samples, the first sample and whether all are equal */
    fl_i16 *x16, *x16l;
@@ -12150,17 +12153,29 @@ typedef struct {
    int step;
 } fl_prefix;
 
+/* Index in P[k] of position c, a block boundary; positions c-FL_DP_ORDER..c+FL_DP_ORDER
+   follow in order. */
+static size_t fl_prefix_slot(const fl_prefix *pf, int c) {
+   return (size_t)(c == pf->len ? pf->nb-1 : c/pf->step)*FL_DP_SLOT+FL_DP_ORDER;
+}
+
+/* Positions lo..m-1 of slot b that the window of slot b-1 has passed (the last two
+   boundaries can be close): copied from slot b-1. */
+static void fl_prefix_overlap(fl_prefix *pf, int b, int lo, int m) {
+   int k, i, c = FL_MIN(b*pf->step, pf->len), c0 = (b-1)*pf->step;
+   for (k = 0; k <= FL_DP_ORDER; k++)
+      for (i = lo; i < m; i++) pf->P[k][(size_t)b*FL_DP_SLOT+FL_DP_ORDER+i-c] = pf->P[k][(size_t)(b-1)*FL_DP_SLOT+FL_DP_ORDER+i-c0];
+}
+
 #ifdef FL_FLAC_AVX2
-/* The P part of fl_prefix_build with all lags at a time (exact 64-bit sums: the same
-   entries). a0, a1 and a2 hold the lags 3..0, 7..4 and 11..8 in load order, without lane
-   permutes; lag 12 is a scalar sum. The zeros before y make P[k][j] = 0 for j <= k. */
-static FL_AVX2_FN void fl_prefix_p_avx2(fl_prefix *pf, const fl_i32 *x, int len, int sh, int step) {
+/* fl_prefix_p with AVX2 (exact 64-bit sums: the same entries). a0, a1 and a2 hold the
+   lags 3..0, 7..4 and 11..8 in load order, without lane permutes; lag 12 is a scalar sum. */
+static FL_AVX2_FN void fl_prefix_p_avx2(fl_prefix *pf) {
    __m256i a0 = _mm256_setzero_si256(), a1 = a0, a2 = a0;
-   fl_i64 *y = pf->y+16, t[12], a12 = 0;
-   int k, m, c;
-   for (m = 0; m < 16; m++) pf->y[m] = 0;
-   for (m = 0; m < len; m++) y[m] = x[m]>>sh;
-   for (k = 0; k <= FL_DP_ORDER; k++) pf->P[k][0] = 0;
+   const fl_i64 *y = pf->y+16;
+   fl_i64 t[12], a12 = 0;
+   int k, m = 0, b;
+   size_t q;
 #define FL_PREFIX_STEP(m) do { \
       __m256i ym = _mm256_set1_epi64x(y[m]); \
       a0 = _mm256_add_epi64(a0, _mm256_mul_epi32(ym, _mm256_loadu_si256((const __m256i*)(y+(m)-3)))); \
@@ -12172,12 +12187,14 @@ static FL_AVX2_FN void fl_prefix_p_avx2(fl_prefix *pf, const fl_i32 *x, int len,
       _mm256_storeu_si256((__m256i*)t, a0); \
       _mm256_storeu_si256((__m256i*)(t+4), a1); \
       _mm256_storeu_si256((__m256i*)(t+8), a2); \
-      for (k = 0; k < 12; k++) pf->P[k][j] = t[(k&~3)+3-(k&3)]; \
-      pf->P[12][j] = a12; \
+      for (k = 0; k < 12; k++) pf->P[k][q+(j)] = t[(k&~3)+3-(k&3)]; \
+      pf->P[12][q+(j)] = a12; \
    } while (0)
-   /* the same windows as fl_prefix_build */
-   for (m = 0, c = 0; m < len; c = c+step < len ? c+step : len) {
-      int lo = FL_MAX(c-FL_DP_ORDER, m), hi = FL_MIN(c+FL_DP_ORDER, len);
+   /* the same windows as fl_prefix_p */
+   for (b = 0; b < pf->nb; b++) {
+      int c = FL_MIN(b*pf->step, pf->len), lo = FL_MAX(c-FL_DP_ORDER, 0), hi = FL_MIN(c+FL_DP_ORDER, pf->len);
+      q = (size_t)b*FL_DP_SLOT+FL_DP_ORDER-c;
+      if (m > lo) fl_prefix_overlap(pf, b, lo, m);
       for (; m < lo; m++) FL_PREFIX_STEP(m);
       if (m <= hi) FL_PREFIX_STORE(m);
       for (; m < hi; m++) {
@@ -12190,16 +12207,42 @@ static FL_AVX2_FN void fl_prefix_p_avx2(fl_prefix *pf, const fl_i32 *x, int len,
 }
 #endif
 
+/* P at the positions within FL_DP_ORDER of each block boundary. The zeros before y make
+   P[k][j] = 0 for j <= k. */
+static void fl_prefix_p(fl_prefix *pf) {
+   const fl_i64 *y = pf->y+16;
+   fl_i64 a[FL_DP_ORDER+1];
+   int k, m = 0, b;
+#ifdef FL_FLAC_AVX2
+   if (pf->avx2) {
+      fl_prefix_p_avx2(pf);
+      return;
+   }
+#endif
+   for (k = 0; k <= FL_DP_ORDER; k++) a[k] = 0;
+   for (b = 0; b < pf->nb; b++) {
+      int c = FL_MIN(b*pf->step, pf->len), lo = FL_MAX(c-FL_DP_ORDER, 0), hi = FL_MIN(c+FL_DP_ORDER, pf->len);
+      fl_i64 *q[FL_DP_ORDER+1];
+      for (k = 0; k <= FL_DP_ORDER; k++) q[k] = pf->P[k]+(size_t)b*FL_DP_SLOT+FL_DP_ORDER-c;
+      if (m > lo) fl_prefix_overlap(pf, b, lo, m);
+      for (; m < lo; m++)
+         for (k = 0; k <= FL_DP_ORDER; k++) a[k] += y[m]*y[m-k];
+      for (k = 0; k <= FL_DP_ORDER && m <= hi; k++) q[k][m] = a[k];
+      for (; m < hi; m++)
+         for (k = 0; k <= FL_DP_ORDER; k++) q[k][m+1] = a[k] += y[m]*y[m-k];
+   }
+}
+
 /* fu: the segment's fixed residuals of this channel (see fl_flac_sink) or NULL. quick: P and
    U[2] (quick estimate); light: U of every order (light search). An encoder always passes
-   the same flags. Blocks start and end at multiples of step or at len, and the quick
-   estimate reads P only within FL_DP_ORDER of them, so only those entries are stored. */
+   the same flags. Blocks start and end at multiples of step or at len. */
 static int fl_prefix_build(fl_prefix *pf, const fl_i32 *x, fl_u32 *const *fu, int len, int bps, int quick, int light, int step) {
-   int k, i, m, c, sh = bps > 20 ? bps-20 : 0;
+   int k, i, m, sh = bps > 20 ? bps-20 : 0;
    if (len+1 > pf->cap) {
+      size_t slots = (size_t)((len+step-1)/step+1)*FL_DP_SLOT;
       for (k = 0; k <= FL_DP_ORDER && quick; k++) {
          free(pf->P[k]);
-         if (!(pf->P[k] = (fl_i64*)malloc(sizeof(fl_i64)*(len+1)))) return -1;
+         if (!(pf->P[k] = (fl_i64*)malloc(sizeof(fl_i64)*slots))) return -1;
       }
       for (k = 0; k < 5; k++) {
          free(pf->U[k]);
@@ -12229,9 +12272,11 @@ static int fl_prefix_build(fl_prefix *pf, const fl_i32 *x, fl_u32 *const *fu, in
       }
       pf->cap = len+1;
    }
+   pf->len = len;
+   pf->step = step;
+   pf->nb = (len+step-1)/step+1;
    if (quick) {
       /* once per segment instead of once per block */
-      pf->step = step;
       fl_fill_x16_parts(pf->x16, pf->x16l, x, len, bps);
       if (bps > 16 && bps <= 27) fl_fill_x16_parts(pf->x16d, NULL, x, len, 16);
       for (k = 0, i = 0; i < len; k++, i += step) {
@@ -12256,24 +12301,10 @@ static int fl_prefix_build(fl_prefix *pf, const fl_i32 *x, fl_u32 *const *fu, in
       pf->U[k][0] = 0;
       for (i = 0; i+k < len; i++) pf->U[k][i+1] = pf->U[k][i]+fu[k][i];
    }
-#ifdef FL_FLAC_AVX2
-   if (pf->avx2 && quick) {
-      fl_prefix_p_avx2(pf, x, len, sh, step);
-      return 0;
-   }
-#endif
-   for (k = 0; k <= FL_DP_ORDER && quick; k++) {
-      fl_i64 *P = pf->P[k], acc = 0;  /* acc = P[m] */
-      for (i = 0; i <= k && i <= len; i++) P[i] = 0;
-      for (m = k, c = 0; m < len; c = c+step < len ? c+step : len) {
-         int lo = FL_MAX(c-FL_DP_ORDER, m), hi = FL_MIN(c+FL_DP_ORDER, len);
-         for (; m < lo; m++) acc += (fl_i64)(x[m]>>sh)*(x[m-k]>>sh);
-         if (m <= hi) P[m] = acc;
-         for (; m < hi; m++) {
-            acc += (fl_i64)(x[m]>>sh)*(x[m-k]>>sh);
-            P[m+1] = acc;
-         }
-      }
+   if (quick) {
+      for (m = 0; m < 16; m++) pf->y[m] = 0;
+      for (m = 0; m < len; m++) pf->y[m+16] = x[m]>>sh;
+      fl_prefix_p(pf);
    }
    return 0;
 }
@@ -12868,7 +12899,8 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
          residual energy of every order */
       double phi[FL_FLAC_MAX_ORDER][FL_FLAC_MAX_ORDER], psi[FL_FLAC_MAX_ORDER], y[FL_FLAC_MAX_ORDER];
       double lp[FL_FLAC_MAX_ORDER], e, ridge = 0, bv = 1e300;
-      int P = max_order, t0 = off+max_order, t1 = off+n, o, j, k, bo = 0;
+      int P = max_order, o, j, k, bo = 0;
+      size_t t0 = fl_prefix_slot(pf, off)+max_order, t1 = fl_prefix_slot(pf, off+n);  /* P[.][off+max_order], P[.][off+n] */
       for (i = 0; i < P; i++) {
          psi[i] = (double)(pf->P[i+1][t1]-pf->P[i+1][t0]);
          for (j = 0; j <= i; j++) phi[i][j] = (double)(pf->P[i-j][t1-j-1]-pf->P[i-j][t0-j-1]);
