@@ -444,13 +444,25 @@ static int fl_flac_subframe(fl_br *b, fl_i64 *x, int n, int bps) {
       if (prec == 16 || shift < 0) return -1;
       for (j = 0; j < order; j++) c[j] = fl_br_sbits(b, prec);
       if (fl_flac_residual(b, x, n, order) < 0) return -1;
-      for (i = order; i < n; i++) {
-         fl_i64 s = 0;
-         const fl_i64 *h = x+i-1;
-         for (j = 0; j < order; j++) s += c[j]*h[-j];
-         x[i] += s>>shift;
-         if (FL_OUT(x[i])) return -1;
-      }
+      if (bps+prec+fl_ilog(order) <= 33) {
+         /* |sum| < order*2^(prec-1)*2^(bps-1) <= 2^31: 32-bit sums are exact */
+         fl_i32 c32[32];
+         for (j = 0; j < order; j++) c32[j] = (fl_i32)c[j];
+         for (i = order; i < n; i++) {
+            fl_i32 s = 0;
+            const fl_i64 *h = x+i-1;
+            for (j = 0; j < order; j++) s += c32[j]*(fl_i32)h[-j];
+            x[i] += s>>shift;
+            if (FL_OUT(x[i])) return -1;
+         }
+      } else
+         for (i = order; i < n; i++) {
+            fl_i64 s = 0;
+            const fl_i64 *h = x+i-1;
+            for (j = 0; j < order; j++) s += c[j]*h[-j];
+            x[i] += s>>shift;
+            if (FL_OUT(x[i])) return -1;
+         }
    } else return -1;
    if (wasted)
       for (i = 0; i < n; i++) x[i] = (fl_i64)((fl_u64)x[i]<<wasted);
