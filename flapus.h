@@ -8135,11 +8135,26 @@ static void fl_md5_samples(fl_md5 *m, const fl_i32 *pcm, size_t n, int bits) {
    while (i < n) {
       size_t k, chunk = (n-i) < sizeof(tmp)/4 ? (n-i) : sizeof(tmp)/4;
       unsigned char *q = tmp;
-      for (k = 0; k < chunk; k++) {
-         fl_u32 v = (fl_u32)pcm[i+k];
-         int b;
-         for (b = 0; b < bytes; b++) *q++ = (unsigned char)(v>>(8*b));
-      }
+      /* 2 and 3 bytes without the inner loop */
+      if (bytes == 2)
+         for (k = 0; k < chunk; k++, q += 2) {
+            fl_u32 v = (fl_u32)pcm[i+k];
+            q[0] = (unsigned char)v;
+            q[1] = (unsigned char)(v>>8);
+         }
+      else if (bytes == 3)
+         for (k = 0; k < chunk; k++, q += 3) {
+            fl_u32 v = (fl_u32)pcm[i+k];
+            q[0] = (unsigned char)v;
+            q[1] = (unsigned char)(v>>8);
+            q[2] = (unsigned char)(v>>16);
+         }
+      else
+         for (k = 0; k < chunk; k++) {
+            fl_u32 v = (fl_u32)pcm[i+k];
+            int b;
+            for (b = 0; b < bytes; b++) *q++ = (unsigned char)(v>>(8*b));
+         }
       fl_md5_update(m, tmp, (size_t)(q-tmp));
       i += chunk;
    }
@@ -8631,11 +8646,26 @@ static int fl_wav_write(fl_sink *s, const fl_i32 *pcm, int n) {
       w->cap = need;
    }
    q = w->buf;
-   for (i = 0; i < n*w->C; i++) {
-      fl_u32 v = (fl_u32)pcm[i]<<shift;
-      if (bytes == 1) *q++ = (unsigned char)(v+128);
-      else for (b = 0; b < bytes; b++) *q++ = (unsigned char)(v>>(8*b));
-   }
+   /* 2 and 3 bytes without the inner loop */
+   if (bytes == 2)
+      for (i = 0; i < n*w->C; i++, q += 2) {
+         fl_u32 v = (fl_u32)pcm[i]<<shift;
+         q[0] = (unsigned char)v;
+         q[1] = (unsigned char)(v>>8);
+      }
+   else if (bytes == 3)
+      for (i = 0; i < n*w->C; i++, q += 3) {
+         fl_u32 v = (fl_u32)pcm[i]<<shift;
+         q[0] = (unsigned char)v;
+         q[1] = (unsigned char)(v>>8);
+         q[2] = (unsigned char)(v>>16);
+      }
+   else
+      for (i = 0; i < n*w->C; i++) {
+         fl_u32 v = (fl_u32)pcm[i]<<shift;
+         if (bytes == 1) *q++ = (unsigned char)(v+128);
+         else for (b = 0; b < bytes; b++) *q++ = (unsigned char)(v>>(8*b));
+      }
    if (fl_out_write(w->f, w->buf, need) != need) return FL_ERR_IO;
    w->written += n;
    return FL_OK;
