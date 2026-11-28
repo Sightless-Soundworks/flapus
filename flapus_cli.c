@@ -36,7 +36,7 @@ static void usage(FILE *f) {
       "  -V, --verify         decode every frame again and compare it with the input\n"
       "      --lax            allow streams outside the FLAC subset (even smaller, but\n"
       "                       not every hardware player supports them)\n"
-      "      --threads N      encoder threads (default 0 = one per CPU)\n"
+      "      --threads N      encoder threads, at most 64 (default 0 = one per CPU)\n"
       "      --no-seektable   no seek table (default: a seek point every 10 s)\n"
       "Sample format (WAV and FLAC output, and Opus from Opus):\n"
       "      --bits N         16, 24 or 32 (default: 16 from Opus, else the input's)\n"
@@ -307,7 +307,7 @@ int main(int argc, char **argv) {
       } else if (strcmp(a, "--level") == 0) {
          ok = get_int(a, v, 0, 8, &opt.flac_level);
       } else if (strcmp(a, "--threads") == 0) {
-         ok = get_int(a, v, 0, 1024, &opt.threads);
+         ok = get_int(a, v, 0, 64, &opt.threads);
       } else if (strcmp(a, "--rate") == 0) {
          ok = get_int(a, v, 8000, 192000, &opt.rate);
       } else if (strcmp(a, "--bits") == 0) {

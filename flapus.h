@@ -107,7 +107,8 @@ typedef struct {
    int flac_lax;       /* 1 = allow streams outside the FLAC subset (LPC order 32 etc.); needed for
                           bit depths other than 8, 12, 16, 20, 24 and 32 and for rates that a
                           frame header cannot hold */
-   int threads;        /* FLAC encoder threads: 1 (default), 0 = one per CPU; the output does not depend on it */
+   int threads;        /* FLAC encoder threads: 1 (default), 0 = one per CPU, at most 64; the output does
+                          not depend on it */
    int flac_seektable; /* 1 = a seek point every 10 s (default), 0 = none */
    int flac_verify;    /* 1 = decode every frame again and compare (FL_ERR_INTERNAL on a mismatch),
                           0 (default) = not */
