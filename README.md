@@ -102,7 +102,8 @@ flapus detects the input format from the file content. The output format follows
 file extension (`.wav`, `.flac`, `.opus`) unless `--format wav|flac|opus` is given.
 Without an output, a FLAC or Opus file is converted onto itself, FLAC to FLAC or Opus to
 Opus (Opus is encoded again, so it loses a little quality each time). WAV input, stdin
-and Ogg FLAC need an output.
+and Ogg FLAC need an output. Options may also follow the file names, and `--` ends the
+options (for a file name that starts with `-`).
 
 ```bash
 flapus music.wav music.flac                   # FLAC subset file (level 5)

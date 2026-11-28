@@ -16,6 +16,7 @@ static void usage(FILE *f) {
       "  Without output, a FLAC or Opus file is converted onto itself (FLAC to FLAC,\n"
       "  Opus to Opus); WAV input needs an output.\n"
       "  Use - for stdin or stdout (stdout needs --format).\n"
+      "  Options may also follow the file names; -- ends the options.\n"
       "General:\n"
       "      --format F       output format: wav, flac or opus (overrides the extension)\n"
       "      --search N       look for the start of the stream up to N KB into the input,\n"
@@ -125,7 +126,8 @@ static void progress(void *user, double done, double ratio) {
 }
 
 /* Options without a value, and with one (--padding takes one only if it is a number). */
-static const char *const flag_opts[] = {"-s", "--silent", "-f", "--force", "--delete-input-file", "--lax", "--no-seektable",
+static const char *const flag_opts[] = {"-h", "--help", "-v", "--version", "-s", "--silent", "-f", "--force",
+                                        "--delete-input-file", "--lax", "--no-seektable",
                                         "-V", "--verify", "--remove-tags", "--no-timestamp", "--no-dither", "--float",
                                         "--vbr", "--cvbr", "--hard-cbr", "--music", "--speech", "--no-phase-inv",
                                         "--downmix-mono", "--downmix-stereo", NULL};
@@ -145,12 +147,34 @@ static int option_args(const char *a, const char *v) {
    return -1;
 }
 
-/* Number of paths at the end of argv: what follows the leading options, 2 (input and
-   output) or 1 (input only). The last argument is never an option value. */
-static int count_paths(int argc, char **argv) {
-   int i = 1, n;
-   while (i < argc-1 && (n = option_args(argv[i], i+1 < argc-1 ? argv[i+1] : NULL)) >= 0) i += 1+n;
-   return argc-i >= 2 ? 2 : 1;
+/* Splits argv into the options with their values (optv, *nopt entries) and the paths, in
+   any order. "--" ends the options; "-" is a path. Returns the number of paths (0-2), or -1
+   after an error message. */
+static int split_args(int argc, char **argv, const char **optv, int *nopt, const char **path) {
+   int i, k, n = 0, only_paths = 0;
+   *nopt = 0;
+   for (i = 1; i < argc; i++) {
+      const char *a = argv[i];
+      if (only_paths || a[0] != '-' || a[1] == 0) {
+         if (n == 2) {
+            fprintf(stderr, "Error: more than two file names: %s\n", a);
+            return -1;
+         }
+         path[n++] = a;
+      } else if (strcmp(a, "--") == 0) {
+         only_paths = 1;
+      } else if ((k = option_args(a, i+1 < argc ? argv[i+1] : NULL)) < 0) {
+         fprintf(stderr, "Error: unknown option %s (see flapus --help)\n", a);
+         return -1;
+      } else if (k && i+1 == argc) {
+         fprintf(stderr, "Error: %s needs a value\n", a);
+         return -1;
+      } else {
+         optv[(*nopt)++] = a;
+         if (k) optv[(*nopt)++] = argv[++i];
+      }
+   }
+   return n;
 }
 
 /* Detected format of the input file (FL_FORMAT_* or FL_ERR_*), searched as opt->search
@@ -197,31 +221,26 @@ int main(int argc, char **argv) {
    static char opts[256];
    progress_state ps;
    int i, ret, paths, last, silent = 0, force = 0, delete_input = 0, padding_on = 0, to_stdout, in_place;
-   const char *in_path, *out_path;
+   const char *in_path, *out_path, *path[2], **optv;
    double d;
-   if (argc == 2 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
-      version();
-      return 0;
-   }
-   if (argc == 2 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
-      usage(stdout);
-      return 0;
-   }
-   if (argc < 2 || (argc == 2 && option_args(argv[1], NULL) >= 0)) {
+   if (argc < 2) {
       usage(stderr);
       return 1;
    }
-   paths = count_paths(argc, argv);
-   last = argc-paths;
-   in_path = argv[last];
-   out_path = argv[argc-1];
+   if (!(optv = (const char**)malloc(sizeof(*optv)*argc)) || (paths = split_args(argc, argv, optv, &last, path)) < 0) return 1;
    fl_options_init(&opt);
    opt.keep_time = 1;  /* like flac */
    opt.threads = 0;  /* the command line tool uses every CPU (the library default is 1) */
-   for (i = 1; i < last; i++) {
-      const char *a = argv[i], *v = i+1 < last ? argv[i+1] : NULL;
+   for (i = 0; i < last; i++) {
+      const char *a = optv[i], *v = i+1 < last ? optv[i+1] : NULL;
       int ok = 1, takes = 1;
-      if (strcmp(a, "-s") == 0 || strcmp(a, "--silent") == 0) {
+      if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
+         usage(stdout);
+         return 0;
+      } else if (strcmp(a, "-v") == 0 || strcmp(a, "--version") == 0) {
+         version();
+         return 0;
+      } else if (strcmp(a, "-s") == 0 || strcmp(a, "--silent") == 0) {
          silent = 1;
          takes = 0;
       } else if (strcmp(a, "-f") == 0 || strcmp(a, "--force") == 0) {
@@ -337,6 +356,12 @@ int main(int argc, char **argv) {
          i++;
       }
    }
+   if (paths == 0) {
+      fprintf(stderr, "Error: no input file (see flapus --help)\n");
+      return 1;
+   }
+   in_path = path[0];
+   out_path = path[paths-1];
    if (opt.bitrate > 0 && opt.quality >= 0) {
       fprintf(stderr, "Error: --bitrate and --quality cannot be combined\n");
       return 1;
