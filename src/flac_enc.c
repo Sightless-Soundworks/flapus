@@ -723,7 +723,7 @@ static FL_AVX2_FN void fl_fixed_residual_avx2(const fl_i32 *x, int n, int order,
             }
          }
       }
-      _mm256_storeu_si256((__m256i*)(r+i), v);
+      if (r) _mm256_storeu_si256((__m256i*)(r+i), v);
       _mm256_storeu_si256((__m256i*)(u+i-order), _mm256_xor_si256(_mm256_slli_epi32(v, 1), _mm256_srai_epi32(v, 31)));
    }
    for (; i < n; i++) {
@@ -735,7 +735,7 @@ static FL_AVX2_FN void fl_fixed_residual_avx2(const fl_i32 *x, int n, int order,
       case 3: v = x[i]-3*(x[i-1]-x[i-2])-x[i-3]; break;
       default: v = x[i]-4*(x[i-1]+x[i-3])+6*x[i-2]+x[i-4]; break;
       }
-      r[i] = v;
+      if (r) r[i] = v;
       u[i-order] = fl_zz(v);
    }
 }
@@ -743,18 +743,19 @@ static FL_AVX2_FN void fl_fixed_residual_avx2(const fl_i32 *x, int n, int order,
 
 /* Fixed predictor residual r and its zigzag values u[i-order]; returns 0 if a residual does
    not fit in 32 bits. For bps <= 27 every residual and partial sum is below 2^30 in
-   magnitude, so 32-bit arithmetic is exact. */
+   magnitude, so 32-bit arithmetic is exact. r may be NULL with avx2 and bps <= 27. */
 static int fl_fixed_residual(const fl_i32 *x, int n, int order, int bps, fl_i32 *r, fl_u32 *u, int avx2) {
    int i;
-   for (i = 0; i < order; i++) r[i] = x[i];
 #ifdef FL_FLAC_AVX2
    if (avx2 && bps <= 27) {
+      for (i = 0; i < order && r; i++) r[i] = x[i];
       fl_fixed_residual_avx2(x, n, order, r, u);
       return 1;
    }
 #else
    (void)avx2;
 #endif
+   for (i = 0; i < order; i++) r[i] = x[i];
    if (bps <= 27) {
       fl_i32 v;
       switch (order) {
@@ -2915,7 +2916,7 @@ static void fl_source_job(void *ctx, int t, int nt) {
    for (v = t; v < (s->stereo ? 4 : s->C); v += nt) {
       const fl_i32 *src = !s->stereo || v < 2 ? s->buf[v] : v == 2 ? s->side : s->mid;
       int bps = s->bits+(s->stereo && v == 2);
-      for (o = 0; o <= 4 && o < len && s->fu_ok; o++) fl_fixed_residual(src, len, o, bps, s->fres[v], s->fu[v][o], s->avx2);
+      for (o = 0; o <= 4 && o < len && s->fu_ok; o++) fl_fixed_residual(src, len, o, bps, s->avx2 && bps <= 27 ? NULL : s->fres[v], s->fu[v][o], s->avx2);
       s->prep_fail[v] = s->prep_prefix &&
                         fl_prefix_build(&s->pf[v], src, FL_FU(s, v), len, bps, s->prep_quick, s->prep_light, s->prep_step) < 0;
    }
