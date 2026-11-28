@@ -403,7 +403,7 @@ static int run(int argc, char **argv) {
       fprintf(stderr, "Error: --delete-input-file needs an input file\n");
       return 1;
    }
-   if (!to_stdout && !force && fl_file_exists(out_path)) {
+   if (!to_stdout && !force && fl_file_exists(out_path) && !fl_is_device(out_path)) {
       fprintf(stderr, "Error: %s exists (use -f to overwrite it)\n", out_path);
       return 1;
    }

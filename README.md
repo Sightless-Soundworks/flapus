@@ -168,7 +168,8 @@ leaves an existing file as it was, and a file can be converted onto itself, for 
 to recompress a FLAC file in place. A FLAC file whose MD5 does not match is then left
 unchanged; converted to another file, its output is written anyway. An output that is a
 symbolic link or has several hard links is not replaced: the result is copied into the
-file it links to, so the links stay.
+file it links to, so the links stay. A device or pipe, such as `/dev/null`, a FIFO or
+`NUL`, is written directly like stdout, also without `-f`.
 
 **FLAC output options**
 

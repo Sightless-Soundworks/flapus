@@ -175,7 +175,7 @@ static fl_out *fl_out_file(const char *path, int rw) {
       free(o);
       return NULL;
    }
-   o->seekable = o->f != stdout;
+   o->seekable = o->f != stdout && fl_fseek64(o->f, 0, SEEK_CUR) == 0;  /* not a pipe */
    return o;
 }
 

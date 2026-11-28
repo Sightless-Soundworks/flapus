@@ -530,6 +530,25 @@ static void fl_set_times(const char *path, const fl_times *t, int created) {
 #endif
 }
 
+/* 1 if path is an existing device or pipe (/dev/null, a FIFO, NUL): written directly,
+   since renaming a temporary file over it would replace it with a regular file. */
+static int fl_is_device(const char *path) {
+#ifdef _WIN32
+   HANDLE h = fl_open_handle(path, FILE_READ_ATTRIBUTES);
+   DWORD type;
+   if (h == INVALID_HANDLE_VALUE) return 0;
+   type = GetFileType(h);
+   CloseHandle(h);
+   return type != FILE_TYPE_DISK;
+#elif defined(__unix__) || defined(__APPLE__)
+   struct stat st;
+   return stat(path, &st) == 0 && !S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode);
+#else
+   (void)path;
+   return 0;
+#endif
+}
+
 /* Converts in into a sink for out_path or (out_path NULL) out_io. in_size: the input's size
    (0 = unknown), for the ratio of FLAC and Opus input. same: set to 1 when input and output
    are the same format (FLAC or Opus). in_place: out_path is the input file. */
@@ -545,7 +564,7 @@ static int fl_convert(fl_inbuf *in, fl_i64 in_size, const char *out_path, const 
    out_fmt = ret = opt.format ? opt.format : out_path ? fl_format_from_name(out_path) : FL_ERR_BAD_ARG;
    if (ret < 0) goto done;
    if (same) *same = in_fmt == out_fmt && in_fmt != FL_FORMAT_WAV;
-   if (out_path && !fl_is_std(out_path) && !(tmp = fl_temp_path(out_path))) {
+   if (out_path && !fl_is_std(out_path) && !fl_is_device(out_path) && !(tmp = fl_temp_path(out_path))) {
       ret = FL_ERR_IO;
       goto done;
    }
@@ -577,7 +596,7 @@ FLDEF int fl_convert_file(const char *in_path, const char *out_path, const fl_op
    in_place = fl_same_file(in_path, out_path);
    if ((ret = fl_inbuf_open(&in, in_path)) != FL_OK) return ret;
    ret = fl_convert(&in, opt && opt->progress && !fl_is_std(in_path) ? fl_file_size(in_path) : 0, out_path, NULL, opt, &same, in_place);
-   if (ret == FL_OK || (ret == FL_ERR_CHECKSUM && !in_place)) fl_set_times(out_path, &t, same);
+   if ((ret == FL_OK || (ret == FL_ERR_CHECKSUM && !in_place)) && !fl_is_device(out_path)) fl_set_times(out_path, &t, same);
    return ret;
 }
 
