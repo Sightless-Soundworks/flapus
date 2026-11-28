@@ -1532,7 +1532,7 @@ static int fl_lpc_ls_all(const double *x, int n, int P, double a[][FL_FLAC_MAX_O
    Rectangular-window autocorrelations of any block come from prefix sums over the
    segment: P[k][i] = sum over m < i of y[m]*y[m-k], y = x scaled to at most 20 bits. Rice
    estimates of the fixed residuals come from U[o][i] = sum over m < i of fu[o][m]. */
-#define FL_DP_ORDER 12
+#define FL_DP_ORDER 12  /* order limit of the quick estimate; fl_prefix_p_avx2 assumes 12 */
 
 typedef struct {
    fl_i64 *P[FL_DP_ORDER+1];
@@ -1549,27 +1549,28 @@ typedef struct {
 
 #ifdef FL_FLAC_AVX2
 /* The P part of fl_prefix_build with all lags at a time (exact 64-bit sums: the same
-   entries). The zeros before y make P[k][j] = 0 for j <= k. */
+   entries). a0, a1 and a2 hold the lags 3..0, 7..4 and 11..8 in load order, without lane
+   permutes; lag 12 is a scalar sum. The zeros before y make P[k][j] = 0 for j <= k. */
 static FL_AVX2_FN void fl_prefix_p_avx2(fl_prefix *pf, const fl_i32 *x, int len, int sh, int step) {
-   __m256i a0 = _mm256_setzero_si256(), a1 = a0, a2 = a0, a3 = a0;
-   fl_i64 *y = pf->y+16, t[16];
+   __m256i a0 = _mm256_setzero_si256(), a1 = a0, a2 = a0;
+   fl_i64 *y = pf->y+16, t[12], a12 = 0;
    int k, m, c;
    for (m = 0; m < 16; m++) pf->y[m] = 0;
    for (m = 0; m < len; m++) y[m] = x[m]>>sh;
    for (k = 0; k <= FL_DP_ORDER; k++) pf->P[k][0] = 0;
 #define FL_PREFIX_STEP(m) do { \
       __m256i ym = _mm256_set1_epi64x(y[m]); \
-      a0 = _mm256_add_epi64(a0, _mm256_mul_epi32(ym, _mm256_permute4x64_epi64(_mm256_loadu_si256((const __m256i*)(y+(m)-3)), 0x1B))); \
-      a1 = _mm256_add_epi64(a1, _mm256_mul_epi32(ym, _mm256_permute4x64_epi64(_mm256_loadu_si256((const __m256i*)(y+(m)-7)), 0x1B))); \
-      a2 = _mm256_add_epi64(a2, _mm256_mul_epi32(ym, _mm256_permute4x64_epi64(_mm256_loadu_si256((const __m256i*)(y+(m)-11)), 0x1B))); \
-      a3 = _mm256_add_epi64(a3, _mm256_mul_epi32(ym, _mm256_permute4x64_epi64(_mm256_loadu_si256((const __m256i*)(y+(m)-15)), 0x1B))); \
+      a0 = _mm256_add_epi64(a0, _mm256_mul_epi32(ym, _mm256_loadu_si256((const __m256i*)(y+(m)-3)))); \
+      a1 = _mm256_add_epi64(a1, _mm256_mul_epi32(ym, _mm256_loadu_si256((const __m256i*)(y+(m)-7)))); \
+      a2 = _mm256_add_epi64(a2, _mm256_mul_epi32(ym, _mm256_loadu_si256((const __m256i*)(y+(m)-11)))); \
+      a12 += y[m]*y[(m)-12]; \
    } while (0)
 #define FL_PREFIX_STORE(j) do { \
       _mm256_storeu_si256((__m256i*)t, a0); \
       _mm256_storeu_si256((__m256i*)(t+4), a1); \
       _mm256_storeu_si256((__m256i*)(t+8), a2); \
-      _mm256_storeu_si256((__m256i*)(t+12), a3); \
-      for (k = 0; k <= FL_DP_ORDER; k++) pf->P[k][j] = t[k]; \
+      for (k = 0; k < 12; k++) pf->P[k][j] = t[(k&~3)+3-(k&3)]; \
+      pf->P[12][j] = a12; \
    } while (0)
    /* the same windows as fl_prefix_build */
    for (m = 0, c = 0; m < len; c = c+step < len ? c+step : len) {
