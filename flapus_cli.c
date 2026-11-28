@@ -216,7 +216,7 @@ static int get_num(const char *opt, const char *s, double lo, double hi, double 
    return 1;
 }
 
-int main(int argc, char **argv) {
+static int run(int argc, char **argv) {
    fl_options opt;
    static char opts[256];
    progress_state ps;
@@ -450,3 +450,44 @@ int main(int argc, char **argv) {
    }
    return 0;
 }
+
+#ifdef _WIN32
+/* argv as UTF-8 from the UTF-16 arguments (NULL if out of memory). flapus opens UTF-8 paths
+   with _wfopen, so file names outside the ANSI code page work. */
+static char **utf8_args(int argc, wchar_t **w) {
+   char **a = (char**)calloc(argc+1, sizeof(char*));
+   int i, n;
+   for (i = 0; a && i < argc; i++) {
+      n = WideCharToMultiByte(CP_UTF8, 0, w[i], -1, NULL, 0, NULL, NULL);
+      if (n <= 0 || !(a[i] = (char*)malloc(n))) return NULL;
+      WideCharToMultiByte(CP_UTF8, 0, w[i], -1, a[i], n, NULL, NULL);
+   }
+   return a;
+}
+#endif
+
+#ifdef _MSC_VER
+int wmain(int argc, wchar_t **wargv) {
+   char **argv = utf8_args(argc, wargv);
+   if (!argv) {
+      fprintf(stderr, "Error: out of memory\n");
+      return 1;
+   }
+   return run(argc, argv);
+}
+#elif defined(_WIN32)
+/* MinGW: the UTF-16 arguments from msvcrt.dll's __wgetmainargs, looked up at run time so
+   that nothing is imported; without it (another C library), the ANSI argv. */
+int main(int argc, char **argv) {
+   typedef int (__cdecl *wgetmainargs_fn)(int*, wchar_t***, wchar_t***, int, int*);
+   HMODULE crt = GetModuleHandleA("msvcrt.dll");
+   wgetmainargs_fn get = crt ? (wgetmainargs_fn)(void (*)(void))GetProcAddress(crt, "__wgetmainargs") : NULL;
+   wchar_t **wargv, **wenv;
+   int wargc, newmode = 0;
+   char **u;
+   if (get && get(&wargc, &wargv, &wenv, 0, &newmode) == 0 && wargc == argc && (u = utf8_args(wargc, wargv))) argv = u;
+   return run(argc, argv);
+}
+#else
+int main(int argc, char **argv) { return run(argc, argv); }
+#endif

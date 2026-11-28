@@ -358,7 +358,7 @@ comments in `src/api.h` (the top of `flapus.h`) for the full API.
 Paths are UTF-8 on Windows: a path that is valid UTF-8 is opened with `_wfopen`, so
 file names outside the ANSI code page work. Any other path, such as an ANSI `argv`
 string, goes to `fopen` unchanged. The path `-` is stdin or stdout, as on the command
-line.
+line. The command line tool takes its arguments from the UTF-16 command line as UTF-8.
 
 ### Platforms
 
