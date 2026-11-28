@@ -13127,7 +13127,7 @@ typedef struct {
                            for sample i >= o; computed once instead of per block (bits <= 26) */
    fl_i32 *fres[8];     /* per source: the residuals fl_fixed_residual also writes */
    int fu_ok;
-   int prep_prefix, prep_quick, prep_light, prep_step, prep_fail[8];  /* for fl_source_job */
+   int prep_prefix, prep_quick, prep_light, prep_step, prep_md5, prep_fail[8];  /* for fl_source_job */
    fl_u64 sample_pos, frame_no;
    fl_u32 min_frame, max_frame;
    int min_block, max_block, last_block;
@@ -13669,24 +13669,42 @@ static void fl_frame_job_run(void *ctx, int t, int nt) {
    }
 }
 
+/* Adds the first len buffered samples to the MD5. */
+static void fl_flac_md5(fl_flac_sink *s, int len) {
+   fl_i32 tmp[4096];
+   int i, j, k, c, C = s->C;
+   for (i = 0; i < len; i += k) {
+      k = FL_MIN(len-i, 4096/C);
+      for (c = 0; c < C; c++)
+         for (j = 0; j < k; j++) tmp[j*C+c] = s->buf[c][i+j];
+      fl_md5_samples(&s->md5, tmp, (size_t)k*C, s->bits);
+   }
+}
+
 /* Thread body: the fixed residuals and (with prep_prefix) the prefix sums of the sources of
-   the segment. */
+   the segment; item 0 is the MD5 (with prep_md5). */
 static void fl_source_job(void *ctx, int t, int nt) {
    fl_flac_sink *s = (fl_flac_sink*)ctx;
    int v, o, len = s->seg_len;
    (void)t;
    (void)nt;
-   while ((v = fl_pool_next(&s->pool)) < (s->stereo ? 4 : s->C)) {
-      const fl_i32 *src = !s->stereo || v < 2 ? s->buf[v] : v == 2 ? s->side : s->mid;
-      int bps = s->bits+(s->stereo && v == 2);
+   while ((v = fl_pool_next(&s->pool)-s->prep_md5) < (s->stereo ? 4 : s->C)) {
+      const fl_i32 *src;
+      int bps;
+      if (v < 0) {
+         fl_flac_md5(s, len);
+         continue;
+      }
+      src = !s->stereo || v < 2 ? s->buf[v] : v == 2 ? s->side : s->mid;
+      bps = s->bits+(s->stereo && v == 2);
       for (o = 0; o <= 4 && o < len && s->fu_ok; o++) fl_fixed_residual(src, len, o, bps, s->avx2 && bps <= 27 ? NULL : s->fres[v], s->fu[v][o], s->avx2);
       s->prep_fail[v] = s->prep_prefix &&
                         fl_prefix_build(&s->pf[v], src, FL_FU(s, v), len, bps, s->prep_quick, s->prep_light, s->prep_step) < 0;
    }
 }
 
-/* Side, mid, and in parallel the fixed residuals of the first len buffered samples and
-   (with prefix) their prefix sums. Returns 0 or -1. */
+/* Side, mid, and in parallel the fixed residuals of the first len buffered samples, (with
+   prefix) their prefix sums and the MD5. Returns 0 or -1. */
 static int fl_flac_segment_prep(fl_flac_sink *s, int len, int prefix) {
    int c, i, ns = s->stereo ? 4 : s->C;
    s->seg_len = len;
@@ -13700,7 +13718,8 @@ static int fl_flac_segment_prep(fl_flac_sink *s, int len, int prefix) {
       }
    }
    s->prep_prefix = prefix;
-   fl_pool_run(&s->pool, fl_source_job, s, ns);
+   s->prep_md5 = !s->frame_api;
+   fl_pool_run(&s->pool, fl_source_job, s, ns+s->prep_md5);
    for (c = 0; c < ns; c++)
       if (s->prep_fail[c]) return -1;
    return 0;
@@ -13805,7 +13824,6 @@ static int fl_flacenc_write(fl_sink *sk, const fl_i32 *pcm, int n) {
       /* samples must fit in the declared bits */
       if (shift && (fl_i32)((fl_u32)pcm[i]<<shift)>>shift != pcm[i]) return FL_ERR_BAD_FILE;
    }
-   fl_md5_samples(&s->md5, pcm, (size_t)n*C, s->bits);
    while (n > 0) {
       int k = FL_MIN(n, FL_FLAC_SEGMENT-s->have), ret;
       for (c = 0; c < C; c++) {
