@@ -10007,11 +10007,8 @@ static fl_i64 fl_br_unary(fl_br *b) {
       if (b->cache) {
          int z = fl_clz64(b->cache);
          if (z < b->n) {
-            /* Two shifts, not "<<= z+1": when the one bit is the last of a full
-               64-bit cache, z+1 is 64, which is undefined in C. x86 masks the
-               count to 0 and leaves the bit in place; the next fill then ORs data
-               over it and flips a bit 64 positions on. Seen in a real file with
-               a Rice parameter of 3 and quotients up to 76. */
+            /* two shifts: z+1 can be 64, and a shift by 64 is undefined in C (see
+               test/bitreader.c) */
             b->cache = (b->cache<<z)<<1;
             b->n -= z+1;
             return q+z;
@@ -13193,8 +13190,6 @@ static int fl_flac_tag_kind(const fl_format *f, const char *t) {
    return 1;
 }
 
-/* Writes the metadata blocks: STREAMINFO (patched at the end), VORBIS_COMMENT (only if
-   there are tags), PICTURE and other kept blocks. */
 /* Writes a metadata block header. */
 static void fl_block_header(fl_flac_sink *s, int type, int last, fl_u32 len) {
    unsigned char h4[4];

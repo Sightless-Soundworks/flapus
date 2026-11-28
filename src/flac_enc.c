@@ -2593,8 +2593,6 @@ static int fl_flac_tag_kind(const fl_format *f, const char *t) {
    return 1;
 }
 
-/* Writes the metadata blocks: STREAMINFO (patched at the end), VORBIS_COMMENT (only if
-   there are tags), PICTURE and other kept blocks. */
 /* Writes a metadata block header. */
 static void fl_block_header(fl_flac_sink *s, int type, int last, fl_u32 len) {
    unsigned char h4[4];
