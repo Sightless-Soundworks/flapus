@@ -10665,7 +10665,7 @@ static int fl_cpu_avx2(void) {
 #endif
 }
 
-/* ---- Optional threads: fl_parallel() runs fn(ctx, t, nt) for t = 0..nt-1 ---- */
+/* ---- Optional threads ---- */
 #if !defined(FLAPUS_NO_THREADS) && defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -10684,60 +10684,184 @@ static int fl_cpu_avx2(void) {
 #endif
 #define FL_MAX_THREADS 64
 
+/* A pool of threads that stay for the whole encoding: fl_pool_run() runs fn(ctx, t, nt) for
+   t = 0..nt-1, t = 0 in the caller. The jobs take their items with fl_pool_next(), so a
+   thread that is done early takes the next one. */
+typedef struct fl_pool fl_pool;
+
 typedef struct {
+   fl_pool *p;
+   int t;
+} fl_pool_arg;
+
+struct fl_pool {
    void (*fn)(void *ctx, int t, int nt);
    void *ctx;
-   int t, nt;
-} fl_job;
+   int nt;      /* threads of the current run */
+   int size;    /* threads, the caller included */
+   int stop, sync;  /* sync: the pthread mutex and conditions exist */
+   long next;       /* next item of the current run */
+   fl_pool_arg arg[FL_MAX_THREADS];
+#if FL_THREADS == 1
+   HANDLE th[FL_MAX_THREADS], go[FL_MAX_THREADS], done[FL_MAX_THREADS];
+#elif FL_THREADS == 2
+   pthread_t th[FL_MAX_THREADS];
+   pthread_mutex_t m;
+   pthread_cond_t go, done;
+   int gen, pending;
+#endif
+};
 
 #if FL_THREADS == 1
-static DWORD WINAPI fl_job_main(LPVOID p) {
-   fl_job *j = (fl_job*)p;
-   j->fn(j->ctx, j->t, j->nt);
-   return 0;
+static DWORD WINAPI fl_pool_main(LPVOID arg) {
+   fl_pool *p = ((fl_pool_arg*)arg)->p;
+   int t = ((fl_pool_arg*)arg)->t;
+   for (;;) {
+      WaitForSingleObject(p->go[t], INFINITE);
+      if (p->stop) return 0;
+      p->fn(p->ctx, t, p->nt);
+      SetEvent(p->done[t]);
+   }
 }
 #elif FL_THREADS == 2
-static void *fl_job_main(void *p) {
-   fl_job *j = (fl_job*)p;
-   j->fn(j->ctx, j->t, j->nt);
+static void *fl_pool_main(void *arg) {
+   fl_pool *p = ((fl_pool_arg*)arg)->p;
+   int t = ((fl_pool_arg*)arg)->t, seen = 0;
+   pthread_mutex_lock(&p->m);
+   for (;;) {
+      void (*fn)(void*, int, int);
+      void *ctx;
+      int nt;
+      while (p->gen == seen && !p->stop) pthread_cond_wait(&p->go, &p->m);
+      if (p->stop) break;
+      /* read with gen, under the lock: a thread that wakes late must not see the next run */
+      seen = p->gen;
+      fn = p->fn;
+      ctx = p->ctx;
+      nt = p->nt;
+      if (t >= nt) continue;
+      pthread_mutex_unlock(&p->m);
+      fn(ctx, t, nt);
+      pthread_mutex_lock(&p->m);
+      if (--p->pending == 0) pthread_cond_signal(&p->done);
+   }
+   pthread_mutex_unlock(&p->m);
    return NULL;
 }
 #endif
 
-static void fl_parallel(void (*fn)(void*, int, int), void *ctx, int nt) {
-   fl_job jobs[FL_MAX_THREADS];
-   int t;
+/* Starts up to n-1 threads (fewer if the system refuses more); p->size is then their
+   number plus one. */
+static void fl_pool_init(fl_pool *p, int n) {
+   memset(p, 0, sizeof(*p));
+   p->size = 1;
 #if FL_THREADS == 1
-   HANDLE th[FL_MAX_THREADS];
-#elif FL_THREADS == 2
-   pthread_t th[FL_MAX_THREADS];
-   int ok[FL_MAX_THREADS];
-#endif
-   for (t = 0; t < nt; t++) {
-      jobs[t].fn = fn;
-      jobs[t].ctx = ctx;
-      jobs[t].t = t;
-      jobs[t].nt = nt;
-   }
-#if FL_THREADS == 1
-   for (t = 1; t < nt; t++) th[t] = CreateThread(NULL, 0, fl_job_main, &jobs[t], 0, NULL);
-   fn(ctx, 0, nt);
-   for (t = 1; t < nt; t++) {
-      if (th[t]) {
-         WaitForSingleObject(th[t], INFINITE);
-         CloseHandle(th[t]);
-      } else fn(ctx, t, nt);
+   for (; p->size < n; p->size++) {
+      int t = p->size;
+      p->arg[t].p = p;
+      p->arg[t].t = t;
+      p->go[t] = CreateEvent(NULL, FALSE, FALSE, NULL);
+      p->done[t] = CreateEvent(NULL, FALSE, FALSE, NULL);
+      if (!p->go[t] || !p->done[t] || !(p->th[t] = CreateThread(NULL, 0, fl_pool_main, &p->arg[t], 0, NULL))) {
+         if (p->go[t]) CloseHandle(p->go[t]);
+         if (p->done[t]) CloseHandle(p->done[t]);
+         break;
+      }
    }
 #elif FL_THREADS == 2
-   for (t = 1; t < nt; t++) ok[t] = pthread_create(&th[t], NULL, fl_job_main, &jobs[t]) == 0;
-   fn(ctx, 0, nt);
-   for (t = 1; t < nt; t++) {
-      if (ok[t]) pthread_join(th[t], NULL);
-      else fn(ctx, t, nt);
+   if (n <= 1) return;
+   p->sync = 1;
+   pthread_mutex_init(&p->m, NULL);
+   pthread_cond_init(&p->go, NULL);
+   pthread_cond_init(&p->done, NULL);
+   for (; p->size < n; p->size++) {
+      p->arg[p->size].p = p;
+      p->arg[p->size].t = p->size;
+      if (pthread_create(&p->th[p->size], NULL, fl_pool_main, &p->arg[p->size]) != 0) break;
    }
 #else
-   for (t = 0; t < nt; t++) fn(ctx, t, nt);
+   (void)n;
 #endif
+}
+
+static void fl_pool_free(fl_pool *p) {
+   int t;
+#if FL_THREADS == 1
+   p->stop = 1;
+   for (t = 1; t < p->size; t++) SetEvent(p->go[t]);
+   for (t = 1; t < p->size; t++) {
+      WaitForSingleObject(p->th[t], INFINITE);
+      CloseHandle(p->th[t]);
+      CloseHandle(p->go[t]);
+      CloseHandle(p->done[t]);
+   }
+#elif FL_THREADS == 2
+   if (!p->sync) return;
+   pthread_mutex_lock(&p->m);
+   p->stop = 1;
+   pthread_cond_broadcast(&p->go);
+   pthread_mutex_unlock(&p->m);
+   for (t = 1; t < p->size; t++) pthread_join(p->th[t], NULL);
+   pthread_mutex_destroy(&p->m);
+   pthread_cond_destroy(&p->go);
+   pthread_cond_destroy(&p->done);
+   p->sync = 0;
+#else
+   (void)t;
+#endif
+   p->size = 1;
+}
+
+/* Runs fn(ctx, t, nt) for t = 0..nt-1 (nt at most p->size) and waits for all. */
+static void fl_pool_run(fl_pool *p, void (*fn)(void*, int, int), void *ctx, int nt) {
+#if FL_THREADS == 1
+   int t;
+#endif
+   nt = FL_MAX(1, FL_MIN(nt, p->size));
+#if FL_THREADS == 2
+   if (p->sync) pthread_mutex_lock(&p->m);  /* the threads read the run under the lock */
+#endif
+   p->fn = fn;
+   p->ctx = ctx;
+   p->next = 0;
+   p->nt = nt;
+   if (nt == 1) {
+#if FL_THREADS == 2
+      if (p->sync) pthread_mutex_unlock(&p->m);
+#endif
+      fn(ctx, 0, 1);
+      return;
+   }
+#if FL_THREADS == 1
+   for (t = 1; t < nt; t++) SetEvent(p->go[t]);
+   fn(ctx, 0, nt);
+   WaitForMultipleObjects(nt-1, p->done+1, TRUE, INFINITE);
+#elif FL_THREADS == 2
+   p->pending = nt-1;
+   p->gen++;
+   pthread_cond_broadcast(&p->go);
+   pthread_mutex_unlock(&p->m);
+   fn(ctx, 0, nt);
+   pthread_mutex_lock(&p->m);
+   while (p->pending) pthread_cond_wait(&p->done, &p->m);
+   pthread_mutex_unlock(&p->m);
+#endif
+}
+
+/* The next item of the current run, for any of its threads. */
+static int fl_pool_next(fl_pool *p) {
+#if FL_THREADS == 1
+   if (p->nt > 1) return (int)InterlockedIncrement(&p->next)-1;
+#elif FL_THREADS == 2
+   if (p->nt > 1) {
+      int v;
+      pthread_mutex_lock(&p->m);
+      v = (int)p->next++;
+      pthread_mutex_unlock(&p->m);
+      return v;
+   }
+#endif
+   return (int)p->next++;
 }
 
 static int fl_cpu_count(void) {
@@ -12993,6 +13117,7 @@ typedef struct {
    fl_flac_cfg cfg;
    fl_flac_cfg dcfg;    /* search used for block costs when cfg.dp_search > 0 */
    int level, lax, nthreads;
+   fl_pool pool;
    int C, bits, rate, variable, stereo;
    fl_i32 *buf[8];      /* deinterleaved input not yet encoded */
    int have;            /* samples per channel in buf */
@@ -13263,6 +13388,8 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
       if (!s->dp_cost || !s->dp_from || !s->cost || !s->cand || !s->around) return FL_ERR_ALLOC;
    }
    s->jobs = (fl_frame_job*)malloc(sizeof(fl_frame_job)*(FL_FLAC_SEGMENT/16+2));
+   fl_pool_init(&s->pool, s->nthreads);
+   s->nthreads = s->pool.size;
    s->wk = (fl_worker*)calloc(s->nthreads, sizeof(fl_worker));
    if (!s->jobs || !s->wk) return FL_ERR_ALLOC;
    fl_md5_init(&s->md5);
@@ -13500,11 +13627,12 @@ static int fl_dp_first(int K, int i, int k, int refine, int thin) {
    return i%(k == low && k > 1 ? k/2 : low) == 0;
 }
 
-/* Thread body: costs of the candidates t, t+nt, ... */
+/* Thread body: costs of the candidates. */
 static void fl_cost_job(void *ctx, int t, int nt) {
    fl_flac_sink *s = (fl_flac_sink*)ctx;
    int u = s->cfg.unit, K = s->cfg.max_block/u, j;
-   for (j = t; j < s->ncand; j += nt) {
+   (void)nt;
+   while ((j = fl_pool_next(&s->pool)) < s->ncand) {
       int x = s->cand[j], off = x/K*u, bs = FL_MIN((x%K+1)*u, s->seg_len-off);
       s->cost[x] = fl_block_cost(s, &s->wk[t], off, bs);
    }
@@ -13528,11 +13656,12 @@ static void fl_dp_path(fl_flac_sink *s, int M, int K) {
       }
 }
 
-/* Thread body: frames t, t+nt, ... */
+/* Thread body: frames of the segment. */
 static void fl_frame_job_run(void *ctx, int t, int nt) {
    fl_flac_sink *s = (fl_flac_sink*)ctx;
    int j;
-   for (j = t; j < s->njobs; j += nt) {
+   (void)nt;
+   while ((j = fl_pool_next(&s->pool)) < s->njobs) {
       fl_frame_job *job = &s->jobs[j];
       fl_u64 num = s->variable ? s->sample_pos+job->off : s->frame_no+j;
       job->worker = t;
@@ -13540,12 +13669,14 @@ static void fl_frame_job_run(void *ctx, int t, int nt) {
    }
 }
 
-/* Thread body: the fixed residuals and (with prep_prefix) the prefix sums of the sources
-   t, t+nt, ... of the segment. */
+/* Thread body: the fixed residuals and (with prep_prefix) the prefix sums of the sources of
+   the segment. */
 static void fl_source_job(void *ctx, int t, int nt) {
    fl_flac_sink *s = (fl_flac_sink*)ctx;
    int v, o, len = s->seg_len;
-   for (v = t; v < (s->stereo ? 4 : s->C); v += nt) {
+   (void)t;
+   (void)nt;
+   while ((v = fl_pool_next(&s->pool)) < (s->stereo ? 4 : s->C)) {
       const fl_i32 *src = !s->stereo || v < 2 ? s->buf[v] : v == 2 ? s->side : s->mid;
       int bps = s->bits+(s->stereo && v == 2);
       for (o = 0; o <= 4 && o < len && s->fu_ok; o++) fl_fixed_residual(src, len, o, bps, s->avx2 && bps <= 27 ? NULL : s->fres[v], s->fu[v][o], s->avx2);
@@ -13569,7 +13700,7 @@ static int fl_flac_segment_prep(fl_flac_sink *s, int len, int prefix) {
       }
    }
    s->prep_prefix = prefix;
-   fl_parallel(fl_source_job, s, FL_MIN(s->nthreads, ns));
+   fl_pool_run(&s->pool, fl_source_job, s, ns);
    for (c = 0; c < ns; c++)
       if (s->prep_fail[c]) return -1;
    return 0;
@@ -13604,7 +13735,7 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
             s->cost[x] = ~(fl_u64)0;
             if (fl_dp_first(K, i, k, r, s->cfg.thin) || i+k == M) s->cand[s->ncand++] = x;
          }
-      fl_parallel(fl_cost_job, s, FL_MIN(s->nthreads, s->ncand));
+      fl_pool_run(&s->pool, fl_cost_job, s, s->ncand);
       fl_dp_path(s, M, K);
       if (r) {
          memset(s->around, 0, M+1);
@@ -13618,7 +13749,7 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
             for (k = 1; k <= K && i+k <= M && s->around[i]; k++)
                if (s->around[i+k] && s->cost[(size_t)i*K+k-1] == ~(fl_u64)0) s->cand[s->ncand++] = i*K+k-1;
          if (s->ncand) {
-            fl_parallel(fl_cost_job, s, FL_MIN(s->nthreads, s->ncand));
+            fl_pool_run(&s->pool, fl_cost_job, s, s->ncand);
             fl_dp_path(s, M, K);
          }
       }
@@ -13631,7 +13762,7 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
       }
       free(cuts);
    }
-   fl_parallel(fl_frame_job_run, s, FL_MIN(s->nthreads, s->njobs));
+   fl_pool_run(&s->pool, fl_frame_job_run, s, s->njobs);
    /* write the frames in order */
    for (j = 0; j < s->njobs && ret == FL_OK; j++) {
       fl_frame_job *job = &s->jobs[j];
@@ -13734,6 +13865,7 @@ done:
 static void fl_flacenc_destroy(fl_sink *sk) {
    fl_flac_sink *s = (fl_flac_sink*)sk;
    int c;
+   fl_pool_free(&s->pool);
    fl_out_close(s->f);
    for (c = 0; c < 8; c++) {
       int o;
