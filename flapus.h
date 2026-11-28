@@ -10609,6 +10609,7 @@ FLDEF void fl_flac_frame_decoder_destroy(fl_flac_frame_decoder *dec) {
    written. */
 
 #define FL_FLAC_SEGMENT 65536   /* samples per channel analysed at once */
+#define FL_FLAC_BATCH 4         /* most segments encoded at a time (with many threads) */
 #define FL_FLAC_MAX_ORDER 32
 #define FL_PI 3.14159265358979323846
 #define FL_LN2 0.69314718055994530942  /* the same double as fl_log(2.0) */
@@ -12267,6 +12268,7 @@ typedef struct {
    fl_u64 *U[5];
    fl_i64 *y;   /* y after 16 zeros */
    int cap, has_u, avx2, len, nb;
+   int base;    /* position of the segment in the batch: index i here is base+i there */
    /* quick estimate: the samples in 16-bit parts (fl_fill_x16), and per step the OR of the
       samples, the first sample and whether all are equal */
    fl_i16 *x16, *x16l;
@@ -12774,7 +12776,7 @@ static void fl_search_subframe(const fl_flac_cfg *cfg, fl_ws *ws, fl_wcache *wc,
       bits = 8+(fl_u64)order*bps;
       if (pf && pf->has_u && !wasted) {
          /* block size search: from the prefix sums */
-         bits += fl_rice_estimate_sums(&ws->rws, pf->U[order]+off, 0, n, order, s.porder, bps > 16 ? 30 : 14,
+         bits += fl_rice_estimate_sums(&ws->rws, pf->U[order]+off-pf->base, 0, n, order, s.porder, bps > 16 ? 30 : 14,
                                        fl_est_limit(s.best_bits, bits));
          if (bits < s.best_bits) {
             s.best_bits = bits;
@@ -12990,10 +12992,11 @@ static void fl_write_subframe(fl_bw *w, const fl_flac_cfg *cfg, fl_ws *ws, const
 static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_prefix *pf, const fl_i32 *seg, int off,
                                   int n, int bps) {
    const fl_i32 *x = seg+off;
+   int po = off-pf->base;  /* off in pf */
    fl_u64 best, b;
    fl_i32 orv = 0;
    int i, max_order = FL_MIN(FL_MIN(cfg->max_order, FL_DP_ORDER), n/2-1), wasted = 0, kmax, eq = 1;
-   int porder = FL_MIN(cfg->max_porder, FL_EST_PORDER), k0 = off/pf->step, k1 = (off+n+pf->step-1)/pf->step;
+   int porder = FL_MIN(cfg->max_porder, FL_EST_PORDER), k0 = po/pf->step, k1 = (po+n+pf->step-1)/pf->step;
    /* from the steps of fl_prefix_build: blocks start and end at a step or at the end */
    for (i = k0; i < k1; i++) {
       orv |= pf->sor[i];
@@ -13013,7 +13016,7 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
    best = 8+(fl_u64)n*bps;
    if (pf->has_u || fl_fixed_residual(x, n, 2, bps, ws->res, ws->u, ws->avx2)) {
       b = 8+2*(fl_u64)bps;
-      if (pf->has_u) b += fl_rice_estimate_sums(&ws->rws, pf->U[2]+off, wasted, n, 2, porder, kmax, fl_est_limit(best, b));
+      if (pf->has_u) b += fl_rice_estimate_sums(&ws->rws, pf->U[2]+po, wasted, n, 2, porder, kmax, fl_est_limit(best, b));
       else b += fl_rice_estimate(&ws->rws, ws->u, n, 2, porder, kmax, fl_est_limit(best, b));
       if (b < best) best = b;
    }
@@ -13024,7 +13027,7 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
       double phi[FL_FLAC_MAX_ORDER][FL_FLAC_MAX_ORDER], psi[FL_FLAC_MAX_ORDER], y[FL_FLAC_MAX_ORDER];
       double lp[FL_FLAC_MAX_ORDER], e, ridge = 0, bv = 1e300;
       int P = max_order, o, j, k, bo = 0;
-      size_t t0 = fl_prefix_slot(pf, off)+max_order, t1 = fl_prefix_slot(pf, off+n);  /* P[.][off+max_order], P[.][off+n] */
+      size_t t0 = fl_prefix_slot(pf, po)+max_order, t1 = fl_prefix_slot(pf, po+n);  /* P[.][po+max_order], P[.][po+n] */
       for (i = 0; i < P; i++) {
          psi[i] = (double)(pf->P[i+1][t1]-pf->P[i+1][t0]);
          for (j = 0; j <= i; j++) phi[i][j] = (double)(pf->P[i-j][t1-j-1]-pf->P[i-j][t0-j-1]);
@@ -13070,14 +13073,14 @@ static fl_u64 fl_estimate_channel(const fl_flac_cfg *cfg, fl_ws *ws, const fl_pr
          s.bps = s.abps = bps;
          s.n = n;
          s.x = x;
-         s.x16 = wasted ? ws->x16 : pf->x16+off;
-         s.x16l = wasted ? ws->x16l : pf->x16l+off;
+         s.x16 = wasted ? ws->x16 : pf->x16+po;
+         s.x16l = wasted ? ws->x16l : pf->x16l+po;
          if (!wasted && bps > 16 && bps <= 27) {
             int f16 = 1;
             for (i = k0; i < k1; i++) f16 &= pf->fits16[i];
             if (f16) {
                s.abps = 16;
-               s.x16 = pf->x16d+off;
+               s.x16 = pf->x16d+po;
             }
          }
          s.best_bits = best;
@@ -13127,21 +13130,23 @@ typedef struct {
                            for sample i >= o; computed once instead of per block (bits <= 26) */
    fl_i32 *fres[8];     /* per source: the residuals fl_fixed_residual also writes */
    int fu_ok;
-   int prep_prefix, prep_quick, prep_light, prep_step, prep_md5, prep_fail[8];  /* for fl_source_job */
+   int prep_prefix, prep_quick, prep_light, prep_step, prep_md5, prep_fail[FL_FLAC_BATCH*8];  /* for fl_source_job */
+   int batch;           /* segments encoded at a time, at most FL_FLAC_BATCH */
    fl_u64 sample_pos, frame_no;
    fl_u32 min_frame, max_frame;
    int min_block, max_block, last_block;
    fl_md5 md5;
    long info_pos;
    fl_worker *wk;
-   fl_u64 *cost;        /* block costs: cost[i*K+k-1] for k units starting at unit i (~0 = none) */
+   fl_u64 *cost;        /* block costs: cost[(g*FL_FLAC_SEGMENT/unit+i)*K+k-1] for k units from unit i
+                           of segment g of the batch (~0 = none) */
    int *cand, ncand;    /* blocks to cost next, as indexes into cost */
    char *around;        /* units near a block boundary (refinement) */
    fl_u64 *dp_cost;
    int *dp_from;
-   fl_prefix pf[8];
+   fl_prefix pf[FL_FLAC_BATCH][8];  /* per segment of the batch and source */
    fl_frame_job *jobs;
-   int njobs, seg_len;
+   int njobs, seg_len;  /* seg_len: samples of the batch */
    int padding, want_seek, frame_api, verify;
    int avx2;              /* the CPU has AVX2 */
    int nseek, seek_k, seek_fill;  /* seek points (one per 10 s), next target, points known */
@@ -13378,22 +13383,24 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
       s->dcfg.estimate = 1;
    }
    s->variable = s->cfg.unit > 0;
+   fl_pool_init(&s->pool, s->nthreads);
+   s->nthreads = s->pool.size;
+   /* with many threads, several segments at a time give them enough blocks and frames */
+   s->batch = FL_MAX(1, FL_MIN(FL_FLAC_BATCH, (s->nthreads+2)/4));
    if (s->cfg.unit) {
-      int M = FL_FLAC_SEGMENT/s->cfg.unit+2, K = s->cfg.max_block/s->cfg.unit;
+      int M = FL_FLAC_SEGMENT/s->cfg.unit, K = s->cfg.max_block/s->cfg.unit;
       s->dp_cost = (fl_u64*)malloc(sizeof(fl_u64)*(M+1));
       s->dp_from = (int*)malloc(sizeof(int)*(M+1));
-      s->cost = (fl_u64*)malloc(sizeof(fl_u64)*M*K);
-      s->cand = (int*)malloc(sizeof(int)*M*K);
+      s->cost = (fl_u64*)malloc(sizeof(fl_u64)*s->batch*M*K);
+      s->cand = (int*)malloc(sizeof(int)*s->batch*M*K);
       s->around = (char*)malloc(M+1);
       if (!s->dp_cost || !s->dp_from || !s->cost || !s->cand || !s->around) return FL_ERR_ALLOC;
    }
-   s->jobs = (fl_frame_job*)malloc(sizeof(fl_frame_job)*(FL_FLAC_SEGMENT/16+2));
-   fl_pool_init(&s->pool, s->nthreads);
-   s->nthreads = s->pool.size;
+   s->jobs = (fl_frame_job*)malloc(sizeof(fl_frame_job)*s->batch*(FL_FLAC_SEGMENT/16+2));
    s->wk = (fl_worker*)calloc(s->nthreads, sizeof(fl_worker));
    if (!s->jobs || !s->wk) return FL_ERR_ALLOC;
    fl_md5_init(&s->md5);
-   slen = FL_FLAC_SEGMENT+s->cfg.max_block+FL_SLACK;
+   slen = s->batch*FL_FLAC_SEGMENT+s->cfg.max_block+FL_SLACK;
    for (c = 0; c < s->C; c++)
       if (!(s->buf[c] = (fl_i32*)calloc(slen, sizeof(fl_i32)))) return FL_ERR_ALLOC;
    s->side = (fl_i32*)calloc(slen, sizeof(fl_i32));
@@ -13410,7 +13417,7 @@ static int fl_flacenc_start(fl_sink *sk, const fl_format *f) {
       }
    }
    s->avx2 = fl_cpu_avx2();
-   for (c = 0; c < 8; c++) s->pf[c].avx2 = s->avx2;
+   for (c = 0; c < FL_FLAC_BATCH*8; c++) s->pf[c/8][c%8].avx2 = s->avx2;
    for (t = 0; t < s->nthreads; t++) {
       fl_worker *w = &s->wk[t];
       w->dec.si.channels = s->C;
@@ -13482,6 +13489,9 @@ static int fl_use_stereo(const fl_flac_sink *s, int off, int bs) {
    return s->stereo && (!s->side_bad || s->side_bad[off+bs] == s->side_bad[off]);
 }
 
+/* Prefix sums of source v for the block at batch position off. */
+static fl_prefix *fl_pf(fl_flac_sink *s, int v, int off) { return &s->pf[off/FL_FLAC_SEGMENT][v]; }
+
 /* Encodes one frame into the worker's bit writer and (with verify) checks it by decoding. */
 static int fl_encode_frame(fl_flac_sink *s, fl_worker *wk, fl_frame_job *job, fl_u64 num) {
    fl_sf sf[8], sfx[4];
@@ -13503,7 +13513,7 @@ static int fl_encode_frame(fl_flac_sink *s, fl_worker *wk, fl_frame_job *job, fl
       src[2] = s->side;
       src[3] = s->mid;
       if (s->cfg.one_mode) {
-         for (v = 0; v < 4; v++) sfx[v].bits = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[v], src[v], off, bs, s->bits+(v == 2));
+         for (v = 0; v < 4; v++) sfx[v].bits = fl_estimate_channel(&s->cfg, &wk->ws, fl_pf(s, v, off), src[v], off, bs, s->bits+(v == 2));
          for (i = 0; i < 4; i++) costs[i] = sfx[use[i][0]].bits+sfx[use[i][1]].bits;
          for (i = 1; i < 4; i++)
             if (costs[i] < costs[m]) m = i;
@@ -13575,18 +13585,18 @@ static fl_u64 fl_block_cost(fl_flac_sink *s, fl_worker *wk, int off, int bs) {
          src[2] = s->side;
          src[3] = s->mid;
          for (c = 0; c < 4; c++) {
-            fl_search_subframe(&s->dcfg, &wk->ws, &wk->wc, src[c]+off, bs, s->bits+(c == 2), FL_FU(s, c), &s->pf[c], off, &sf, NULL);
+            fl_search_subframe(&s->dcfg, &wk->ws, &wk->wc, src[c]+off, bs, s->bits+(c == 2), FL_FU(s, c), fl_pf(s, c, off), off, &sf, NULL);
             v[c] = sf.bits;
          }
          return cost+FL_MIN(FL_MIN(v[0]+v[1], v[0]+v[2]), FL_MIN(v[2]+v[1], v[3]+v[2]));
       }
       for (c = 0; c < s->C; c++) {
-         fl_search_subframe(&s->dcfg, &wk->ws, &wk->wc, s->buf[c]+off, bs, s->bits, FL_FU(s, c), &s->pf[c], off, &sf, NULL);
+         fl_search_subframe(&s->dcfg, &wk->ws, &wk->wc, s->buf[c]+off, bs, s->bits, FL_FU(s, c), fl_pf(s, c, off), off, &sf, NULL);
          cost += sf.bits;
       }
       return cost;
    }
-   if (fl_use_stereo(s, off, bs) && s->pf[0].has_u && bs > 2) {
+   if (fl_use_stereo(s, off, bs) && fl_pf(s, 0, off)->has_u && bs > 2) {
       /* the channel pair (left/right, left/side, side/right, mid/side) with the smallest
          order 2 fixed residual sums, then the estimates of its two channels only */
       static const int use[4][2] = {{0, 1}, {0, 2}, {2, 1}, {3, 2}};
@@ -13597,21 +13607,24 @@ static fl_u64 fl_block_cost(fl_flac_sink *s, fl_worker *wk, int off, int bs) {
       src[1] = s->buf[1];
       src[2] = s->side;
       src[3] = s->mid;
-      for (v = 0; v < 4; v++) f2[v] = s->pf[v].U[2][off+bs-2]-s->pf[v].U[2][off];
+      for (v = 0; v < 4; v++) {
+         const fl_prefix *pf = fl_pf(s, v, off);
+         f2[v] = pf->U[2][off-pf->base+bs-2]-pf->U[2][off-pf->base];
+      }
       for (v = 1; v < 4; v++)
          if (f2[use[v][0]]+f2[use[v][1]] < f2[use[m][0]]+f2[use[m][1]]) m = v;
       for (c = 0; c < 2; c++) {
          v = use[m][c];
-         cost += fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[v], src[v], off, bs, s->bits+(v == 2));
+         cost += fl_estimate_channel(&s->cfg, &wk->ws, fl_pf(s, v, off), src[v], off, bs, s->bits+(v == 2));
       }
    } else if (fl_use_stereo(s, off, bs)) {
-      fl_u64 a = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[0], s->buf[0], off, bs, s->bits);
-      fl_u64 b = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[1], s->buf[1], off, bs, s->bits);
-      fl_u64 sc = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[2], s->side, off, bs, s->bits+1);
-      fl_u64 m = fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[3], s->mid, off, bs, s->bits);
+      fl_u64 a = fl_estimate_channel(&s->cfg, &wk->ws, fl_pf(s, 0, off), s->buf[0], off, bs, s->bits);
+      fl_u64 b = fl_estimate_channel(&s->cfg, &wk->ws, fl_pf(s, 1, off), s->buf[1], off, bs, s->bits);
+      fl_u64 sc = fl_estimate_channel(&s->cfg, &wk->ws, fl_pf(s, 2, off), s->side, off, bs, s->bits+1);
+      fl_u64 m = fl_estimate_channel(&s->cfg, &wk->ws, fl_pf(s, 3, off), s->mid, off, bs, s->bits);
       cost += FL_MIN(FL_MIN(a+b, a+sc), FL_MIN(sc+b, m+sc));
    } else {
-      for (c = 0; c < s->C; c++) cost += fl_estimate_channel(&s->cfg, &wk->ws, &s->pf[c], s->buf[c], off, bs, s->bits);
+      for (c = 0; c < s->C; c++) cost += fl_estimate_channel(&s->cfg, &wk->ws, fl_pf(s, c, off), s->buf[c], off, bs, s->bits);
    }
    return cost;
 }
@@ -13633,21 +13646,23 @@ static void fl_cost_job(void *ctx, int t, int nt) {
    int u = s->cfg.unit, K = s->cfg.max_block/u, j;
    (void)nt;
    while ((j = fl_pool_next(&s->pool)) < s->ncand) {
-      int x = s->cand[j], off = x/K*u, bs = FL_MIN((x%K+1)*u, s->seg_len-off);
+      int x = s->cand[j], off = x/K*u, end = FL_MIN(off/FL_FLAC_SEGMENT*FL_FLAC_SEGMENT+FL_FLAC_SEGMENT, s->seg_len);
+      int bs = FL_MIN((x%K+1)*u, end-off);
       s->cost[x] = fl_block_cost(s, &s->wk[t], off, bs);
    }
 }
 
-/* Cheapest chain of costed blocks over M units: dp_from[i] is where the block ending at unit i
-   starts. */
-static void fl_dp_path(fl_flac_sink *s, int M, int K) {
+/* Cheapest chain of costed blocks over the M units of segment g of the batch: dp_from[i] is
+   where the block ending at unit i starts. */
+static void fl_dp_path(fl_flac_sink *s, int g, int M, int K) {
+   const fl_u64 *cost = s->cost+(size_t)g*(FL_FLAC_SEGMENT/s->cfg.unit)*K;
    fl_u64 *best = s->dp_cost;
    int i, k;
    best[0] = 0;
    for (i = 1; i <= M; i++) best[i] = ~(fl_u64)0;
    for (i = 0; i < M; i++)
       for (k = 1; k <= K && i+k <= M; k++) {
-         fl_u64 c = s->cost[(size_t)i*K+k-1], cst;
+         fl_u64 c = cost[(size_t)i*K+k-1], cst;
          if (c == ~(fl_u64)0 || best[i] == ~(fl_u64)0) continue;
          if ((cst = best[i]+c) < best[i+k]) {
             best[i+k] = cst;
@@ -13656,7 +13671,7 @@ static void fl_dp_path(fl_flac_sink *s, int M, int K) {
       }
 }
 
-/* Thread body: frames of the segment. */
+/* Thread body: the frames of the batch. */
 static void fl_frame_job_run(void *ctx, int t, int nt) {
    fl_flac_sink *s = (fl_flac_sink*)ctx;
    int j;
@@ -13681,47 +13696,59 @@ static void fl_flac_md5(fl_flac_sink *s, int len) {
    }
 }
 
-/* Thread body: the fixed residuals and (with prep_prefix) the prefix sums of the sources of
-   the segment; item 0 is the MD5 (with prep_md5). */
+/* Thread body: per segment of the batch and source, the side or mid samples, the fixed
+   residuals and (with prep_prefix) the prefix sums; item 0 is the MD5 (with prep_md5). */
 static void fl_source_job(void *ctx, int t, int nt) {
    fl_flac_sink *s = (fl_flac_sink*)ctx;
-   int v, o, len = s->seg_len;
+   int ns = s->stereo ? 4 : s->C, nseg = (s->seg_len+FL_FLAC_SEGMENT-1)/FL_FLAC_SEGMENT, j, i, o;
    (void)t;
    (void)nt;
-   while ((v = fl_pool_next(&s->pool)-s->prep_md5) < (s->stereo ? 4 : s->C)) {
-      const fl_i32 *src;
-      int bps;
-      if (v < 0) {
-         fl_flac_md5(s, len);
+   while ((j = fl_pool_next(&s->pool)-s->prep_md5) < nseg*ns) {
+      int g = j/ns, v = j%ns, base = g*FL_FLAC_SEGMENT, len = FL_MIN(FL_FLAC_SEGMENT, s->seg_len-base), bps;
+      fl_i32 *src;
+      fl_u32 *fu[5];
+      if (j < 0) {
+         fl_flac_md5(s, s->seg_len);
          continue;
       }
-      src = !s->stereo || v < 2 ? s->buf[v] : v == 2 ? s->side : s->mid;
+      src = (!s->stereo || v < 2 ? s->buf[v] : v == 2 ? s->side : s->mid)+base;
       bps = s->bits+(s->stereo && v == 2);
-      for (o = 0; o <= 4 && o < len && s->fu_ok; o++) fl_fixed_residual(src, len, o, bps, s->avx2 && bps <= 27 ? NULL : s->fres[v], s->fu[v][o], s->avx2);
-      s->prep_fail[v] = s->prep_prefix &&
-                        fl_prefix_build(&s->pf[v], src, FL_FU(s, v), len, bps, s->prep_quick, s->prep_light, s->prep_step) < 0;
+      if (s->stereo && v >= 2 && !s->side_bad) {
+         const fl_i32 *l = s->buf[0]+base, *r = s->buf[1]+base;
+         if (v == 2)
+            for (i = 0; i < len; i++) src[i] = l[i]-r[i];
+         else
+            for (i = 0; i < len; i++) src[i] = (fl_i32)(((fl_i64)l[i]+r[i])>>1);
+      }
+      for (o = 0; o < 5 && s->fu_ok; o++) fu[o] = s->fu[v][o]+base;
+      for (o = 0; o <= 4 && o < len && s->fu_ok; o++)
+         fl_fixed_residual(src, len, o, bps, s->avx2 && bps <= 27 ? NULL : s->fres[v]+base, fu[o], s->avx2);
+      s->pf[g][v].base = base;
+      s->prep_fail[j] = s->prep_prefix &&
+                        fl_prefix_build(&s->pf[g][v], src, s->fu_ok ? fu : NULL, len, bps, s->prep_quick, s->prep_light, s->prep_step) < 0;
    }
 }
 
-/* Side, mid, and in parallel the fixed residuals of the first len buffered samples, (with
-   prefix) their prefix sums and the MD5. Returns 0 or -1. */
+/* Side, mid, the fixed residuals of the first len buffered samples, (with prefix) their
+   prefix sums and the MD5, in parallel. Returns 0 or -1. */
 static int fl_flac_segment_prep(fl_flac_sink *s, int len, int prefix) {
-   int c, i, ns = s->stereo ? 4 : s->C;
+   int i, n = (len+FL_FLAC_SEGMENT-1)/FL_FLAC_SEGMENT*(s->stereo ? 4 : s->C);
    s->seg_len = len;
-   if (s->stereo) {
+   if (s->side_bad) {
+      /* 32-bit stereo: side and mid here, to count the side samples beyond 32 bits */
       const fl_i32 *l = s->buf[0], *r = s->buf[1];
       for (i = 0; i < len; i++) {
          fl_i64 d = (fl_i64)l[i]-r[i];
          s->side[i] = (fl_i32)FL_MAX(-0x7FFFFFFF, FL_MIN(0x7FFFFFFF, d));
          s->mid[i] = (fl_i32)(((fl_i64)l[i]+r[i])>>1);
-         if (s->side_bad) s->side_bad[i+1] = s->side_bad[i]+(d != s->side[i]);
+         s->side_bad[i+1] = s->side_bad[i]+(d != s->side[i]);
       }
    }
    s->prep_prefix = prefix;
    s->prep_md5 = !s->frame_api;
-   fl_pool_run(&s->pool, fl_source_job, s, ns+s->prep_md5);
-   for (c = 0; c < ns; c++)
-      if (s->prep_fail[c]) return -1;
+   fl_pool_run(&s->pool, fl_source_job, s, n+s->prep_md5);
+   for (i = 0; i < n; i++)
+      if (s->prep_fail[i]) return -1;
    return 0;
 }
 
@@ -13741,43 +13768,52 @@ static int fl_flac_process(fl_flac_sink *s, int len) {
          s->jobs[s->njobs++].len = FL_MIN(s->cfg.fixed_block, len-pos);
       }
    } else {
-      /* block sizes by dynamic programming over a grid of 'unit' samples: first with a
-         sparse set of blocks, then with every block whose ends lie near a boundary of the
-         first result */
-      int u = s->cfg.unit, K = s->cfg.max_block/u, M = (len+u-1)/u, k, ncut = 0, r = s->cfg.refine, d;
-      int *from = s->dp_from, *cuts = (int*)malloc(sizeof(int)*(M+1));
+      /* block sizes by dynamic programming over a grid of 'unit' samples, per segment of the
+         batch: first with a sparse set of blocks, then with every block whose ends lie near
+         a boundary of the first result */
+      int u = s->cfg.unit, K = s->cfg.max_block/u, S = FL_FLAC_SEGMENT/u, k, ncut, r = s->cfg.refine, d, g;
+      int nseg = (len+FL_FLAC_SEGMENT-1)/FL_FLAC_SEGMENT, *from = s->dp_from, *cuts = (int*)malloc(sizeof(int)*(S+1));
       if (!cuts) return FL_ERR_ALLOC;
       s->ncand = 0;
-      for (i = 0; i < M; i++)
-         for (k = 1; k <= K && i+k <= M; k++) {
-            int x = i*K+k-1;
-            s->cost[x] = ~(fl_u64)0;
-            if (fl_dp_first(K, i, k, r, s->cfg.thin) || i+k == M) s->cand[s->ncand++] = x;
-         }
-      fl_pool_run(&s->pool, fl_cost_job, s, s->ncand);
-      fl_dp_path(s, M, K);
-      if (r) {
-         memset(s->around, 0, M+1);
-         for (i = M; ; i = from[i]) {
-            for (d = -r; d <= r; d++)
-               if (i+d >= 0 && i+d <= M) s->around[i+d] = 1;
-            if (!i) break;
-         }
-         s->ncand = 0;
+      for (g = 0; g < nseg; g++) {
+         int M = (FL_MIN(FL_FLAC_SEGMENT, len-g*FL_FLAC_SEGMENT)+u-1)/u;
          for (i = 0; i < M; i++)
-            for (k = 1; k <= K && i+k <= M && s->around[i]; k++)
-               if (s->around[i+k] && s->cost[(size_t)i*K+k-1] == ~(fl_u64)0) s->cand[s->ncand++] = i*K+k-1;
-         if (s->ncand) {
-            fl_pool_run(&s->pool, fl_cost_job, s, s->ncand);
-            fl_dp_path(s, M, K);
-         }
+            for (k = 1; k <= K && i+k <= M; k++) {
+               int x = (g*S+i)*K+k-1;
+               s->cost[x] = ~(fl_u64)0;
+               if (fl_dp_first(K, i, k, r, s->cfg.thin) || i+k == M) s->cand[s->ncand++] = x;
+            }
       }
-      for (i = M; i > 0; i = from[i]) cuts[ncut++] = i;
-      for (k = ncut-1; k >= 0; k--) {
-         int end = FL_MIN(cuts[k]*u, len);
-         s->jobs[s->njobs].off = pos;
-         s->jobs[s->njobs++].len = end-pos;
-         pos = end;
+      fl_pool_run(&s->pool, fl_cost_job, s, s->ncand);
+      if (r) {
+         s->ncand = 0;
+         for (g = 0; g < nseg; g++) {
+            int M = (FL_MIN(FL_FLAC_SEGMENT, len-g*FL_FLAC_SEGMENT)+u-1)/u;
+            fl_dp_path(s, g, M, K);
+            memset(s->around, 0, M+1);
+            for (i = M; ; i = from[i]) {
+               for (d = -r; d <= r; d++)
+                  if (i+d >= 0 && i+d <= M) s->around[i+d] = 1;
+               if (!i) break;
+            }
+            for (i = 0; i < M; i++)
+               for (k = 1; k <= K && i+k <= M && s->around[i]; k++) {
+                  int x = (g*S+i)*K+k-1;
+                  if (s->around[i+k] && s->cost[x] == ~(fl_u64)0) s->cand[s->ncand++] = x;
+               }
+         }
+         if (s->ncand) fl_pool_run(&s->pool, fl_cost_job, s, s->ncand);
+      }
+      for (g = 0; g < nseg; g++) {
+         int M = (FL_MIN(FL_FLAC_SEGMENT, len-g*FL_FLAC_SEGMENT)+u-1)/u, base = g*FL_FLAC_SEGMENT;
+         fl_dp_path(s, g, M, K);
+         for (ncut = 0, i = M; i > 0; i = from[i]) cuts[ncut++] = i;
+         for (k = ncut-1; k >= 0; k--) {
+            int end = FL_MIN(base+cuts[k]*u, len);
+            s->jobs[s->njobs].off = pos;
+            s->jobs[s->njobs++].len = end-pos;
+            pos = end;
+         }
       }
       free(cuts);
    }
@@ -13825,7 +13861,7 @@ static int fl_flacenc_write(fl_sink *sk, const fl_i32 *pcm, int n) {
       if (shift && (fl_i32)((fl_u32)pcm[i]<<shift)>>shift != pcm[i]) return FL_ERR_BAD_FILE;
    }
    while (n > 0) {
-      int k = FL_MIN(n, FL_FLAC_SEGMENT-s->have), ret;
+      int k = FL_MIN(n, s->batch*FL_FLAC_SEGMENT-s->have), ret;
       for (c = 0; c < C; c++) {
          fl_i32 *d = s->buf[c]+s->have;
          for (i = 0; i < k; i++) d[i] = pcm[i*C+c];
@@ -13833,8 +13869,8 @@ static int fl_flacenc_write(fl_sink *sk, const fl_i32 *pcm, int n) {
       s->have += k;
       pcm += (size_t)k*C;
       n -= k;
-      if (s->have == FL_FLAC_SEGMENT &&
-          (ret = fl_flac_process(s, s->cfg.unit ? FL_FLAC_SEGMENT : FL_FLAC_SEGMENT/s->cfg.fixed_block*s->cfg.fixed_block)) != FL_OK)
+      if (s->have == s->batch*FL_FLAC_SEGMENT &&
+          (ret = fl_flac_process(s, s->batch*(s->cfg.unit ? FL_FLAC_SEGMENT : FL_FLAC_SEGMENT/s->cfg.fixed_block*s->cfg.fixed_block))) != FL_OK)
          return ret;
    }
    return FL_OK;
@@ -13886,9 +13922,9 @@ static void fl_flacenc_destroy(fl_sink *sk) {
    fl_pool_free(&s->pool);
    fl_out_close(s->f);
    for (c = 0; c < 8; c++) {
-      int o;
+      int o, g;
       free(s->buf[c]);
-      fl_prefix_free(&s->pf[c]);
+      for (g = 0; g < FL_FLAC_BATCH; g++) fl_prefix_free(&s->pf[g][c]);
       for (o = 0; o < 5; o++) free(s->fu[c][o]);
       free(s->fres[c]);
    }

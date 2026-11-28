@@ -261,7 +261,10 @@ Speed and output:
   segment (one source per thread; they were about 8 % of the time at level 5 with one
   thread), and the segment's MD5 alongside them. The threads are started once per
   encoding (a pool), and each takes the next block, frame or source when it is done, so
-  uneven ones do not leave threads idle. The output does not depend on the thread count.
+  uneven ones do not leave threads idle. From 6 threads on, up to 4 segments are encoded
+  at a time (one more per 4 threads), which gives the threads more blocks and frames at
+  once (about 40 MB more memory for CD audio with 16 threads). The output does not depend
+  on the thread count.
   The library default is one thread; the command line tool uses one per CPU.
 - Subset limits apply unless `--lax`: partition order ≤ 8 at every rate, and up to
   48 kHz order ≤ 12 and blocks ≤ 4608. Above 48 kHz, blocks ≤ 16384.
