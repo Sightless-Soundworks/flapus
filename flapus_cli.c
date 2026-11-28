@@ -5,6 +5,36 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdarg.h>
+
+/* fprintf(stderr, ...), but to a Windows console as UTF-16, so that file names show
+   correctly whatever its code page. */
+static void eprintf(const char *fmt, ...) {
+   va_list ap;
+   va_start(ap, fmt);
+#ifdef _WIN32
+   {
+      HANDLE h = GetStdHandle(STD_ERROR_HANDLE);
+      DWORD mode, done;
+      if (GetConsoleMode(h, &mode)) {
+         char buf[4096];
+         wchar_t w[4096];
+         int n;
+         vsnprintf(buf, sizeof(buf), fmt, ap);
+         va_end(ap);
+         buf[sizeof(buf)-1] = 0;
+         /* UTF-8 (the arguments, see utf8_args), else the ANSI code page */
+         if ((n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, buf, -1, w, 4096)) <= 0)
+            n = MultiByteToWideChar(CP_ACP, 0, buf, -1, w, 4096);
+         fflush(stderr);
+         if (n > 1) WriteConsoleW(h, w, (DWORD)(n-1), &done, NULL);
+         return;
+      }
+   }
+#endif
+   vfprintf(stderr, fmt, ap);
+   va_end(ap);
+}
 
 static void usage(FILE *f) {
    fprintf(f,
@@ -119,9 +149,9 @@ static void progress(void *user, double done, double ratio) {
    p->percent = percent;
    p->last = now;
    p->shown = 1;
-   if (percent >= 0 && ratio >= 0) fprintf(stderr, "\r%s: %d%% complete, ratio=%.3f   ", p->name, percent, ratio);
-   else if (percent >= 0) fprintf(stderr, "\r%s: %d%% complete   ", p->name, percent);
-   else if (ratio >= 0) fprintf(stderr, "\r%s: ratio=%.3f   ", p->name, ratio);
+   if (percent >= 0 && ratio >= 0) eprintf("\r%s: %d%% complete, ratio=%.3f   ", p->name, percent, ratio);
+   else if (percent >= 0) eprintf("\r%s: %d%% complete   ", p->name, percent);
+   else if (ratio >= 0) eprintf("\r%s: ratio=%.3f   ", p->name, ratio);
    fflush(stderr);
 }
 
@@ -157,17 +187,17 @@ static int split_args(int argc, char **argv, const char **optv, int *nopt, const
       const char *a = argv[i];
       if (only_paths || a[0] != '-' || a[1] == 0) {
          if (n == 2) {
-            fprintf(stderr, "Error: more than two file names: %s\n", a);
+            eprintf("Error: more than two file names: %s\n", a);
             return -1;
          }
          path[n++] = a;
       } else if (strcmp(a, "--") == 0) {
          only_paths = 1;
       } else if ((k = option_args(a, i+1 < argc ? argv[i+1] : NULL)) < 0) {
-         fprintf(stderr, "Error: unknown option %s (see flapus --help)\n", a);
+         eprintf("Error: unknown option %s (see flapus --help)\n", a);
          return -1;
       } else if (k && i+1 == argc) {
-         fprintf(stderr, "Error: %s needs a value\n", a);
+         eprintf("Error: %s needs a value\n", a);
          return -1;
       } else {
          optv[(*nopt)++] = a;
@@ -197,7 +227,7 @@ static int get_int(const char *opt, const char *s, long lo, long hi, int *out) {
    char *end;
    long v = strtol(s, &end, 10);
    if (end == s || *end || v < lo || v > hi) {
-      fprintf(stderr, "Error: invalid value for %s: %s (%ld to %ld)\n", opt, s, lo, hi);
+      eprintf("Error: invalid value for %s: %s (%ld to %ld)\n", opt, s, lo, hi);
       return 0;
    }
    *out = (int)v;
@@ -209,7 +239,7 @@ static int get_num(const char *opt, const char *s, double lo, double hi, double 
    char *end;
    double v = strtod(s, &end);
    if (end == s || *end || !(v >= lo && v <= hi)) {
-      fprintf(stderr, "Error: invalid value for %s: %s (%.10g to %.10g)\n", opt, s, lo, hi);
+      eprintf("Error: invalid value for %s: %s (%.10g to %.10g)\n", opt, s, lo, hi);
       return 0;
    }
    *out = v;
@@ -291,17 +321,17 @@ static int run(int argc, char **argv) {
          note(opts, sizeof(opts), a, NULL);
          takes = 0;
       } else if (option_args(a, v) != 1) {
-         fprintf(stderr, "Error: unknown option %s (see flapus --help)\n", a);
+         eprintf("Error: unknown option %s (see flapus --help)\n", a);
          return 1;
       } else if (!v) {
-         fprintf(stderr, "Error: %s needs a value\n", a);
+         eprintf("Error: %s needs a value\n", a);
          return 1;
       } else if (strcmp(a, "--format") == 0) {
          if (strcmp(v, "wav") == 0) opt.format = FL_FORMAT_WAV;
          else if (strcmp(v, "flac") == 0) opt.format = FL_FORMAT_FLAC;
          else if (strcmp(v, "opus") == 0) opt.format = FL_FORMAT_OPUS;
          else {
-            fprintf(stderr, "Error: invalid value for --format: %s (wav, flac or opus)\n", v);
+            eprintf("Error: invalid value for --format: %s (wav, flac or opus)\n", v);
             ok = 0;
          }
       } else if (strcmp(a, "--level") == 0) {
@@ -312,7 +342,7 @@ static int run(int argc, char **argv) {
          ok = get_int(a, v, 8000, 192000, &opt.rate);
       } else if (strcmp(a, "--bits") == 0) {
          if ((ok = get_int(a, v, 16, 32, &opt.bits)) && opt.bits != 16 && opt.bits != 24 && opt.bits != 32) {
-            fprintf(stderr, "Error: --bits must be 16, 24 or 32\n");
+            eprintf("Error: --bits must be 16, 24 or 32\n");
             ok = 0;
          }
       } else if (strcmp(a, "--bitrate") == 0) {
@@ -325,7 +355,7 @@ static int run(int argc, char **argv) {
          if ((ok = get_num(a, v, 2.5, 120, &d))) {
             for (k = 0; k < 9 && d != sizes[k]; k++);
             if (k == 9) {
-               fprintf(stderr, "Error: --framesize must be 2.5, 5, 10, 20, 40, 60, 80, 100 or 120\n");
+               eprintf("Error: --framesize must be 2.5, 5, 10, 20, 40, 60, 80, 100 or 120\n");
                ok = 0;
             }
             opt.frame_ms_x10 = (int)(d*10+.5);
@@ -341,7 +371,7 @@ static int run(int argc, char **argv) {
          ok = get_int(a, v, 0, 1<<30, &opt.search);
       } else if (strcmp(a, "--serial") == 0) {
          if ((ok = get_num(a, v, 0, 4294967295.0, &d)) && d != floor(d)) {
-            fprintf(stderr, "Error: --serial must be a whole number\n");
+            eprintf("Error: --serial must be a whole number\n");
             ok = 0;
          }
          opt.serialno = (long long)d;
@@ -357,13 +387,13 @@ static int run(int argc, char **argv) {
       }
    }
    if (paths == 0) {
-      fprintf(stderr, "Error: no input file (see flapus --help)\n");
+      eprintf("Error: no input file (see flapus --help)\n");
       return 1;
    }
    in_path = path[0];
    out_path = path[paths-1];
    if (opt.bitrate > 0 && opt.quality >= 0) {
-      fprintf(stderr, "Error: --bitrate and --quality cannot be combined\n");
+      eprintf("Error: --bitrate and --quality cannot be combined\n");
       return 1;
    }
    if (paths == 1) {
@@ -371,23 +401,23 @@ static int run(int argc, char **argv) {
       int ogg = 0, fmt;
       long long at;
       if (fl_is_std(in_path)) {
-         fprintf(stderr, "Error: stdin input needs an output (- for stdout, with --format)\n");
+         eprintf("Error: stdin input needs an output (- for stdout, with --format)\n");
          return 1;
       }
       if ((fmt = input_format(in_path, &opt, &ogg, &at)) == FL_FORMAT_WAV) {
-         fprintf(stderr, "Error: WAV input needs an output file\n");
+         eprintf("Error: WAV input needs an output file\n");
          return 1;
       }
       if (fmt < 0) {
-         fprintf(stderr, "Error: %s\n", fl_error_text(fmt));
+         eprintf("Error: %s\n", fl_error_text(fmt));
          return 1;
       }
       if (fmt == FL_FORMAT_FLAC && ogg) {
-         fprintf(stderr, "Error: Ogg FLAC input needs an output file (flapus writes native FLAC)\n");
+         eprintf("Error: Ogg FLAC input needs an output file (flapus writes native FLAC)\n");
          return 1;
       }
       if (opt.format && opt.format != fmt) {
-         fprintf(stderr, "Error: without an output file, --format must be the input's format\n");
+         eprintf("Error: without an output file, --format must be the input's format\n");
          return 1;
       }
       opt.format = fmt;
@@ -396,15 +426,15 @@ static int run(int argc, char **argv) {
    if (padding_on) opt.padding = (opt.format ? opt.format : fl_format_from_name(out_path)) == FL_FORMAT_OPUS ? 512 : 8192;
    to_stdout = strcmp(out_path, "-") == 0;
    if (to_stdout && !opt.format) {
-      fprintf(stderr, "Error: output to stdout needs --format\n");
+      eprintf("Error: output to stdout needs --format\n");
       return 1;
    }
    if (delete_input && strcmp(in_path, "-") == 0) {
-      fprintf(stderr, "Error: --delete-input-file needs an input file\n");
+      eprintf("Error: --delete-input-file needs an input file\n");
       return 1;
    }
    if (!to_stdout && !force && fl_file_exists(out_path) && !fl_is_device(out_path)) {
-      fprintf(stderr, "Error: %s exists (use -f to overwrite it)\n", out_path);
+      eprintf("Error: %s exists (use -f to overwrite it)\n", out_path);
       return 1;
    }
    in_place = fl_same_file(in_path, out_path);
@@ -413,12 +443,12 @@ static int run(int argc, char **argv) {
       int ogg;
       long long at;
       if (input_format(in_path, &opt, &ogg, &at) >= 0 && at > 0) {
-         fprintf(stderr, "Error: the stream starts %lld bytes into %s, so it needs another output file\n", at, in_path);
+         eprintf("Error: the stream starts %lld bytes into %s, so it needs another output file\n", at, in_path);
          return 1;
       }
    }
    if (delete_input && in_place) {
-      fprintf(stderr, "Error: --delete-input-file would delete the output, which is the same file\n");
+      eprintf("Error: --delete-input-file would delete the output, which is the same file\n");
       return 1;
    }
    opt.comment_options = opts[0] ? opts : NULL;
@@ -432,20 +462,20 @@ static int run(int argc, char **argv) {
    ret = fl_convert_file(in_path, out_path, &opt);
    if (!silent) {
       if (ret == FL_OK && ps.ratio >= 0 && !to_stdout)
-         fprintf(stderr, "\r%s: wrote %lld bytes, ratio=%.3f   \n", ps.name, (long long)fl_file_size(out_path), ps.ratio);
-      else if (ret == FL_OK && ps.ratio >= 0) fprintf(stderr, "\r%s: done, ratio=%.3f   \n", ps.name, ps.ratio);
-      else if (ret == FL_OK) fprintf(stderr, "\r%s: done              \n", ps.name);
-      else if (ps.shown) fprintf(stderr, "\n");
+         eprintf("\r%s: wrote %lld bytes, ratio=%.3f   \n", ps.name, (long long)fl_file_size(out_path), ps.ratio);
+      else if (ret == FL_OK && ps.ratio >= 0) eprintf("\r%s: done, ratio=%.3f   \n", ps.name, ps.ratio);
+      else if (ret == FL_OK) eprintf("\r%s: done              \n", ps.name);
+      else if (ps.shown) eprintf("\n");
    }
    if (ret != FL_OK) {
-      fprintf(stderr, "Error: %s%s\n", fl_error_text(ret),
+      eprintf("Error: %s%s\n", fl_error_text(ret),
               ret == FL_ERR_TOO_LARGE ? "; --remove-tags leaves them out" :
               ret != FL_ERR_CHECKSUM ? "" : in_place ? " (the input file was left unchanged)" : " (output written anyway)");
       return 1;
    }
    /* only after success, like flac --delete-input-file */
    if (delete_input && fl_remove(in_path) != 0) {
-      fprintf(stderr, "Error: cannot delete %s\n", in_path);
+      eprintf("Error: cannot delete %s\n", in_path);
       return 1;
    }
    return 0;
@@ -470,7 +500,7 @@ static char **utf8_args(int argc, wchar_t **w) {
 int wmain(int argc, wchar_t **wargv) {
    char **argv = utf8_args(argc, wargv);
    if (!argv) {
-      fprintf(stderr, "Error: out of memory\n");
+      eprintf("Error: out of memory\n");
       return 1;
    }
    return run(argc, argv);
